@@ -242,7 +242,12 @@ class PythonExecutorService:
                 # Check for execution failure and raise exception
                 self._handle_execution_failure(result)
 
-                return result
+                return PythonServiceResult(
+                    execution_result=result["execution_result"],
+                    generated_code=result.get("generated_code", ""),
+                    generation_attempt=result.get("generation_attempt", 1),
+                    analysis_warnings=result.get("analysis_warnings", []),
+                )
             else:
                 raise ValueError(
                     "Invalid Command received by service - missing or invalid resume data"
