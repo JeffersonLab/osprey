@@ -41,6 +41,7 @@ from osprey.services.virtual_accelerator.manifest import (
     PARTITION_SP_ECHO,
     PARTITION_STATIC_NOISY,
     RECORD_TYPE_ANALOG,
+    channel_from_legacy,
 )
 from osprey.services.virtual_accelerator.serving.model_stub import NullModel
 from osprey.services.virtual_accelerator.serving.pvdb import (
@@ -106,18 +107,20 @@ def _channel(
     noise: float = 0.0,
 ) -> dict[str, Any]:
     """One manifest channel, carrying the full schema a file source must."""
-    return {
-        "address": address,
-        "ring": RING,
-        "system": system,
-        "family": family,
-        "device": device,
-        "field": field_name,
-        "subfield": subfield,
-        "partition": partition,
-        "record_type": RECORD_TYPE_ANALOG,
-        "noise": noise,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": RING,
+            "system": system,
+            "family": family,
+            "device": device,
+            "field": field_name,
+            "subfield": subfield,
+            "partition": partition,
+            "record_type": RECORD_TYPE_ANALOG,
+            "noise": noise,
+        }
+    )
 
 
 def _magnet(device: str, setpoint: str, readback: str) -> list[dict[str, Any]]:

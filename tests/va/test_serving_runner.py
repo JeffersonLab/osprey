@@ -51,6 +51,7 @@ from osprey.services.virtual_accelerator.manifest import (
     PARTITION_SP_ECHO,
     PARTITION_STATIC_NOISY,
     RECORD_TYPE_ANALOG,
+    channel_from_legacy,
 )
 from osprey.services.virtual_accelerator.serving import write_path as write_path_module
 from osprey.services.virtual_accelerator.serving.pvdb import (
@@ -127,18 +128,20 @@ def _channel(
     field: str,
 ) -> dict:
     """One synthetic manifest channel, in the shape ``build_manifest()`` emits."""
-    return {
-        "address": address,
-        "ring": RING,
-        "system": system,
-        "family": family,
-        "device": device,
-        "field": field,
-        "subfield": subfield,
-        "partition": partition,
-        "record_type": RECORD_TYPE_ANALOG,
-        "noise": False,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": RING,
+            "system": system,
+            "family": family,
+            "device": device,
+            "field": field,
+            "subfield": subfield,
+            "partition": partition,
+            "record_type": RECORD_TYPE_ANALOG,
+            "noise": False,
+        }
+    )
 
 
 CHANNELS = [

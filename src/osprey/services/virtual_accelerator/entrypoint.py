@@ -77,17 +77,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from osprey.services.virtual_accelerator.ioc.engine_source import EngineSource
-from osprey.services.virtual_accelerator.manifest import PARTITION_SP_ECHO
+from osprey.services.virtual_accelerator.manifest import PARTITION_SP_ECHO, ROLE_READBACK
 from osprey.services.virtual_accelerator.manifest.build import MANIFEST_FILENAME
 from osprey.services.virtual_accelerator.manifest.loaders import (
     load_machine_json_channels,
     load_manifest_file,
 )
 from osprey.services.virtual_accelerator.manifest.paths import MANIFEST_OUTPUT
-from osprey.services.virtual_accelerator.serving.pvdb import (
-    READBACK_SUBFIELD,
-    build_serving_pvdb,
-)
+from osprey.services.virtual_accelerator.serving.pvdb import build_serving_pvdb
 from osprey.simulation.engine import SimulationEngine
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -509,7 +506,7 @@ def main() -> None:
             ch["address"]: records.all[ch["address"]]
             for ch in channels
             if ch["partition"] == PARTITION_SP_ECHO
-            and ch["subfield"] == READBACK_SUBFIELD
+            and ch["role"] == ROLE_READBACK
             and ch["address"] in records.all
         }
 

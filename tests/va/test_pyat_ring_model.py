@@ -51,7 +51,7 @@ def pyat_coupled_setpoints() -> list[str]:
     return [
         channel["address"]
         for channel in build_manifest()["channels"]
-        if channel["partition"] == PARTITION_PYAT_COUPLED and channel["subfield"] == "SP"
+        if channel["partition"] == PARTITION_PYAT_COUPLED and channel["role"] == "setpoint"
     ]
 
 

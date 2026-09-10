@@ -43,6 +43,8 @@ from typing import Any
 
 import pytest
 
+from osprey.services.virtual_accelerator.manifest import channel_from_legacy
+
 
 def _free_port() -> str:
     """An unused loopback TCP port, as a string ready for the environment."""
@@ -167,18 +169,20 @@ def _channel(
     noise: bool = False,
 ) -> dict:
     """One synthetic manifest entry, in the shape ``build_serving_pvdb`` reads."""
-    return {
-        "address": address,
-        "ring": RING,
-        "system": system,
-        "family": family,
-        "device": device,
-        "field": field,
-        "subfield": subfield,
-        "partition": partition,
-        "record_type": record_type,
-        "noise": noise,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": RING,
+            "system": system,
+            "family": family,
+            "device": device,
+            "field": field,
+            "subfield": subfield,
+            "partition": partition,
+            "record_type": record_type,
+            "noise": noise,
+        }
+    )
 
 
 def _magnet(device: str, partition: str = PARTITION_PYAT_COUPLED) -> list[dict]:

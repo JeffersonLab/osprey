@@ -10,6 +10,7 @@ import json
 import logging
 
 from ._hierarchical_naming import _HierarchicalNamingMixin
+from .channel_grammar import ChannelGrammar
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,14 @@ class _HierarchicalLoadingMixin(_HierarchicalNamingMixin):
         levels_list = hierarchy_def["levels"]
         self.hierarchy_levels = [level["name"] for level in levels_list]
         self.naming_pattern = hierarchy_def["naming_pattern"]
+
+        # The setpoint/readback grammar the database declares (or the
+        # reference convention it falls back to). Parsed here so a malformed
+        # ``pairing`` block is a load-time refusal like every other schema
+        # error, not a consumer's KeyError.
+        self.grammar = ChannelGrammar.from_hierarchy(
+            self.hierarchy_levels, hierarchy_def.get("pairing")
+        )
 
         # Build hierarchy_config from levels list
         self.hierarchy_config = {"levels": {}}

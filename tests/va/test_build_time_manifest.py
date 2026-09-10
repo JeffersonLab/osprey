@@ -230,7 +230,7 @@ class TestStagedSubset:
             "middle_layer",
         ]
         sample = prepared.manifest["channels"][0]
-        assert sample["ring"] == "" and sample["family"] == ""
+        assert sample["path"] == {} and sample["role"] == "" and sample["pair_key"] == ""
         assert sample["partition"] == classify.PARTITION_STATIC_NOISY
         # The channel SET is still the project's own, which is the point.
         assert (
@@ -623,14 +623,15 @@ class TestGraphSourcedManifest:
         }
         assert metadata["setpoint_count"] == 1
         for channel in prepared.manifest["channels"]:
-            for key in ("ring", "system", "family", "field"):
-                assert channel[key] == ""
+            assert channel["path"] == {}
             if channel["partition"] == classify.PARTITION_STATIC_NOISY:
-                assert channel["device"] == "" and channel["subfield"] == ""
+                assert channel["pair_key"] == "" and channel["role"] == ""
             else:
                 assert channel["partition"] == classify.PARTITION_SP_ECHO
-                assert channel["device"] == "SR:MAG:HCM:01:CURRENT:SP"
-                assert channel["subfield"] == ("SP" if channel["address"].endswith(":SP") else "RB")
+                assert channel["pair_key"] == "SR:MAG:HCM:01:CURRENT:SP"
+                assert channel["role"] == (
+                    "setpoint" if channel["address"].endswith(":SP") else "readback"
+                )
 
     def test_duplicate_addresses_in_the_corpus_collapse_to_one_channel(self, tmp_path):
         """The manifest is a namespace: two bindings sharing one fullPv are one channel."""
@@ -730,19 +731,14 @@ class TestGraphStatedPairs:
         setpoint = by_address["SR01C___B______AC00"]
         readback = by_address["SR01C___B______AM00"]
         assert setpoint["partition"] == readback["partition"] == classify.PARTITION_SP_ECHO
-        assert setpoint["subfield"] == "SP"
-        assert readback["subfield"] == "RB"
-        # The pair shares exactly one identity key -- the setpoint's own
-        # address -- and the other four stay as empty as on a pathless entry:
-        # the graph states no hierarchy path, and none is invented.
+        assert setpoint["role"] == "setpoint"
+        assert readback["role"] == "readback"
+        # The pair is keyed on exactly one thing -- the setpoint's own
+        # address -- and the path stays as empty as on a pathless entry: the
+        # graph states no hierarchy path, and none is invented.
         for channel in (setpoint, readback):
-            assert channel["device"] == "SR01C___B______AC00"
-            assert [channel[key] for key in ("ring", "system", "family", "field")] == [
-                "",
-                "",
-                "",
-                "",
-            ]
+            assert channel["pair_key"] == "SR01C___B______AC00"
+            assert channel["path"] == {}
         assert setpoint["record_type"] == readback["record_type"] == classify.RECORD_TYPE_ANALOG
         assert setpoint["noise"] is False and readback["noise"] is False
 
@@ -755,8 +751,8 @@ class TestGraphStatedPairs:
         for address in ("SR01C:BEND:Setpoint:Golden", "SR01C___T______AM00"):
             channel = by_address[address]
             assert channel["partition"] == classify.PARTITION_STATIC_NOISY
-            for key in ("ring", "system", "family", "device", "field", "subfield"):
-                assert channel[key] == ""
+            assert channel["path"] == {}
+            assert channel["pair_key"] == "" and channel["role"] == ""
         metadata = prepared.manifest["_metadata"]
         assert metadata["by_partition"] == {
             classify.PARTITION_SP_ECHO: 2,

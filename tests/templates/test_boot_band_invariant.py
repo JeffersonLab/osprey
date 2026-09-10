@@ -50,7 +50,7 @@ def machine_channels() -> dict[str, dict]:
 @pytest.fixture(scope="module")
 def manifest_sp_channels() -> list[dict]:
     manifest = build_manifest()
-    return [c for c in manifest["channels"] if c["subfield"] == "SP"]
+    return [c for c in manifest["channels"] if c["role"] == "setpoint"]
 
 
 @pytest.fixture(scope="module")
@@ -122,8 +122,8 @@ class TestJoinIsNonEmptyAndCoversExpectedClasses:
         quad_dipole = [
             a
             for a in joined_addresses
-            if sp_channel_by_address[a]["ring"] == "SR"
-            and sp_channel_by_address[a]["family"] in ("QF", "QD", "QFA", "DIPOLE")
+            if sp_channel_by_address[a]["path"]["ring"] == "SR"
+            and sp_channel_by_address[a]["path"]["family"] in ("QF", "QD", "QFA", "DIPOLE")
         ]
         assert len(quad_dipole) == self.EXPECTED_SR_QUAD_DIPOLE_SP_COUNT, (
             f"expected {self.EXPECTED_SR_QUAD_DIPOLE_SP_COUNT} SR quad/dipole "
@@ -134,8 +134,8 @@ class TestJoinIsNonEmptyAndCoversExpectedClasses:
         correctors = [
             a
             for a in joined_addresses
-            if sp_channel_by_address[a]["ring"] == "SR"
-            and sp_channel_by_address[a]["family"] in ("HCM", "VCM")
+            if sp_channel_by_address[a]["path"]["ring"] == "SR"
+            and sp_channel_by_address[a]["path"]["family"] in ("HCM", "VCM")
         ]
         assert len(correctors) == self.EXPECTED_SR_CORRECTOR_SP_COUNT, (
             f"expected {self.EXPECTED_SR_CORRECTOR_SP_COUNT} SR corrector "

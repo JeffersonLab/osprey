@@ -146,7 +146,7 @@ class TestBinding:
         """The flat-name concatenation, for setpoints and monitors alike."""
         assert all(
             variable.element_name
-            == f"{channel_by_address[address]['family']}{channel_by_address[address]['device']}"
+            == "".join(channel_by_address[address]["path"][level] for level in ("family", "device"))
             for address, variable in bound.items()
         )
 
@@ -163,7 +163,10 @@ class TestBinding:
     def test_setpoints_carry_their_family_and_device(self, setpoints, channel_by_address):
         assert all(
             (variable.family, variable.device_id)
-            == (channel_by_address[address]["family"], channel_by_address[address]["device"])
+            == (
+                channel_by_address[address]["path"]["family"],
+                channel_by_address[address]["path"]["device"],
+            )
             for address, variable in setpoints.items()
         )
 
@@ -173,7 +176,7 @@ class TestBinding:
     def test_monitor_axis_comes_from_the_subfield(self, monitors, channel_by_address):
         expected = {"X": "x", "Y": "y"}
         assert all(
-            variable.axis == expected[channel_by_address[address]["subfield"]]
+            variable.axis == expected[channel_by_address[address]["path"]["subfield"]]
             for address, variable in monitors.items()
         )
 

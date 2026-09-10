@@ -122,13 +122,13 @@ def manifest_addresses() -> set[str]:
 @pytest.fixture(scope="module")
 def manifest_sp_addresses() -> set[str]:
     manifest = build_manifest()
-    return {c["address"] for c in manifest["channels"] if c["subfield"] == "SP"}
+    return {c["address"] for c in manifest["channels"] if c["role"] == "setpoint"}
 
 
 @pytest.fixture(scope="module")
 def manifest_non_sp_addresses() -> set[str]:
     manifest = build_manifest()
-    return {c["address"] for c in manifest["channels"] if c["subfield"] != "SP"}
+    return {c["address"] for c in manifest["channels"] if c["role"] != "setpoint"}
 
 
 @pytest.fixture(scope="module")

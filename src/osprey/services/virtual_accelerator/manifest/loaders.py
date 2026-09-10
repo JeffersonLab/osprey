@@ -16,6 +16,17 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from osprey.services.channel_finder.databases.channel_grammar import (
+    BUILTIN_GRAMMAR,
+    BUILTIN_READBACK_TOKEN,
+    BUILTIN_SETPOINT_TOKEN,
+    PAIR_KEY_SEPARATOR,
+    ROLE_NONE,
+    ROLE_READBACK,
+    ROLE_SETPOINT,
+    ROLES,
+    ChannelGrammar,
+)
 from osprey.services.channel_finder.databases.hierarchical import (
     HierarchicalChannelDatabase,
 )
@@ -31,13 +42,38 @@ from .paths import PACKAGE_PATHS, ManifestPaths
 class HierarchicalChannel:
     """One expanded address plus its decomposed hierarchy path.
 
-    ``path`` maps hierarchy level names (ring/system/family/device/field/
-    subfield) to the value selected for this channel, as produced by
-    HierarchicalChannelDatabase's tree expansion.
+    ``path`` maps the hierarchy level names the database declares (the
+    reference facility's ring/system/family/device/field/subfield, or any
+    other facility's own) to the value selected for this channel, as produced
+    by HierarchicalChannelDatabase's tree expansion.
     """
 
     address: str
     path: dict[str, str]
+
+
+@dataclass(frozen=True)
+class HierarchicalNamespace:
+    """A hierarchical database's channels together with the grammar they follow.
+
+    The grammar is what the database declared beside its levels -- which level
+    tells a setpoint from its readback, and by which tokens -- and it travels
+    with the channels because a path is only readable against the levels that
+    named it.
+    """
+
+    channels: list[HierarchicalChannel]
+    grammar: ChannelGrammar
+
+
+def load_hierarchical_namespace(paths: ManifestPaths = PACKAGE_PATHS) -> HierarchicalNamespace:
+    """Expand ``paths``' hierarchical DB into its channels and its grammar."""
+    db = HierarchicalChannelDatabase(str(paths.hierarchical_db))
+    db.load_database()
+    channels = [
+        HierarchicalChannel(address=ch["address"], path=ch["path"]) for ch in db.get_all_channels()
+    ]
+    return HierarchicalNamespace(channels=channels, grammar=db.grammar)
 
 
 class ParadigmMismatchError(RuntimeError):
@@ -54,11 +90,7 @@ class ParadigmMismatchError(RuntimeError):
 
 def load_hierarchical_channels(paths: ManifestPaths = PACKAGE_PATHS) -> list[HierarchicalChannel]:
     """Expand ``paths``' hierarchical DB into (address, path) pairs."""
-    db = HierarchicalChannelDatabase(str(paths.hierarchical_db))
-    db.load_database()
-    return [
-        HierarchicalChannel(address=ch["address"], path=ch["path"]) for ch in db.get_all_channels()
-    ]
+    return load_hierarchical_namespace(paths).channels
 
 
 def load_in_context_addresses(paths: ManifestPaths = PACKAGE_PATHS) -> set[str]:
@@ -94,13 +126,38 @@ def load_machine_json_channels(
 
 # --- file-backed channel source ------------------------------------------
 
-# The full per-channel schema build_records() consumes -- identical to the
+# The full per-channel schema the serving layer consumes -- identical to the
 # in-memory shape build_manifest()["channels"] produces. A file-backed
-# manifest must supply every key for every channel; the identity keys
-# (ring/system/family/device/field) may be empty strings only if the
-# facility accepts the pairing collisions that implies (setpoint/readback
-# pairs are matched on exactly those five keys).
+# manifest must supply every key for every channel:
+#
+#   address      the PV name served
+#   path         the channel's hierarchy path, keyed by the levels its
+#                database declares ({} when it carries none)
+#   pair_key     the identity a setpoint and its readback share -- the
+#                serving layer pairs the two halves on exactly this string --
+#                or "" for a channel in no pair
+#   role         "setpoint", "readback", or "" (see channel_grammar.ROLES)
+#   partition    pyat-coupled / sp-echo / static-noisy
+#   record_type  the EPICS record type (see classify)
+#   noise        whether the IOC jitters the value
 MANIFEST_CHANNEL_KEYS = frozenset(
+    {
+        "address",
+        "path",
+        "pair_key",
+        "role",
+        "partition",
+        "record_type",
+        "noise",
+    }
+)
+
+# The schema the manifest carried before the channel grammar: the reference
+# facility's six level names as top-level keys, setpoint and readback told
+# apart by ``subfield``. Still accepted from a file, and normalized into the
+# schema above on load, so a facility that wrote its manifest against the
+# older shape keeps booting.
+LEGACY_MANIFEST_CHANNEL_KEYS = frozenset(
     {
         "address",
         "ring",
@@ -114,6 +171,7 @@ MANIFEST_CHANNEL_KEYS = frozenset(
         "noise",
     }
 )
+_LEGACY_IDENTITY_KEYS = ("ring", "system", "family", "device", "field")
 
 
 class ManifestFileError(RuntimeError):
@@ -122,6 +180,63 @@ class ManifestFileError(RuntimeError):
     Raised eagerly at load time so a misconfigured IOC dies at boot with a
     named cause, never serving a partial channel set.
     """
+
+
+def channel_from_legacy(channel: dict) -> dict:
+    """Normalize a six-key (pre-grammar) manifest channel into the current schema.
+
+    The six keys become the ``path``; ``subfield`` ``SP``/``RB`` becomes the
+    ``role``, and the five identity keys joined with the ``SP`` token become
+    the ``pair_key`` -- exactly the pairing the serving layer used to derive
+    from those keys itself. A channel whose subfield is neither is in no
+    pair.
+    """
+    path = {level: channel[level] for level in BUILTIN_GRAMMAR.levels}
+    subfield = channel["subfield"]
+    if subfield == BUILTIN_SETPOINT_TOKEN:
+        role = ROLE_SETPOINT
+    elif subfield == BUILTIN_READBACK_TOKEN:
+        role = ROLE_READBACK
+    else:
+        role = ROLE_NONE
+    pair_key = ""
+    if role != ROLE_NONE:
+        pair_key = BUILTIN_GRAMMAR.identity(path) + PAIR_KEY_SEPARATOR + BUILTIN_SETPOINT_TOKEN
+    return {
+        "address": channel["address"],
+        "path": path,
+        "pair_key": pair_key,
+        "role": role,
+        "partition": channel["partition"],
+        "record_type": channel["record_type"],
+        "noise": channel["noise"],
+    }
+
+
+def _validate_channel_shape(path: Path, index: int, channel: dict) -> None:
+    """Refuse a current-schema channel whose values cannot be served."""
+    address = channel["address"]
+    if not isinstance(channel["path"], dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in channel["path"].items()
+    ):
+        raise ManifestFileError(
+            f"channel manifest {path}: channels[{index}] ({address!r}) 'path' must be an "
+            "object mapping level names to strings"
+        )
+    if channel["role"] not in ROLES:
+        raise ManifestFileError(
+            f"channel manifest {path}: channels[{index}] ({address!r}) has role "
+            f"{channel['role']!r}; it must be one of {sorted(ROLES)}"
+        )
+    if not isinstance(channel["pair_key"], str):
+        raise ManifestFileError(
+            f"channel manifest {path}: channels[{index}] ({address!r}) 'pair_key' must be a string"
+        )
+    if channel["role"] != ROLE_NONE and not channel["pair_key"]:
+        raise ManifestFileError(
+            f"channel manifest {path}: channels[{index}] ({address!r}) has role "
+            f"{channel['role']!r} but no 'pair_key' to pair on"
+        )
 
 
 def load_manifest_file(path: Path) -> list[dict]:
@@ -133,12 +248,14 @@ def load_manifest_file(path: Path) -> list[dict]:
     (see ``MANIFEST_CHANNEL_KEYS``). Facility-neutral by construction -- no
     address grammar is imposed beyond the presence of the schema keys, so
     any facility's namespace (three-part addresses included) loads through
-    the same call.
+    the same call. A channel written against the older six-key schema
+    (``LEGACY_MANIFEST_CHANNEL_KEYS``) is accepted and normalized.
 
     Raises:
         ManifestFileError: if the file is absent, not valid JSON, lacks a
             top-level ``channels`` list, contains a channel missing schema
-            keys, or declares the same address twice.
+            keys or carrying an unservable value, or declares the same
+            address twice.
     """
     if not path.is_file():
         raise ManifestFileError(f"channel manifest file not found: {path}")
@@ -153,11 +270,15 @@ def load_manifest_file(path: Path) -> list[dict]:
             f"channel manifest {path} must be a JSON object with a 'channels' list"
         )
 
+    loaded: list[dict] = []
     seen: set[str] = set()
     for index, channel in enumerate(channels):
         if not isinstance(channel, dict):
             raise ManifestFileError(f"channel manifest {path}: channels[{index}] is not an object")
         missing = MANIFEST_CHANNEL_KEYS - channel.keys()
+        if missing and not (LEGACY_MANIFEST_CHANNEL_KEYS - channel.keys()):
+            channel = channel_from_legacy(channel)
+            missing = frozenset()
         if missing:
             raise ManifestFileError(
                 f"channel manifest {path}: channels[{index}] "
@@ -172,8 +293,10 @@ def load_manifest_file(path: Path) -> list[dict]:
         if address in seen:
             raise ManifestFileError(f"channel manifest {path}: duplicate address {address!r}")
         seen.add(address)
+        _validate_channel_shape(path, index, channel)
+        loaded.append(channel)
 
-    return channels
+    return loaded
 
 
 # Matches `"<address>": { "label": ...` entries in machine_state_channels.json
@@ -192,9 +315,8 @@ def load_machine_state_candidate_addresses(paths: ManifestPaths = PACKAGE_PATHS)
     The caller (``manifest/build.py``) checks each candidate against the
     addresses the VA actually serves and publishes the split under
     ``_metadata.machine_state_reconciliation`` as ``candidates_checked`` /
-    ``valid`` / ``invalid``, so an address that drifts out of the
-    ``RING:SYSTEM:FAMILY:DEVICE:FIELD:SUBFIELD`` namespace shows up in the
-    manifest instead of failing silently.
+    ``valid`` / ``invalid``, so an address that drifts out of the served
+    namespace shows up in the manifest instead of failing silently.
     """
     text = paths.machine_state_channels.read_text()
     return _MACHINE_STATE_KEY_RE.findall(text)

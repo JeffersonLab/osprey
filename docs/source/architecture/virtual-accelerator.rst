@@ -54,6 +54,18 @@ three physics-fidelity partitions:
    ``machine.json`` — with the ``mock`` connector's synthesis as the fallback,
    so the two backends never disagree about a channel neither has data for.
 
+The manifest is built against the *channel grammar* the facility's
+hierarchical database declares — its ``hierarchy.levels`` and the
+``hierarchy.pairing`` block that says which level tells a setpoint from its
+readback and by which token pairs (see :ref:`channel-finder-db-hierarchical`).
+Each manifest channel carries its ``path`` keyed by those levels, and a
+``pair_key`` and ``role`` the serving layer pairs on; no level name of any
+one facility is read downstream. The pyat-coupled partition exists for the
+built-in grammar alone, the one the bundled facility spec describes; a
+database with levels of its own is partitioned by role, every declared pair
+whose two halves are served becoming an sp-echo pair and everything else
+static-noisy — a physics-free accelerator on the facility's own names.
+
 The authoritative channel count lives in the manifest's
 ``_metadata.total_channels`` — a few thousand addresses — rather than in prose
 that would rot.

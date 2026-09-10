@@ -97,7 +97,7 @@ class TestPyatCoupledCountMatchesSpec:
         assert len(pyat_coupled_channels) == expected
 
     def test_per_family_counts_match_spec_device_counts(self, pyat_coupled_channels):
-        by_family = Counter(c["family"] for c in pyat_coupled_channels)
+        by_family = Counter(c["path"]["family"] for c in pyat_coupled_channels)
         for fam in ALS_U_AR.families:
             if fam.kind in ("magnet", "corrector"):
                 assert by_family[fam.name] == fam.count * 2, fam.name
@@ -131,7 +131,7 @@ class TestBrBtsSpEchoAddressesStillCovered:
         br_bts_echo = [
             c["address"]
             for c in manifest_channels
-            if c["partition"] == "sp-echo" and c["ring"] in ("BR", "BTS")
+            if c["partition"] == "sp-echo" and c["path"]["ring"] in ("BR", "BTS")
         ]
         assert br_bts_echo, "expected BR/BTS sp-echo channels to exist"
         missing = [addr for addr in br_bts_echo if addr not in machine_channels]
@@ -163,7 +163,9 @@ class TestSrCorrectorsAreZeroed:
         correctors = [
             c
             for c in pyat_coupled_channels
-            if c["ring"] == "SR" and c["family"] in corrector_families and c["field"] == "CURRENT"
+            if c["path"]["ring"] == "SR"
+            and c["path"]["family"] in corrector_families
+            and c["path"]["field"] == "CURRENT"
         ]
         expected_count = sum(ALS_U_AR.family(name).count for name in corrector_families) * 2
         assert len(correctors) == expected_count
@@ -179,7 +181,11 @@ class TestSrBpmPositionsAreZeroed:
     def test_sr_bpm_positions_zeroed_with_ideal_orbit_description(
         self, pyat_coupled_channels, machine_channels
     ):
-        bpms = [c for c in pyat_coupled_channels if c["ring"] == "SR" and c["family"] == "BPM"]
+        bpms = [
+            c
+            for c in pyat_coupled_channels
+            if c["path"]["ring"] == "SR" and c["path"]["family"] == "BPM"
+        ]
         expected_count = ALS_U_AR.family("BPM").count * 2
         assert len(bpms) == expected_count
         for c in bpms:
@@ -201,10 +207,10 @@ class TestQfaShfShdCarryGenuineAnchors:
         setpoints = [
             c
             for c in pyat_coupled_channels
-            if c["ring"] == "SR"
-            and c["family"] == family_name
-            and c["field"] == "CURRENT"
-            and c["subfield"] == "SP"
+            if c["path"]["ring"] == "SR"
+            and c["path"]["family"] == family_name
+            and c["path"]["field"] == "CURRENT"
+            and c["role"] == "setpoint"
         ]
         assert len(setpoints) == expected_count
         for c in setpoints:

@@ -67,12 +67,11 @@ from osprey.services.virtual_accelerator.manifest import (
     RECORD_TYPE_LONG_STRING,
     RECORD_TYPE_MBB,
     RECORD_TYPE_STRING,
+    ROLE_READBACK,
+    ROLE_SETPOINT,
 )
 
 LOG = logging.getLogger(__name__)
-
-SETPOINT_SUBFIELD = "SP"
-READBACK_SUBFIELD = "RB"
 
 # Gateway "long string" channels are 512-byte char waveforms. The width is
 # declared explicitly (never derived from the boot value's length) so a wire
@@ -324,15 +323,17 @@ class ServingRecords:
     partitions the value sources consume: ``pyat_coupled`` is what
     ``PhysicsBridge.bind()`` takes, ``static_noisy`` is what ``EngineSource``
     drives, and ``all`` is every record by address for whole-namespace
-    consumers. ``setpoint_readbacks`` maps each writable ``:SP`` address to
-    its paired ``:RB`` address, which is the echo the write path owes a
-    client on an accepted write.
+    consumers. ``setpoints`` is every record the manifest gave the setpoint
+    role, paired or not; ``setpoint_readbacks`` maps each setpoint address
+    that has a readback to that readback's address, which is the echo the
+    write path owes a client on an accepted write.
     """
 
     pvdb: dict[str, dict[str, Any]] = field(default_factory=dict)
     all: dict[str, PVRecord] = field(default_factory=dict)
     pyat_coupled: dict[str, PVRecord] = field(default_factory=dict)
     static_noisy: dict[str, PVRecord] = field(default_factory=dict)
+    setpoints: dict[str, PVRecord] = field(default_factory=dict)
     setpoint_readbacks: dict[str, str] = field(default_factory=dict)
 
     def attach_driver(
@@ -368,24 +369,9 @@ class ServingRecords:
                 record.reconcile_pva()
 
 
-def _channel_key(channel: dict) -> tuple[str, str, str, str, str]:
-    """Identity of a channel's device+field, independent of subfield.
-
-    Two channels sharing this key and differing only in subfield (SP vs RB)
-    are the two halves of one setpoint/readback pair.
-    """
-    return (
-        channel["ring"],
-        channel["system"],
-        channel["family"],
-        channel["device"],
-        channel["field"],
-    )
-
-
 def _initial_value(channel: dict, boot_values: dict[str, Any] | None) -> Any:
     """Boot value for one channel: the type default, unless this is a
-    ``:SP``/``:RB`` channel with its own seed in ``boot_values``.
+    setpoint or readback channel with its own seed in ``boot_values``.
 
     Restricting the seed to setpoints and their readbacks is deliberate:
     those are the channels whose boot state is a machine state worth
@@ -394,7 +380,7 @@ def _initial_value(channel: dict, boot_values: dict[str, Any] | None) -> Any:
     """
     record_type = channel["record_type"]
     default = _DEFAULT_VALUE[record_type]
-    if boot_values is None or channel["subfield"] not in (SETPOINT_SUBFIELD, READBACK_SUBFIELD):
+    if boot_values is None or channel["role"] not in (ROLE_SETPOINT, ROLE_READBACK):
         return _COERCE[record_type](default)
     return _COERCE[record_type](boot_values.get(channel["address"], default))
 
@@ -410,9 +396,11 @@ def build_serving_pvdb(
 
     Args:
         channels: the ``channels`` list of the namespace-union manifest;
-            each entry needs ``address``, ``ring``, ``system``, ``family``,
-            ``device``, ``field``, ``subfield``, ``partition``,
-            ``record_type`` and ``noise``.
+            each entry needs ``address``, ``pair_key``, ``role``,
+            ``partition``, ``record_type`` and ``noise`` (the schema
+            ``manifest.MANIFEST_CHANNEL_KEYS`` documents). A setpoint and its
+            readback are the two channels sharing a non-empty ``pair_key``
+            with the two roles; the hierarchy path is never read here.
         drive_limits: optional ``{address: (low, high)}`` map, applied as the
             PV's ``lolim``/``hilim`` control band -- the DRVL/DRVH a client
             reads. Never alarm limits (see the module docstring). This module
@@ -420,11 +408,11 @@ def build_serving_pvdb(
             is the caller's job. The server does not enforce the band on a
             write; the write path clamps to it.
         boot_values: optional ``{address: value}`` map giving boot-time
-            values for ``:SP``/``:RB`` channels (e.g. derived from a
+            values for setpoint and readback channels (e.g. derived from a
             scenario's ``machine.json`` by the caller -- this module never
-            loads it). Any other channel, and any ``:SP``/``:RB`` with no
-            entry, boots at its type default (0.0 / 0 / "").
-        async_setpoints: declare every ``:SP`` PV as an asynchronous write
+            loads it). Any other channel, and any setpoint or readback with
+            no entry, boots at its type default (0.0 / 0 / "").
+        async_setpoints: declare every setpoint PV as an asynchronous write
             (``asyn``). Off by default, because an asynchronous PV leaves the
             client blocked until the driver explicitly completes the write:
             only a write path that does complete it may turn this on.
@@ -439,7 +427,7 @@ def build_serving_pvdb(
             the serving layer relies on.
     """
     records = ServingRecords()
-    readback_addresses: dict[tuple[str, str, str, str, str], str] = {}
+    readback_addresses: dict[str, str] = {}
     setpoint_channels: list[dict] = []
 
     for channel in channels:
@@ -461,7 +449,12 @@ def build_serving_pvdb(
             low, high = drive_limits[address]
             spec["lolim"] = float(low)
             spec["hilim"] = float(high)
-        if async_setpoints and channel["subfield"] == SETPOINT_SUBFIELD:
+        role = channel["role"]
+        if role in (ROLE_SETPOINT, ROLE_READBACK) and not channel["pair_key"]:
+            raise ManifestContractError(
+                f"channel {address!r} has role {role!r} but no pair_key to pair on"
+            )
+        if async_setpoints and role == ROLE_SETPOINT:
             spec["asyn"] = True
 
         record = PVRecord(address, spec, _COERCE[record_type])
@@ -474,19 +467,20 @@ def build_serving_pvdb(
         elif partition == PARTITION_STATIC_NOISY:
             records.static_noisy[address] = record
 
-        if channel["subfield"] == READBACK_SUBFIELD:
-            readback_addresses[_channel_key(channel)] = address
-        elif channel["subfield"] == SETPOINT_SUBFIELD:
+        if role == ROLE_READBACK:
+            readback_addresses[channel["pair_key"]] = address
+        elif role == ROLE_SETPOINT:
+            records.setpoints[address] = record
             setpoint_channels.append(channel)
 
     for channel in setpoint_channels:
-        readback = readback_addresses.get(_channel_key(channel))
+        readback = readback_addresses.get(channel["pair_key"])
         if readback is None:
             if channel["partition"] == PARTITION_SP_ECHO:
                 # An echo setpoint with nothing to echo into would accept
                 # writes that no client could ever observe.
                 raise ManifestContractError(
-                    f"sp-echo setpoint {channel['address']!r} has no matching RB readback channel"
+                    f"sp-echo setpoint {channel['address']!r} has no matching readback channel"
                 )
             # A pyat-coupled setpoint may legitimately stand alone (a
             # synthetic single-channel set); its physics effect is observed
@@ -504,8 +498,6 @@ __all__ = [
     "LONG_STRING_LENGTH",
     "MBB_ENUM_STATES",
     "MBB_STATE_COUNT",
-    "READBACK_SUBFIELD",
-    "SETPOINT_SUBFIELD",
     "STRING_LENGTH",
     "ManifestContractError",
     "PVRecord",

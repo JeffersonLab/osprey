@@ -46,6 +46,7 @@ from osprey.services.virtual_accelerator.manifest import (
     PARTITION_STATIC_NOISY,
     RECORD_TYPE_ANALOG,
     RECORD_TYPE_BINARY,
+    channel_from_legacy,
 )
 from osprey.services.virtual_accelerator.serving.pvdb import (
     PVRecord,
@@ -104,18 +105,20 @@ def _channel(
     field: str = "VALUE",
 ) -> dict:
     """One synthetic manifest channel, in the shape ``build_manifest()`` emits."""
-    return {
-        "address": address,
-        "ring": "ZZES",
-        "system": system,
-        "family": family,
-        "device": device,
-        "field": field,
-        "subfield": subfield,
-        "partition": partition,
-        "record_type": record_type,
-        "noise": noise,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": "ZZES",
+            "system": system,
+            "family": family,
+            "device": device,
+            "field": field,
+            "subfield": subfield,
+            "partition": partition,
+            "record_type": record_type,
+            "noise": noise,
+        }
+    )
 
 
 # Telemetry (partition c) plus one sp-echo pair. The pair is what the

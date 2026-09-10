@@ -1492,6 +1492,45 @@ def _named_in_prose(names: Sequence[str]) -> str:
     return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
+def _prepare_va_manifest(
+    build_profile,
+    data_root: Path,
+    tier: int,
+    *,
+    config: dict | None = None,
+):
+    """Prepare the virtual-accelerator manifest, refusing only for an accelerator that deploys.
+
+    The manifest is prepared for every render (the memoization is the
+    build's), but a data tree it cannot be built from -- a seed file that is
+    not JSON, a pairing declaration that claims a channel twice -- is only a
+    reason to stop when a virtual accelerator would serve it. A deployment
+    with no simulator is told what could not be built and continues, since
+    nothing in it reads the manifest.
+
+    Returns:
+        What :func:`~osprey.services.virtual_accelerator.manifest.build.prepare_project_manifest`
+        returns, or ``None`` after reporting when it refused and no virtual
+        accelerator is deployed.
+
+    Raises:
+        BuildProfileError: the generator's own refusal, when a virtual
+            accelerator is deployed.
+    """
+    from osprey.services.virtual_accelerator.manifest.build import prepare_project_manifest
+
+    try:
+        return prepare_project_manifest(data_root, tier, config=config)
+    except BuildProfileError as exc:
+        if build_profile.deploy_services and build_profile.virtual_accelerator is not None:
+            raise
+        _report_fact(
+            "Virtual-accelerator channel manifest not generated; no virtual accelerator is "
+            f"deployed, so the build continues without one: {exc}"
+        )
+        return None
+
+
 def _report_va_manifest_outcome(
     shared: _SharedRenderInputs,
     build_profile: Any,
@@ -1890,10 +1929,7 @@ def _render_project(
     from osprey.build.build_tiers import tier_mode_conflict
     from osprey.build.claude_code_resolver import load_provider_spec
     from osprey.deployment.reach import reach_errors
-    from osprey.services.virtual_accelerator.manifest.build import (
-        prepare_project_manifest,
-        write_project_manifest,
-    )
+    from osprey.services.virtual_accelerator.manifest.build import write_project_manifest
 
     from .build_posture_check import missing_posture_errors
     from .build_profile_archiver import va_archiver_config_overrides
@@ -1991,7 +2027,7 @@ def _render_project(
     assert va_data_root is not None  # `data:` required; narrows for type-checkers
     va_key = (str(va_data_root), build_profile.resolved_tier())
     if va_key not in shared.va_manifests:
-        shared.va_manifests[va_key] = prepare_project_manifest(va_data_root, va_key[1])
+        shared.va_manifests[va_key] = _prepare_va_manifest(build_profile, va_data_root, va_key[1])
     prepared_va_manifest = shared.va_manifests[va_key]
     # A graph-mode tree that stages no paradigm database is not yet a verdict:
     # its channels live in the knowledge-graph corpus, and the corpus is a
@@ -2266,8 +2302,8 @@ def _render_project(
             # the same resolution every other roster consumer applies. The refusal
             # (a virtual accelerator with an unreadable or empty corpus) fires
             # here, still before anything is published outside the render zone.
-            prepared_va_manifest = prepare_project_manifest(
-                va_data_root, va_key[1], config=rendered
+            prepared_va_manifest = _prepare_va_manifest(
+                build_profile, va_data_root, va_key[1], config=rendered
             )
             shared.va_manifests[va_key] = prepared_va_manifest
             _report_va_manifest_outcome(

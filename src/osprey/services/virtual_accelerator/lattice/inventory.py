@@ -39,12 +39,12 @@ def pyat_coupled_device_ids() -> dict[str, list[str]]:
     for ch in manifest["channels"]:
         if ch["partition"] != PARTITION_PYAT_COUPLED:
             continue
-        family = ch["family"]
+        family = ch["path"]["family"]
         if family not in PYAT_COUPLED_FAMILIES:
             raise ValueError(
                 f"unexpected pyat-coupled family '{family}' not in {sorted(PYAT_COUPLED_FAMILIES)}; "
                 "the manifest's partition (a) classification changed -- update this module to match"
             )
-        devices.setdefault(family, set()).add(ch["device"])
+        devices.setdefault(family, set()).add(ch["path"]["device"])
 
     return {family: sorted(ids) for family, ids in devices.items()}

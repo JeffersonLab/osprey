@@ -61,6 +61,44 @@ addresses follow, with the tree itself underneath:
      "tree": { }
    }
 
+The level names are the facility's own; nothing downstream assumes these
+five. The one further thing a consumer of the grammar needs, and only the
+database can state, is how a setpoint is told from its readback. The
+optional ``pairing`` block beside ``levels`` names the level whose token
+distinguishes them (default: the last level) and the token pairs, each
+optionally restricted with ``where`` to the channels whose path takes one of
+the listed values at a level:
+
+.. code-block:: json
+
+   {
+     "hierarchy": {
+       "levels": [
+         {"name": "system", "type": "tree"},
+         {"name": "family", "type": "tree"},
+         {"name": "sector", "type": "tree"},
+         {"name": "device", "type": "instances"},
+         {"name": "property", "type": "tree"}
+       ],
+       "naming_pattern": "{system}{family}{sector}{device}{property}",
+       "pairing": {
+         "level": "property",
+         "pairs": [
+           {"setpoint": ".S", "readback": "M", "where": {"system": ["M"]}},
+           {"setpoint": "GSET", "readback": "GMES"},
+           {"setpoint": "Preset_Volt", "readback": "HVPSkVolts"}
+         ]
+       }
+     },
+     "tree": { }
+   }
+
+A database that declares no ``pairing`` block keeps the ``SP``/``RB``
+convention when it declares a level named ``subfield``, and otherwise pairs
+nothing. The virtual accelerator reads this block to serve setpoint-echo
+pairs on the facility's own names (see :doc:`/architecture/virtual-accelerator`);
+a malformed block is refused when the database loads.
+
 .. _channel-finder-db-middle-layer:
 
 Middle-layer

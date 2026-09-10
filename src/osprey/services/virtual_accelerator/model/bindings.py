@@ -51,8 +51,8 @@ def _setpoint_variable(
     **scalar_kwargs: Any,
 ) -> CurrentSetpointVariable:
     """Build one magnet/corrector setpoint bound to its ring element."""
-    family = channel["family"]
-    device_id = channel["device"]
+    family = channel["path"]["family"]
+    device_id = channel["path"]["device"]
     return CurrentSetpointVariable(
         strength_map=strength_map,
         family=family,
@@ -68,11 +68,12 @@ def _setpoint_variable(
 
 def _monitor_variable(channel: dict, **scalar_kwargs: Any) -> PyATReadOnlyScalarVariable:
     """Build one BPM position reading bound to its monitor and axis."""
+    path = channel["path"]
     return PyATReadOnlyScalarVariable(
-        element_name=f"{channel['family']}{channel['device']}",
+        element_name=f"{path['family']}{path['device']}",
         # Same reasoning as the declared attribute above: an unmapped
         # subfield surfaces as the variable rejecting the axis.
-        axis=_AXIS_BY_SUBFIELD.get(channel["subfield"]),
+        axis=_AXIS_BY_SUBFIELD.get(path.get("subfield")),
         **scalar_kwargs,
     )
 

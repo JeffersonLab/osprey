@@ -26,6 +26,7 @@ from osprey.services.virtual_accelerator.manifest import (
     RECORD_TYPE_MBB,
     RECORD_TYPE_STRING,
     build_manifest,
+    channel_from_legacy,
 )
 from osprey.services.virtual_accelerator.serving.pvdb import (
     ALARM_LIMIT_KEYS,
@@ -68,18 +69,20 @@ def _channel(
     field: str = "VALUE",
 ) -> dict:
     """One synthetic manifest channel."""
-    return {
-        "address": address,
-        "ring": ring,
-        "system": system,
-        "family": family,
-        "device": device,
-        "field": field,
-        "subfield": subfield,
-        "partition": partition,
-        "record_type": record_type,
-        "noise": noise,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": ring,
+            "system": system,
+            "family": family,
+            "device": device,
+            "field": field,
+            "subfield": subfield,
+            "partition": partition,
+            "record_type": record_type,
+            "noise": noise,
+        }
+    )
 
 
 def _sp_rb_pair(prefix: str, *, partition: str = PARTITION_SP_ECHO) -> list[dict]:
@@ -877,7 +880,7 @@ class TestContractViolations:
                 field="VOLTAGE",
             )
         ]
-        with pytest.raises(ManifestContractError, match="no matching RB"):
+        with pytest.raises(ManifestContractError, match="no matching readback"):
             build_serving_pvdb(channels)
 
 

@@ -19,6 +19,7 @@ from osprey.services.virtual_accelerator.manifest import (
     PARTITION_STATIC_NOISY,
     RECORD_TYPE_ANALOG,
     RECORD_TYPE_BINARY,
+    channel_from_legacy,
 )
 from osprey.simulation.engine import SimulationEngine
 
@@ -46,18 +47,20 @@ TEST_MACHINE = {
 
 def _channel(address: str, *, record_type: str, noise: bool) -> dict:
     """One synthetic manifest-entry dict, matching what build_manifest() emits."""
-    return {
-        "address": address,
-        "ring": "ZZTEST",
-        "system": "VAC",
-        "family": "GAUGE",
-        "device": "01",
-        "field": "PRESSURE",
-        "subfield": "RB",
-        "partition": PARTITION_STATIC_NOISY,
-        "record_type": record_type,
-        "noise": noise,
-    }
+    return channel_from_legacy(
+        {
+            "address": address,
+            "ring": "ZZTEST",
+            "system": "VAC",
+            "family": "GAUGE",
+            "device": "01",
+            "field": "PRESSURE",
+            "subfield": "RB",
+            "partition": PARTITION_STATIC_NOISY,
+            "record_type": record_type,
+            "noise": noise,
+        }
+    )
 
 
 CHANNELS = [

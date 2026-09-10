@@ -35,6 +35,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from osprey.errors import BuildProfileError
+from osprey.services.channel_finder.databases.channel_grammar import (
+    ROLE_NONE,
+    ROLE_READBACK,
+    ROLE_SETPOINT,
+    ChannelGrammar,
+    GrammarError,
+)
 
 from . import classify, loaders
 from .paths import MANIFEST_OUTPUT, PACKAGE_PATHS, ManifestPaths
@@ -51,15 +58,19 @@ LIMITS_FILENAME = "channel_limits.json"
 
 @dataclass(frozen=True)
 class ManifestEntry:
-    """One channel in the emitted manifest."""
+    """One channel in the emitted manifest.
+
+    ``path`` is the channel's hierarchy path keyed by the levels its database
+    declares (empty for a channel with none). ``pair_key`` is the identity a
+    setpoint shares with its readback and ``role`` which half this channel
+    is -- the two things the serving layer pairs on, so it never reads the
+    path itself and no level name of any one facility is assumed there.
+    """
 
     address: str
-    ring: str
-    system: str
-    family: str
-    device: str
-    field: str
-    subfield: str
+    path: dict[str, str]
+    pair_key: str
+    role: str
     partition: str
     record_type: str
     noise: bool
@@ -70,21 +81,18 @@ def _pathless_entry(address: str, *, noise: bool) -> ManifestEntry:
 
     Two sources produce these: an address seeded only by ``machine.json``, and
     every address of a tree that stages no ``hierarchical`` database. The
-    identity keys are empty, which is what the file-backed manifest schema
-    allows and what ``loaders.MANIFEST_CHANNEL_KEYS`` documents the cost of:
-    setpoint and readback are paired on exactly those five keys, so a channel
-    without them pairs with nothing. Classification cannot be better than the
-    input, so the entry lands where an unclassifiable address belongs, in the
-    partition the simulation engine drives.
+    path is empty and the channel is in no pair, which is what the file-backed
+    manifest schema allows and what ``loaders.MANIFEST_CHANNEL_KEYS``
+    documents the cost of: setpoint and readback are paired on ``pair_key``,
+    so a channel without one pairs with nothing. Classification cannot be
+    better than the input, so the entry lands where an unclassifiable address
+    belongs, in the partition the simulation engine drives.
     """
     return ManifestEntry(
         address=address,
-        ring="",
-        system="",
-        family="",
-        device="",
-        field="",
-        subfield="",
+        path={},
+        pair_key="",
+        role=ROLE_NONE,
         partition=classify.PARTITION_STATIC_NOISY,
         record_type=classify.RECORD_TYPE_ANALOG,
         noise=noise,
@@ -142,24 +150,30 @@ class ParadigmExpansion:
             corrupt.
         hierarchy_paths: The hierarchy path per address, from the
             ``hierarchical`` database when it loaded; empty otherwise.
+        grammar: The channel grammar the ``hierarchical`` database declared,
+            when it loaded; ``None`` otherwise.
         corrupt: The staged databases that are present and could not be read,
             in read order. Each contributed zero addresses.
     """
 
     addresses: dict[str, set[str]]
     hierarchy_paths: dict[str, dict[str, str]]
+    grammar: ChannelGrammar | None
     corrupt: tuple[CorruptParadigm, ...]
 
 
-def _hierarchical_expansion(paths: ManifestPaths) -> tuple[set[str], dict[str, dict[str, str]]]:
-    """Expand the hierarchical database into its addresses and their paths.
+def _hierarchical_expansion(
+    paths: ManifestPaths,
+) -> tuple[set[str], dict[str, dict[str, str]], ChannelGrammar]:
+    """Expand the hierarchical database into its addresses, paths and grammar.
 
     It is the one paradigm that declares a hierarchy path, and it is read once
     here so the manifest never re-opens a file this expansion already found
     unreadable.
     """
-    by_address = {c.address: c.path for c in loaders.load_hierarchical_channels(paths)}
-    return set(by_address), by_address
+    namespace = loaders.load_hierarchical_namespace(paths)
+    by_address = {c.address: c.path for c in namespace.channels}
+    return set(by_address), by_address, namespace.grammar
 
 
 def _paradigm_addresses(paths: ManifestPaths) -> ParadigmExpansion:
@@ -183,15 +197,16 @@ def _paradigm_addresses(paths: ManifestPaths) -> ParadigmExpansion:
     """
     loader_by_paradigm = {
         "hierarchical": lambda: _hierarchical_expansion(paths),
-        "in_context": lambda: (loaders.load_in_context_addresses(paths), {}),
-        "middle_layer": lambda: (loaders.load_middle_layer_addresses(paths), {}),
+        "in_context": lambda: (loaders.load_in_context_addresses(paths), {}, None),
+        "middle_layer": lambda: (loaders.load_middle_layer_addresses(paths), {}, None),
     }
     addresses: dict[str, set[str]] = {}
     hierarchy_paths: dict[str, dict[str, str]] = {}
+    grammar: ChannelGrammar | None = None
     corrupt: list[CorruptParadigm] = []
     for name in paths.staged_paradigms:
         try:
-            expanded, paths_by_address = loader_by_paradigm[name]()
+            expanded, paths_by_address, declared_grammar = loader_by_paradigm[name]()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "The tier-%d %s channel database at %s is present and could not be read "
@@ -212,8 +227,13 @@ def _paradigm_addresses(paths: ManifestPaths) -> ParadigmExpansion:
             continue
         addresses[name] = expanded
         hierarchy_paths.update(paths_by_address)
+        if declared_grammar is not None:
+            grammar = declared_grammar
     return ParadigmExpansion(
-        addresses=addresses, hierarchy_paths=hierarchy_paths, corrupt=tuple(corrupt)
+        addresses=addresses,
+        hierarchy_paths=hierarchy_paths,
+        grammar=grammar,
+        corrupt=tuple(corrupt),
     )
 
 
@@ -292,38 +312,19 @@ def build_manifest(paths: ManifestPaths = PACKAGE_PATHS) -> dict:
                 f"only-in-{paradigm}(sample)={only_other}"
             )
 
-    # The hierarchy path is what a channel's identity keys are read from, and
-    # only the hierarchical database declares one. Absent -- or staged and
-    # unreadable -- every channel is classified the way a machine.json-only
-    # address already is.
+    # The hierarchy path is what a channel's identity is read from, and only
+    # the hierarchical database declares one -- together with the grammar the
+    # path is read against. Absent -- or staged and unreadable -- every
+    # channel is classified the way a machine.json-only address already is.
     path_by_address = expansion.hierarchy_paths
+    grammar = expansion.grammar
 
-    entries: list[ManifestEntry] = []
-    for address in sorted(addresses):
-        path = path_by_address.get(address)
-        if path is None:
-            entries.append(_pathless_entry(address, noise=False))
-            continue
-        partition = classify.classify_partition(path)
-        record_type, noise = classify.derive_record_type(path)
-        entries.append(
-            ManifestEntry(
-                address=address,
-                ring=path["ring"],
-                system=path["system"],
-                family=path["family"],
-                device=path["device"],
-                field=path["field"],
-                subfield=path["subfield"],
-                partition=partition,
-                record_type=record_type,
-                noise=noise,
-            )
-        )
+    entries = _hierarchical_entries(sorted(addresses), path_by_address, grammar)
 
     return _finish_manifest(
         entries,
         paths,
+        grammar=grammar,
         source_paradigms=list(expansion.addresses),
         absent_paradigms=list(paths.absent_paradigms),
         corrupt_paradigms=[
@@ -337,10 +338,77 @@ def build_manifest(paths: ManifestPaths = PACKAGE_PATHS) -> dict:
     )
 
 
+def _hierarchical_entries(
+    addresses: list[str],
+    path_by_address: dict[str, dict[str, str]],
+    grammar: ChannelGrammar | None,
+) -> list[ManifestEntry]:
+    """Manifest entries for the addresses a paradigm-database tree expands to.
+
+    A channel with a hierarchy path is read against *grammar*, the one its
+    database declared: its role and pair key come from the grammar's declared
+    token pairs, and its partition from :func:`classify.classify_partition`,
+    which applies the built-in facility spec's rules to the built-in grammar
+    and the role-derived rules to every other. A role is the grammar's word
+    and is carried whether or not the other half exists; an echo pair needs
+    both halves in the namespace being served, so a setpoint whose declared
+    readback the database does not expand to keeps its role but lands
+    static-noisy, and the IOC never accepts a write it could not echo
+    anywhere.
+
+    Args:
+        addresses: The namespace, in the order the entries are emitted.
+        path_by_address: The hierarchy path per address, for those that have
+            one.
+        grammar: The grammar the paths are read against; ``None`` only when
+            no path was read (no hierarchical database loaded), in which
+            case every address is pathless.
+
+    Raises:
+        GrammarError: if a declared pair claims a channel's token ambiguously.
+    """
+    # Which pairing-level tokens the namespace serves on each device identity,
+    # so an echo pair is declared only when its other half is really there.
+    served_tokens: dict[str, set[str]] = {}
+    if grammar is not None:
+        for path in path_by_address.values():
+            served_tokens.setdefault(grammar.identity(path), set()).add(grammar.token(path))
+
+    entries: list[ManifestEntry] = []
+    for address in addresses:
+        path = path_by_address.get(address)
+        if path is None or grammar is None:
+            entries.append(_pathless_entry(address, noise=False))
+            continue
+        pairing = grammar.pairing(path)
+        if pairing is None:
+            role, pair_key, counterpart_served = ROLE_NONE, "", False
+        else:
+            role, pair_key = pairing.role, pairing.pair_key
+            counterpart_served = pairing.counterpart in served_tokens[grammar.identity(path)]
+        partition = classify.classify_partition(
+            path, grammar, role=role, counterpart_served=counterpart_served
+        )
+        record_type, noise = classify.derive_record_type(path, grammar)
+        entries.append(
+            ManifestEntry(
+                address=address,
+                path=dict(path),
+                pair_key=pair_key,
+                role=role,
+                partition=partition,
+                record_type=record_type,
+                noise=noise,
+            )
+        )
+    return entries
+
+
 def _finish_manifest(
     entries: list[ManifestEntry],
     paths: ManifestPaths,
     *,
+    grammar: ChannelGrammar | None,
     source_paradigms: list[str],
     absent_paradigms: list[str],
     corrupt_paradigms: list[dict],
@@ -358,6 +426,11 @@ def _finish_manifest(
         entries: One entry per enumerated channel, before the scenario seed.
         paths: The data tree the per-tree sources (``machine.json``, the
             machine-state list) are read from.
+        grammar: The channel grammar the entries' paths were read against,
+            or ``None`` when no hierarchical database fed them (the graph, or
+            a tree staging none). Published under ``_metadata.grammar`` so a
+            reader of the manifest alone can see which levels the paths are
+            keyed by and which pairs were declared.
         source_paradigms: What fed the entries, in the paradigm vocabulary --
             the paradigm databases that loaded, or ``["graph"]``.
         absent_paradigms: The paradigm databases the tree did not stage. Empty
@@ -399,21 +472,28 @@ def _finish_manifest(
 
     entries.sort(key=lambda e: e.address)
 
-    by_ring: dict[str, int] = {}
+    # The census by the grammar's first level -- the reference facility's
+    # ring, another facility's system, whatever its database puts first --
+    # named for what it is, so the count never claims a level the facility
+    # does not have.
+    top_level = grammar.levels[0] if grammar is not None else None
+    by_top_level: dict[str, int] = {}
     by_partition: dict[str, int] = {}
     setpoint_count = 0
     for e in entries:
-        if e.ring:
-            by_ring[e.ring] = by_ring.get(e.ring, 0) + 1
+        if top_level is not None and e.path.get(top_level):
+            value = e.path[top_level]
+            by_top_level[value] = by_top_level.get(value, 0) + 1
         by_partition[e.partition] = by_partition.get(e.partition, 0) + 1
-        if e.subfield == "SP":
+        if e.role == ROLE_SETPOINT:
             setpoint_count += 1
 
     metadata: dict = {
         "generator": "osprey.services.virtual_accelerator.manifest",
         "source_tier": paths.tier,
         "total_channels": len(entries),
-        "by_ring": by_ring,
+        "grammar": grammar.as_json() if grammar is not None else None,
+        "by_top_level": {"level": top_level, "counts": by_top_level},
         "by_partition": by_partition,
         "setpoint_count": setpoint_count,
         "machine_json_channel_count": len(machine_json_channels),
@@ -496,33 +576,21 @@ def _graph_missing_sources(paths: ManifestPaths) -> list[Path]:
     return missing
 
 
-#: The subfield tokens the container pairs a setpoint with its readback on
-#: (``serving/pvdb.py`` spells the same two; not imported from there because
-#: this module is imported on the build host, where the IOC's dependencies
-#: are not installed).
-SETPOINT_SUBFIELD = "SP"
-READBACK_SUBFIELD = "RB"
-
-
-def _echo_entry(address: str, *, pair_key: str, subfield: str) -> ManifestEntry:
+def _echo_entry(address: str, *, pair_key: str, role: str) -> ManifestEntry:
     """One half of a setpoint-echo pair the roster states.
 
-    The container pairs a setpoint with its readback on the five identity keys
-    ``(ring, system, family, device, field)``, differing only in subfield
-    (``serving/pvdb._channel_key``). The graph states no hierarchy path, so
-    the pair is keyed on the one thing that identifies it -- the setpoint's
-    own address, carried in ``device`` -- and the other four keys stay empty,
-    exactly as on a pathless entry. That is enough for the IOC to echo a write
-    to the setpoint onto the readback, which is all the partition promises.
+    The container pairs a setpoint with its readback on ``pair_key``
+    (``serving/pvdb.build_serving_pvdb``). The graph states no hierarchy
+    path, so the pair is keyed on the one thing that identifies it -- the
+    setpoint's own address -- and the path stays empty, exactly as on a
+    pathless entry. That is enough for the IOC to echo a write to the
+    setpoint onto the readback, which is all the partition promises.
     """
     return ManifestEntry(
         address=address,
-        ring="",
-        system="",
-        family="",
-        device=pair_key,
-        field="",
-        subfield=subfield,
+        path={},
+        pair_key=pair_key,
+        role=role,
         partition=classify.PARTITION_SP_ECHO,
         record_type=classify.RECORD_TYPE_ANALOG,
         noise=False,
@@ -578,8 +646,8 @@ def _graph_entries(records) -> list[ManifestEntry]:
         if readback is None:
             entries.append(_pathless_entry(address, noise=False))
             continue
-        entries.append(_echo_entry(address, pair_key=address, subfield=SETPOINT_SUBFIELD))
-        entries.append(_echo_entry(readback, pair_key=address, subfield=READBACK_SUBFIELD))
+        entries.append(_echo_entry(address, pair_key=address, role=ROLE_SETPOINT))
+        entries.append(_echo_entry(readback, pair_key=address, role=ROLE_READBACK))
     return entries
 
 
@@ -626,6 +694,7 @@ def _prepare_graph_manifest(roster, paths: ManifestPaths) -> PreparedManifest | 
         manifest = _finish_manifest(
             entries,
             paths,
+            grammar=None,
             source_paradigms=[GRAPH_SOURCE_PARADIGM],
             absent_paradigms=[],
             corrupt_paradigms=[],
@@ -706,9 +775,10 @@ def prepare_project_manifest(
     Raises:
         BuildProfileError: if the scenario seed or the machine-state list --
             the sources a tree carries one of, rather than one per paradigm --
-            cannot be read. There is nothing left to build from when either is
-            broken, and reading past it would quietly serve a different channel
-            set than the operator believes they are driving.
+            cannot be read, or the hierarchical database's declared pairs
+            claim a channel ambiguously. There is nothing left to build from
+            when either is broken, and reading past it would quietly serve a
+            different channel set than the operator believes they are driving.
     """
     paths = ManifestPaths(data_root=data_root, tier=tier)
     if not paths.staged_paradigms:
@@ -761,6 +831,15 @@ def prepare_project_manifest(
             exc,
         )
         return None
+    except GrammarError as exc:
+        # The database loaded -- its levels and pairs parsed -- but a declared
+        # pair claims one of its channels ambiguously. That is the database's
+        # `hierarchy.pairing` block to fix, and it is named as such.
+        raise BuildProfileError(
+            f"virtual-accelerator channel manifest could not be built from the "
+            f"data tree {data_root} at tier {tier}: the hierarchical channel "
+            f"database's 'hierarchy.pairing' declaration is ambiguous -- {exc}."
+        ) from exc
     except (json.JSONDecodeError, KeyError, OSError) as exc:
         culprit = _first_unreadable_source(paths)
         detail = (

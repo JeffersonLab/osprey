@@ -14,6 +14,7 @@ combines them into the public database class.
 from typing import Any
 
 from ..core.base_database import BaseDatabase
+from .channel_grammar import ChannelGrammar
 
 _HIER_META_KEYS = frozenset(
     {
@@ -39,6 +40,7 @@ class _HierarchicalBase(BaseDatabase):
     _raw_data: dict[str, Any]
     hierarchy_levels: list[str]
     naming_pattern: str
+    grammar: ChannelGrammar
     hierarchy_config: dict[str, Any]
     default_separators: dict[tuple[str, str], str]
     channel_map: dict[str, dict]

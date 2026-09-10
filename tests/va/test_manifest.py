@@ -6,11 +6,13 @@ import pytest
 
 from osprey.build.build_tiers import VALID_CHANNEL_FINDER_MODES
 from osprey.services.virtual_accelerator.manifest import (
+    BUILTIN_GRAMMAR,
     PARTITION_PYAT_COUPLED,
     PARTITION_SP_ECHO,
     PARTITION_STATIC_NOISY,
     RECORD_TYPE_ANALOG,
     RECORD_TYPE_BINARY,
+    ROLE_SETPOINT,
     build_manifest,
     derive_record_type,
     loaders,
@@ -68,7 +70,10 @@ class TestParadigmAgreement:
 
 class TestRingCounts:
     def test_sr_br_bts_counts_match_measured_values(self, manifest):
-        assert manifest["_metadata"]["by_ring"] == EXPECTED_RING_COUNTS
+        assert manifest["_metadata"]["by_top_level"] == {
+            "level": "ring",
+            "counts": EXPECTED_RING_COUNTS,
+        }
 
     def test_total_channel_count(self, manifest):
         assert manifest["_metadata"]["total_channels"] == EXPECTED_TOTAL
@@ -79,7 +84,7 @@ class TestSetpointCount:
         assert manifest["_metadata"]["setpoint_count"] == EXPECTED_SETPOINTS
 
     def test_setpoint_count_matches_actual_channel_tally(self, manifest):
-        sp_channels = [c for c in manifest["channels"] if c["subfield"] == "SP"]
+        sp_channels = [c for c in manifest["channels"] if c["role"] == ROLE_SETPOINT]
         assert len(sp_channels) == EXPECTED_SETPOINTS
 
 
@@ -91,21 +96,22 @@ class TestPartitionA_PyatCoupled:
         assert pyat, "expected at least one pyat-coupled channel"
 
         for c in pyat:
-            assert c["ring"] == "SR", c
-            is_magnet_current = c["system"] == "MAG" and c["field"] == "CURRENT"
+            path = c["path"]
+            assert path["ring"] == "SR", c
+            is_magnet_current = path["system"] == "MAG" and path["field"] == "CURRENT"
             is_bpm_position = (
-                c["system"] == "DIAG" and c["family"] == "BPM" and c["field"] == "POSITION"
+                path["system"] == "DIAG" and path["family"] == "BPM" and path["field"] == "POSITION"
             )
             assert is_magnet_current or is_bpm_position, c
 
     def test_no_br_or_bts_channels_in_pyat_coupled(self, manifest):
         pyat = [c for c in manifest["channels"] if c["partition"] == PARTITION_PYAT_COUPLED]
-        rings = {c["ring"] for c in pyat}
+        rings = {c["path"]["ring"] for c in pyat}
         assert rings == {"SR"}
 
     def test_no_golden_or_status_channels_in_pyat_coupled(self, manifest):
         pyat = [c for c in manifest["channels"] if c["partition"] == PARTITION_PYAT_COUPLED]
-        subfields = {c["subfield"] for c in pyat}
+        subfields = {c["path"]["subfield"] for c in pyat}
         assert "GOLDEN" not in subfields
         assert subfields <= {"SP", "RB", "X", "Y"}
 
@@ -113,7 +119,9 @@ class TestPartitionA_PyatCoupled:
 class TestPartitionB_SpEcho:
     def test_all_br_bts_magnet_channels_are_sp_echo(self, manifest):
         br_bts_mag = [
-            c for c in manifest["channels"] if c["ring"] in ("BR", "BTS") and c["system"] == "MAG"
+            c
+            for c in manifest["channels"]
+            if c["path"].get("ring") in ("BR", "BTS") and c["path"]["system"] == "MAG"
         ]
         assert br_bts_mag, "expected BR/BTS magnet channels to exist"
         assert all(c["partition"] == PARTITION_SP_ECHO for c in br_bts_mag)
@@ -121,13 +129,13 @@ class TestPartitionB_SpEcho:
     def test_sp_echo_never_touches_sr_mag_or_diag(self, manifest):
         sp_echo = [c for c in manifest["channels"] if c["partition"] == PARTITION_SP_ECHO]
         for c in sp_echo:
-            if c["ring"] == "SR":
-                assert c["system"] in ("RF", "VAC"), c
+            if c["path"]["ring"] == "SR":
+                assert c["path"]["system"] in ("RF", "VAC"), c
 
 
 class TestPartitionC_StaticNoisy:
     def test_golden_channels_are_static_noisy(self, manifest):
-        golden = [c for c in manifest["channels"] if c["subfield"] == "GOLDEN"]
+        golden = [c for c in manifest["channels"] if c["path"].get("subfield") == "GOLDEN"]
         assert golden, "expected GOLDEN reference channels to exist"
         assert all(c["partition"] == PARTITION_STATIC_NOISY for c in golden)
 
@@ -136,7 +144,11 @@ class TestPartitionC_StaticNoisy:
         # classifies ALL BR/BTS magnet channels there, with no per-field
         # carve-out. Only SR status channels (outside the RF/VAC sp-echo
         # setpoint/readback fields) are expected to land in static-noisy.
-        status = [c for c in manifest["channels"] if c["field"] == "STATUS" and c["ring"] == "SR"]
+        status = [
+            c
+            for c in manifest["channels"]
+            if c["path"].get("field") == "STATUS" and c["path"].get("ring") == "SR"
+        ]
         assert status, "expected SR STATUS channels to exist"
         assert all(c["partition"] == PARTITION_STATIC_NOISY for c in status)
 
@@ -204,11 +216,9 @@ class TestStructuralIntegrity:
 
     def test_addresses_match_naming_grammar(self, manifest):
         for c in manifest["channels"]:
-            if not c["ring"]:
+            if not c["path"]:
                 continue  # machine.json-only entries carry no hierarchy path
-            expected = ":".join(
-                [c["ring"], c["system"], c["family"], c["device"], c["field"], c["subfield"]]
-            )
+            expected = ":".join(c["path"][level] for level in BUILTIN_GRAMMAR.levels)
             assert c["address"] == expected
 
     def test_machine_json_channels_are_all_within_the_manifest(self, manifest):
