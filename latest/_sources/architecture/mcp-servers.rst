@@ -3,9 +3,18 @@ MCP Servers
 
 OSPREY exposes control system operations, data retrieval, and workspace
 management as tools through `FastMCP <https://github.com/jlowin/fastmcp>`_
-servers. Claude Code discovers servers from ``.mcp.json`` at startup and calls
-tools via stdio JSON-RPC. There are **7 in-tree MCP servers**; build profiles
-can inject additional servers beyond the core set below.
+servers. The Osprey agent discovers servers from ``.mcp.json`` at startup and calls
+tools via stdio JSON-RPC. The **10 core in-tree servers** below are the ones a
+deployment normally renders; build profiles can inject additional servers beyond
+them.
+
+.. raw:: html
+   :file: ../_diagrams/mcp-server-map.html
+
+The four channel-finder variants count as four of the ten, but a deployment
+serves exactly one of them — whichever ``channel_finder.pipeline_mode`` names —
+under the single ``channel-finder`` name, which is why the map shows seven
+running processes.
 
 
 Control System
@@ -24,16 +33,27 @@ safety-limits enforcement on all write operations.
 
 - ``channel_read`` -- Read current values from one or more control system channels.
 - ``channel_write`` -- Write values to one or more control system channels (requires human approval).
-- ``archiver_read`` -- Retrieve historical archived data for one or more channels over a time range.
-- ``channel_limits`` -- Query the channel safety limits database (lookup, pattern match, summary).
+- ``archiver_read`` -- Retrieve historical archived data for one or more channels over a
+  time range. ``processing`` selects the per-bin aggregation (``raw``, ``mean``, ``min``,
+  ``max``, ``median``, ``std``, ``count``) and ``bin_size`` sets the bin width in seconds;
+  ``bin_size=0`` returns full resolution and is valid only with ``processing="raw"``.
+  When ``bin_size`` is omitted the bin is derived from the time span so a continuously
+  archived channel returns about ``archiver.auto_bin_points`` (default 10 000) points —
+  1 s for anything under ~2.8 hours, ~53 minutes for a year — and the summary reports the
+  bin that was used and whether it was requested or chosen automatically.
+- ``channel_limits`` -- Query the channel write-safety limits database: which channels are
+  write-gated and under what constraints (lookup, pattern match, summary). Not a channel
+  roster -- an unlisted channel may still exist; use channel-finder to discover what channels
+  exist.
 
 
 Channel Finding
 ---------------
 
 OSPREY provides four channel finder variants, each suited to different
-facility data models and search strategies. Deployments typically enable
-one or two variants depending on available metadata.
+facility data models and search strategies. A deployment picks one with
+``channel_finder.pipeline_mode``, and whichever it picks is served under the one
+``channel-finder`` name.
 
 ``channel_finder_hierarchical``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -55,14 +75,13 @@ device, signal) to narrow results.
 
 Package: ``osprey.mcp_server.channel_finder_in_context``
 
-Provides synchronous access to channel databases stored in flat or
-template format. Designed for smaller databases that fit in context.
+Answers natural-language questions about channels by handing the full
+channel database to an inner LLM as context. Designed for databases small
+enough to fit in a single context window.
 
 **Tools:**
 
-- ``get_channels`` -- Get channels from the database, optionally paginated in chunks.
-- ``resolve_addresses`` -- Resolve channel names to their control system PV addresses.
-- ``statistics`` -- Get database statistics (total channels, format, chunk info).
+- ``ask_channels`` -- Answer a natural-language question about channels; an inner LLM call sees the full channel database as context and returns the answer text together with tokenizer-estimated input/output token counts (used by the benchmark harness for cost accounting).
 
 ``channel_finder_middle_layer``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -82,6 +101,41 @@ lookups and validation.
 - ``inspect_fields`` -- Inspect the field structure of a device family.
 - ``validate`` -- Validate that channel names exist in the database.
 - ``statistics`` -- Get database statistics (total channels, systems, families).
+- ``run_sql`` -- Run a read-only SQL query directly against the channel finder DuckDB database (``channels``, ``systems``, ``families`` tables). Answers are bounded by ``channel_finder.query_max_rows``; a truncated reply says so and names the key, so a partial list is never presented as complete.
+
+``channel_finder_graph``
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Package: ``osprey.mcp_server.channel_finder_graph``
+
+Finds channels by searching the facility knowledge graph. Instead of drilling
+through a database file, the agent looks a phrase up in the search index the
+build derives from the corpus, or writes read-only Cypher against the seeded
+``graphdb`` store, so a question can start from a description, an alternate name
+or a system just as easily as from an address. Selected with
+``channel_finder.pipeline_mode: graph``, and needs a ``services.graphdb`` store
+to search -- deployed with the rest of the stack, or one the facility already
+runs.
+
+``read_cypher`` and ``get_schema`` are the ``graph`` server's own tools, served
+here under the ``channel-finder`` name: the same read transaction, the same
+refusal of extension procedures and ``LOAD CSV``, the same row and time bounds.
+The examples catalogue is this package's own, written around the questions
+operators ask about channels rather than around general graph exploration. See
+:doc:`/how-to/facility-knowledge/use-facility-graph`.
+
+**Tools:**
+
+- ``search_channels`` -- Look addresses up by keyword and facet in the search
+  index built from the corpus, a page of rows at a time.
+- ``read_cypher`` -- Run one read-only Cypher query and return the matching rows,
+  bounded by ``services.graphdb.query_max_rows`` and
+  ``services.graphdb.query_timeout_s``.
+- ``get_schema`` -- Report the node labels, relationship types, sampled per-label
+  property names and namespace prefixes this graph holds.
+- ``example_queries`` -- Return runnable Cypher examples for the common channel
+  questions, each with per-corpus parameter values.
+- ``capabilities`` -- Report the server description, tool list and operating notes.
 
 Workspace
 ---------
@@ -97,9 +151,13 @@ tools into several functional areas.
 
 **Artifacts:**
 
-- ``artifact_save`` -- Save a file or generated content as a gallery artifact.
+- ``artifact_register`` -- Register a file on disk, or literal text, as a gallery artifact.
 - ``artifact_get`` -- Look up an artifact by ID to get its file path and metadata.
+- ``artifact_list`` -- List stored artifacts, optionally narrowed by category, tool or agent.
+- ``artifact_read`` -- Read a stored artifact's full content (small artifacts only).
 - ``artifact_delete`` -- Delete an artifact from the gallery.
+- ``artifact_delete_all`` -- Delete a whole scope of artifacts (one category, or everything)
+  in a single call. The ``scope`` argument is required.
 - ``artifact_export`` -- Export an artifact to a different format (e.g., PNG, SVG, PDF).
 - ``artifact_focus`` -- Select an artifact in the gallery so the user sees it.
 - ``artifact_pin`` -- Pin or unpin an artifact for quick-access filtering.
@@ -111,12 +169,13 @@ tools into several functional areas.
 - ``create_dashboard`` -- Execute Panel/Bokeh code to produce a live dashboard app.
 - ``create_document`` -- Compile LaTeX source to PDF (Beamer slides or article reports).
 
-**Data Context:**
+**Stored data:**
 
-- ``data_list`` -- List all data entries in the workspace with optional filters.
-- ``data_read`` -- Read the full data content of a data entry.
-- ``data_delete`` -- Delete a data entry from the workspace.
-- ``archiver_downsample`` -- Downsample an archiver data entry to a target point count.
+Datasets are not a separate namespace -- an archiver read or a run result is an
+artifact with a ``category``, so the artifact tools above list, read and delete
+them (``artifact_list(category="archiver_data")``).
+
+- ``archiver_downsample`` -- Downsample an archiver artifact to a target point count.
 
 **Lattice Dashboard:**
 
@@ -125,6 +184,34 @@ tools into several functional areas.
 - ``lattice_set_param`` -- Set a magnet family parameter override.
 - ``lattice_refresh`` -- Trigger recomputation of lattice figures.
 - ``lattice_set_baseline`` -- Snapshot the current state as the comparison baseline.
+- ``lattice_clear_baseline`` -- Discard the saved comparison baseline.
+- ``lattice_get_figure`` -- Retrieve a rendered lattice figure (e.g., optics, layout) by name.
+- ``lattice_get_data`` -- Retrieve the underlying numeric data behind a named figure.
+- ``lattice_get_settings`` -- Get current dashboard settings (display options, baselines).
+- ``lattice_update_settings`` -- Update dashboard settings.
+
+**Panels:**
+
+- ``list_panels`` -- List the panels available in the Web Terminal (built-in and custom).
+- ``open_panel`` -- Put a panel on screen in front of the operator.
+- ``close_panel`` -- Take a panel's tile off screen, leaving it on the rail.
+- ``arrange_workspace`` -- State a whole layout: exactly these tiles on screen,
+  in this order.
+- ``add_panel_to_rail`` -- Make a panel launchable from the rail in one click
+  (requires human approval).
+- ``remove_panel_from_rail`` -- Take a panel off the rail (and off screen with it)
+  (requires human approval).
+- ``register_panel`` -- Add a rail entry at runtime for an upstream URL the Web
+  Terminal proxies (requires human approval).
+
+The three rail tools ask because rail membership is their whole effect:
+removing an entry costs the operator the ability to launch that panel back, and
+adding or registering one puts a new entry in front of them. The layout tools
+say what is on screen and are auto-allowed, even where a layout implies a rail
+change: ``open_panel`` adds the rail entry when the panel is off the rail, and
+``arrange_workspace`` adds any listed panel that was not on it (with a
+``preset``, it also drops non-members -- the same pruning the operator gets by
+clicking that layout).
 
 **Screen Capture:**
 
@@ -153,12 +240,14 @@ Python Executor
 
 Package: ``osprey.mcp_server.python_executor``
 
-Executes Python code in a sandboxed environment with process isolation,
-limits enforcement, and timeout protection.
+Runs agent-authored Python as a separate process on the host --- a process
+boundary with limits enforcement and timeout protection, not a sandbox; see
+:doc:`/architecture/python-executor`.
 
 **Tools:**
 
 - ``execute`` -- Execute Python code with safety checks, process isolation, and timeout.
+- ``execute_file`` -- Execute a Python file from the workspace with the same safety envelope as ``execute``.
 
 
 ARIEL
@@ -186,3 +275,51 @@ and entry creation with attachments.
 - ``entry_publish`` -- Publish an existing ARIEL entry to the facility logbook.
 - ``capabilities`` -- Report available ARIEL search capabilities.
 - ``status`` -- Get ARIEL service health, database connectivity, and statistics.
+
+
+Facility Knowledge
+------------------
+
+``osprey_facility_knowledge``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Package: ``osprey.mcp_server.facility_knowledge``
+
+Serves a facility's curated knowledge bundle (OKF §2 concept documents) so the
+agent can look up operational know-how and draft new concepts for human review.
+
+**Tools:**
+
+- ``capabilities`` -- Report facility knowledge bundle capabilities.
+- ``list_concepts`` -- List all concepts in the facility knowledge bundle.
+- ``read_concept`` -- Read a concept document by its OKF §2 concept ID.
+- ``search`` -- Search the facility knowledge bundle for a query string.
+- ``draft_concept`` -- Draft a new concept document for human review and approval.
+
+
+Facility Graph
+--------------
+
+``graph``
+~~~~~~~~~
+
+Package: ``osprey.mcp_server.graph``
+
+Read-only Cypher search over the facility knowledge graph -- the
+NARAD-convention RDF corpus held by the ``graphdb`` store. Rendered only where
+``services.graphdb`` is configured, and called by the
+**facility-knowledge-graph subagent**: the main agent's route to the graph is
+delegation, mirroring the channel finder. Every query runs in a read
+transaction, and extension procedures, extension functions and ``LOAD CSV`` are
+refused before the store is dialed. See :doc:`/how-to/facility-knowledge/use-facility-graph`.
+
+**Tools:**
+
+- ``read_cypher`` -- Run one read-only Cypher query and return the matching rows,
+  bounded by ``services.graphdb.query_max_rows`` and
+  ``services.graphdb.query_timeout_s``.
+- ``get_schema`` -- Report the node labels, relationship types, sampled per-label
+  property names and namespace prefixes this graph holds.
+- ``example_queries`` -- Return curated, runnable Cypher examples for the common
+  question shapes, each with per-corpus parameter values.
+- ``capabilities`` -- Report the server description, tool list and operating notes.

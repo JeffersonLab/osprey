@@ -6,18 +6,21 @@ ARIEL (Agentic Retrieval Interface for Electronic Logbooks) provides intelligent
 search over facility electronic logbooks. It is built around a **modular
 architecture** with three main layers: a :doc:`data ingestion pipeline
 <data-ingestion>` that normalizes logbook entries from any facility into a common
-PostgreSQL schema, composable :doc:`search modules <search-modes>` such as keyword
-matching, semantic similarity, and RAG-powered question answering, and a
-:doc:`web interface <web-interface>` for interactive exploration. These components
-connect to the rest of Osprey through the :doc:`integration layer
-<osprey-integration>`.
+PostgreSQL schema, composable :doc:`search modules <search-modes>` such as
+keyword and semantic similarity matching (plus a raw read-only ``sql_query``
+MCP tool for structural queries the agent can run directly against the
+database), and a :doc:`web interface
+<web-interface>` for interactive exploration. These components connect to the
+rest of Osprey through the :doc:`integration layer </reference/contracts/ariel>`, where
+the agent invokes ARIEL's MCP tools as part of broader workflows.
 
 Every layer is designed to be **facility-agnostic and extensible**. Ingestion
 adapters, search modules, and enhancement stages are all registerable --- you can
 implement your own and plug them into the full pipeline without modifying ARIEL's
-source code. Out of the box, adapters are included for facilities such as ALS,
-JLab, and ORNL, and search strategies range from keyword lookup to a multi-step
-ReAct agent that chains searches autonomously.
+source code. Out of the box, adapters are included for the reference logbook
+formats listed on :doc:`data-ingestion`, and search strategies range from fast
+keyword lookup to embedding-based semantic similarity, with multi-step
+reasoning over results delegated to the Osprey agent layer.
 
 .. figure:: /_static/resources/ariel_overview.svg
    :alt: ARIEL Logbook Search Architecture
@@ -26,7 +29,7 @@ ReAct agent that chains searches autonomously.
 
    ARIEL data flow: facility logbooks are normalized through pluggable adapters
    into a shared PostgreSQL database, enhanced by modular processing stages, and
-   queried through composable search modules and pipelines.
+   queried through composable search modules.
 
 .. dropdown:: Prerequisites
    :color: info
@@ -37,7 +40,7 @@ ReAct agent that chains searches autonomously.
 
    - **Python 3.11+** with a virtual environment
    - **Osprey installed:** ``uv sync``
-   - **Container runtime:** `Docker Desktop 4.0+ <https://docs.docker.com/get-docker/>`_ or `Podman 4.0+ <https://podman.io/getting-started/installation>`_ (for PostgreSQL and the web interface)
+   - **Container runtime:** `Docker Desktop 4.0+ <https://docs.docker.com/get-docker/>`_ or `Podman 4.0+ <https://podman.io/getting-started/installation>`_ (for PostgreSQL)
    - **LLM API access:** An API key for your configured provider (e.g., ``ANTHROPIC_API_KEY``)
    - **(Recommended) Ollama** --- for local text embeddings powering semantic search:
 
@@ -70,15 +73,17 @@ ReAct agent that chains searches autonomously.
       .. tab-item:: 1. Configure
 
          The easiest way to get started is to create a new project from the
-         ``control_assistant`` template, which includes ARIEL pre-configured:
+         ``ariel-standalone`` template, which includes ARIEL pre-configured:
 
          .. code-block:: bash
 
-            osprey build my-project --preset control-assistant
+            osprey init my-project --preset ariel-standalone
             cd my-project
 
-         This generates a ready-to-use ``config.yml`` with PostgreSQL, the ARIEL
-         web interface, and all search modules enabled --- skip to Step 2.
+         Run ``osprey build`` in it and you get a ready-to-use ``config.yml``
+         with PostgreSQL, the ARIEL web interface, and all search modules
+         enabled --- skip to Step 2. The repository's ``profile.yml`` is what
+         the build reads, and its ``.env`` is where your provider keys belong.
 
       .. tab-item:: 2. Deploy
 
@@ -90,7 +95,7 @@ ReAct agent that chains searches autonomously.
 
          .. code-block:: bash
 
-            osprey deploy up
+            osprey up -d
 
          Once the containers are running, connect to PostgreSQL, run database
          migrations, then ingest the demo logbook data and generate embeddings:
@@ -108,11 +113,14 @@ ReAct agent that chains searches autonomously.
             .. tab-item:: Web Interface
                :selected:
 
-               Open the ARIEL web UI. Already running from Step 2.
+               Start the ARIEL web UI in a separate terminal, then open it in
+               your browser.
 
-               .. code-block:: text
+               .. code-block:: bash
 
-                  Open http://localhost:8085 in your browser
+                  osprey ariel web
+
+               Then open ``http://localhost:10300`` in your browser.
 
             .. tab-item:: CLI Search
 
@@ -122,15 +130,15 @@ ReAct agent that chains searches autonomously.
 
                   osprey ariel search "What happened with the RF cavity?"
 
-            .. tab-item:: Claude Chat
+            .. tab-item:: Agent Chat
 
-               Ask the Osprey agent. The logbook search MCP tool connects
-               Claude Code with the ARIEL search service, so it can combine
-               logbook results with other context.
+               Ask the Osprey agent. The logbook-search MCP tools connect the
+               agent to the ARIEL search service, so it can combine logbook
+               results with other context.
 
                .. code-block:: bash
 
-                  osprey claude chat
+                  osprey chat
                   >>> What does the logbook say about the last RF cavity trip?
 
 Learn More
@@ -153,10 +161,10 @@ Learn More
       :class-header: bg-info text-white
       :shadow: md
 
-      Keyword, semantic, RAG pipeline, and agent execution strategies.
+      Keyword and semantic search modules and how to add your own.
 
    .. grid-item-card:: Osprey Integration
-      :link: osprey-integration
+      :link: /reference/contracts/ariel
       :link-type: doc
       :class-header: bg-primary text-white
       :shadow: md
@@ -170,6 +178,23 @@ Learn More
       :shadow: md
 
       FastAPI app, frontend architecture, capabilities API, and REST endpoints.
+
+   .. grid-item-card:: The Search Sidecar (``qmd``)
+      :link: search-sidecar
+      :link-type: doc
+      :class-header: bg-dark text-white
+      :shadow: md
+
+      The container behind the ``hybrid`` search mode: configuration, corpus
+      mounts, disk footprint, and where it listens.
+
+   .. grid-item-card:: Standalone Deployment
+      :link: standalone-deployment
+      :link-type: doc
+      :class-header: bg-warning text-white
+      :shadow: md
+
+      The ``ariel-standalone`` preset: ARIEL without the control-system stack.
 
 
 CLI Commands
@@ -188,7 +213,7 @@ All ARIEL functionality is available through the ``osprey ariel`` command group:
    * - ``status``
      - Show ARIEL service status
    * - ``search``
-     - Search the logbook (``--mode keyword|semantic|rag|auto``)
+     - Search the logbook (``--mode keyword|semantic``)
    * - ``ingest``
      - Ingest logbook entries from a source file or URL
    * - ``migrate``
@@ -216,8 +241,5 @@ All ARIEL functionality is available through the ``osprey ariel`` command group:
    data-ingestion
    search-modes
    web-interface
-   osprey-integration
-
-
-See Also
-========
+   search-sidecar
+   standalone-deployment

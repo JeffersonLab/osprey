@@ -3,81 +3,84 @@ How-To Guides
 
 Task-oriented guides that walk you through common OSPREY operations step by step.
 Each guide focuses on a single goal and assumes you already have a working OSPREY installation.
+The sections follow the natural journey: build and deploy a project, operate the
+agent day to day, then work with the bundled facility services.
 
-Framework & Infrastructure
----------------------------
+Build & deploy
+--------------
 
 .. grid:: 1 1 2 3
    :gutter: 3
-
-   .. grid-item-card:: Configure LLM Providers
-      :link: configure-providers
-      :link-type: doc
-
-      Set up and switch between supported LLM providers — Anthropic, OpenAI, Google,
-      CBORG, AMSC, Ollama, and others — via ``config.yml``.
-
-   .. grid-item-card:: Deploy a Project
-      :link: deploy-project
-      :link-type: doc
-
-      Create, configure, and deploy an OSPREY project from ``osprey build`` through
-      ``osprey deploy`` to a running instance.
 
    .. grid-item-card:: Build Profiles
       :link: build-profiles
       :link-type: doc
 
-      Assemble facility-specific assistants from templates with config overrides,
-      file overlays, and custom MCP servers.
+      Build a facility-specific assistant from a profile you own — convention
+      directories, taking ownership of framework artifacts, personas, and secrets.
 
-   .. grid-item-card:: Add an MCP Server
-      :link: add-mcp-server
+   .. grid-item-card:: Deploy a Facility
+      :link: deploy-a-facility
       :link-type: doc
 
-      Build and register a new FastMCP server to expose domain-specific tools that
-      Claude Code can discover and call.
+      The end-to-end walkthrough: one deployment repo from ``osprey init``
+      through the CI scaffolding to a running three-service stack.
 
-   .. grid-item-card:: Use the Web Terminal
-      :link: use-web-terminal
+   .. grid-item-card:: Container Deployment
+      :link: deploy-project/index
       :link-type: doc
 
-      Launch and operate the Web Terminal interface for interactive Claude Code
-      sessions with your control system.
+      The service stack behind a running project — compose templates, networking,
+      the environment chain, and the agent's own container image.
 
-   .. grid-item-card:: Use the CLI Chat Interface
-      :link: use-cli-chat
+   .. grid-item-card:: LLM Providers
+      :link: llm-providers/index
       :link-type: doc
 
-      Run Claude Code in your native terminal with companion services accessible
-      in a browser.
+      Pick the provider that drives the Osprey agent and map the model tiers
+      each one serves, including open-weight and self-hosted models behind the
+      translation proxy.
 
-   .. grid-item-card:: Use the Python Executor
-      :link: use-python-executor
-      :link-type: doc
-
-      Run Claude-generated Python scripts safely in a containerized environment with
-      access to the OSPREY runtime API.
-
-   .. grid-item-card:: CLI Reference
-      :link: /cli-reference/index
-      :link-type: doc
-
-      Complete reference for all ``osprey`` commands — build, deploy, config,
-      health, claude, web, and more.
-
-Services & Connectors
----------------------
+Operate
+-------
 
 .. grid:: 1 1 2 3
    :gutter: 3
 
-   .. grid-item-card:: Add a Control System Connector
-      :link: add-connector
+   .. grid-item-card:: Web Terminal
+      :link: web-terminal/index
       :link-type: doc
 
-      Create a custom connector to integrate a new control system protocol (beyond EPICS
-      and Mock) with OSPREY's protocol-agnostic architecture.
+      The browser cockpit for the Osprey agent — launching and theming it,
+      adding your own side panels, reporting problems from inside it, and
+      serving a whole team from one host.
+
+   .. grid-item-card:: Agent Interfaces
+      :link: agent-interfaces/index
+      :link-type: doc
+
+      The CLI agent, event-driven dispatch, external MCP servers, and chat
+      bridges — the four ways to reach the agent.
+
+   .. grid-item-card:: Health and Monitoring
+      :link: health-and-monitoring/index
+      :link-type: doc
+
+      Is it up, and what is it doing — facility health checks you can extend,
+      plus the agent's own logs and metrics over OTLP.
+
+   .. grid-item-card:: Control Systems
+      :link: control-systems/index
+      :link-type: doc
+
+      Connectors for your control system, the virtual accelerator to rehearse
+      on, switching to the live machine, and what the agent may not touch.
+
+Facility services
+-----------------
+
+.. grid:: 1 1 2 3
+   :gutter: 3
 
    .. grid-item-card:: Use the Channel Finder
       :link: use-channel-finder
@@ -86,25 +89,41 @@ Services & Connectors
       Search, filter, and explore control system channels using the Channel Finder
       service and its web interface.
 
+   .. grid-item-card:: Facility Knowledge
+      :link: facility-knowledge/index
+      :link-type: doc
+
+      The Open Knowledge Format bundle, the facility graph, facility rules, and
+      the search sidecar that serves all of it to the agent on demand.
+
    .. grid-item-card:: ARIEL Logbook Search
       :link: ariel/index
       :link-type: doc
 
-      Intelligent search over facility electronic logbooks with keyword, semantic,
-      RAG, and agentic retrieval modes.
+      Search over facility electronic logbooks with keyword and
+      semantic retrieval modes, plus multi-step reasoning delegated to the
+      Osprey agent.
 
+   .. grid-item-card:: Bluesky Plans
+      :link: bluesky/index
+      :link-type: doc
+
+      Run measurement plans through a durable queue — compose with the Osprey
+      agent, review, start and stop in the BLUESKY panel, and add plans
+      of your own.
 
 .. toctree::
    :hidden:
 
-   configure-providers
-   deploy-project
    build-profiles
-   add-mcp-server
-   use-web-terminal
-   use-cli-chat
-   use-python-executor
-   add-connector
+   deploy-a-facility
+   deploy-project/index
+   llm-providers/index
+   web-terminal/index
+   agent-interfaces/index
+   health-and-monitoring/index
+   control-systems/index
    use-channel-finder
+   facility-knowledge/index
    ariel/index
-   /cli-reference/index
+   bluesky/index

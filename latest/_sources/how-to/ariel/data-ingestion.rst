@@ -2,28 +2,15 @@
 Data Ingestion
 ==============
 
-ARIEL's ingestion system converts facility-specific logbook data into a common schema and optionally enriches it through a pipeline of enhancement modules. Before ARIEL can search anything, logbook data must be ingested into its PostgreSQL database. Every facility stores its logbook entries differently --- different APIs, file formats, field names, and conventions. ARIEL's ingestion layer abstracts over these differences through pluggable `facility adapters`_ that normalize entries into a common schema and store them in the `database`_. After ingestion, optional `enhancement modules <Enhancement Pipeline_>`_ can enrich the stored entries with additional computed fields --- vector embeddings for semantic search, LLM-extracted keywords and summaries, or any other derived metadata. Enhancement is a separate step from ingestion: you can ingest first and enhance later, re-enhance with different models, or skip enhancement entirely if you only need keyword search.
+ARIEL's ingestion system converts facility-specific logbook data into a common schema and optionally enriches it through a pipeline of enhancement modules. Before ARIEL can search anything, logbook data must be ingested into its PostgreSQL database. Logbook systems differ in their APIs, file formats, field names, and conventions; ARIEL's ingestion layer abstracts over these differences through pluggable `facility adapters`_ that normalize entries into a common schema and store them in the :doc:`database </reference/contracts/ariel>`. After ingestion, optional `enhancement modules <Enhancement Pipeline_>`_ can enrich the stored entries with additional computed fields --- vector embeddings for semantic search, LLM-extracted keywords and summaries, or any other derived metadata. Enhancement is a separate step from ingestion: you can ingest first and enhance later, re-enhance with different models, or skip enhancement entirely if you only need keyword search.
 
 Ingestion Architecture
 ----------------------
 
-.. code-block:: text
+.. raw:: html
+   :file: ../../_diagrams/ariel-ingestion.html
 
-   Source System (HTTP API / JSONL file)
-           ↓
-   Facility Adapter (BaseAdapter)
-           ↓
-   EnhancedLogbookEntry (TypedDict)
-           ↓
-   ARIELRepository.upsert_entry()
-           ↓
-   PostgreSQL (enhanced_entries table)
-           ↓
-   Enhancement Modules (optional)
-       ├── TextEmbeddingModule → per-model embedding tables
-       └── SemanticProcessorModule → keywords + summary fields
-
-The ingestion pipeline follows a linear flow. A `facility adapter <Facility Adapters_>`_ connects to the source system --- whether that is a live HTTP API, a JSONL dump, or any other data source --- and yields entries one at a time as ``EnhancedLogbookEntry`` TypedDicts. Each entry carries a unique ID, timestamp, author, raw text, and a metadata dict for facility-specific fields. The ``ARIELRepository`` upserts these entries into the ``enhanced_entries`` table in PostgreSQL, deduplicating by entry ID so that re-running ingestion is safe and idempotent. Once the base entries are stored, optional `enhancement modules <Enhancement Pipeline_>`_ can be run as a separate step to compute additional derived fields --- embeddings, keywords, summaries, or any other enrichment --- and write them back to the `database`_.
+The ingestion pipeline follows a linear flow. A `facility adapter <Facility Adapters_>`_ connects to the source system --- whether that is a live HTTP API, a JSONL dump, or any other data source --- and yields entries one at a time as ``EnhancedLogbookEntry`` TypedDicts. Each entry carries a unique ID, timestamp, author, raw text, and a metadata dict for facility-specific fields. The ``ARIELRepository`` upserts these entries into the ``enhanced_entries`` table in PostgreSQL, deduplicating by entry ID so that re-running ingestion is safe and idempotent. Once the base entries are stored, optional `enhancement modules <Enhancement Pipeline_>`_ can be run as a separate step to compute additional derived fields --- embeddings, keywords, summaries, or any other enrichment --- and write them back to the :doc:`database </reference/contracts/ariel>`.
 
 .. admonition:: Batch and Live Ingestion
    :class: note
@@ -38,26 +25,9 @@ The ingestion pipeline follows a linear flow. A `facility adapter <Facility Adap
 Facility Adapters
 =================
 
-Every logbook system has its own API, data format, and naming conventions. Facility adapters encapsulate these differences behind a uniform interface so that the rest of ARIEL --- storage, enhancement, search --- never needs to know where the data came from. Each adapter connects to one source system, fetches entries within an optional time range, and yields them as ``EnhancedLogbookEntry`` TypedDicts that the repository can store directly. All adapters inherit from ``BaseAdapter`` and implement two required members:
+Every logbook system has its own API, data format, and naming conventions. Facility adapters encapsulate these differences behind a uniform interface so that the rest of ARIEL --- storage, enhancement, search --- never needs to know where the data came from. Each adapter connects to one source system, fetches entries within an optional time range, and yields them as ``EnhancedLogbookEntry`` TypedDicts that the repository can store directly. All adapters inherit from ``FacilityAdapter`` and implement two required members --- a source-system name and an entry generator. Writing one for a logbook Osprey does not ship is a developer task: the base class, the registration and the test that pins them are the ARIEL seam in :doc:`/contributing/extending-osprey`.
 
-.. code-block:: python
-
-   class BaseAdapter(ABC):
-       @property
-       @abstractmethod
-       def source_system_name(self) -> str:
-           """Return the source system identifier."""
-
-       @abstractmethod
-       def fetch_entries(
-           self,
-           since: datetime | None = None,
-           until: datetime | None = None,
-           limit: int | None = None,
-       ) -> AsyncIterator[EnhancedLogbookEntry]:
-           """Yield entries from the source system."""
-
-Adapters are discovered through Osprey's central registry. The framework ships with the following built-in adapters:
+Adapters are discovered through Osprey's central registry. The built-in ones below are the logbooks contributed so far, not a list of the systems Osprey supports --- a logbook that is not here needs an adapter, not a change to ARIEL:
 
 .. list-table::
    :header-rows: 1
@@ -68,38 +38,20 @@ Adapters are discovered through Osprey's central registry. The framework ships w
      - Description
    * - **ALS eLog**
      - ``als_logbook``
-     - Production adapter for the Advanced Light Source electronic logbook. Supports JSONL file and HTTP API modes with SOCKS proxy, time-windowed chunked requests, retry with backoff, and entry deduplication.
+     - The one production adapter. Supports JSONL file and HTTP API modes with SOCKS proxy, time-windowed chunked requests, retry with backoff, and entry deduplication.
    * - **JLab Logbook**
      - ``jlab_logbook``
-     - Schema-ready prototype for Jefferson Lab. Parses JLab JSON format into the common schema but does not yet implement the facility's native API protocol.
+     - Schema-ready prototype. Parses its logbook's JSON format into the common schema but does not yet implement that system's native API protocol.
    * - **ORNL Logbook**
      - ``ornl_logbook``
-     - Schema-ready prototype for Oak Ridge National Laboratory. Parses ORNL JSON format into the common schema but does not yet implement the facility's native API protocol.
+     - Schema-ready prototype. Parses its logbook's JSON format into the common schema but does not yet implement that system's native API protocol.
    * - **Generic JSON**
      - ``generic_json``
-     - Reads from a JSON or JSONL file with flexible field mapping. Useful for demos, testing, and facilities without a custom API.
+     - Reads entries from a JSON file. ``id``, ``title``, ``text``, ``author``, ``timestamp`` and ``attachments`` map onto the common schema; every other top-level field is kept as entry metadata, and an explicit ``metadata`` object merges last and wins. Useful for demos, testing, and facilities without a custom API.
 
-**Registering a custom adapter:**
+**Using a custom adapter:**
 
-To add your own facility adapter, subclass ``BaseAdapter``, implement ``source_system_name`` and ``fetch_entries()``, and register it through your application's registry configuration:
-
-.. code-block:: python
-
-   from osprey.registry.helpers import extend_framework_registry
-   from osprey.registry.base import ArielIngestionAdapterRegistration
-
-   app_config = extend_framework_registry(
-       ariel_ingestion_adapters=[
-           ArielIngestionAdapterRegistration(
-               name="my_facility",
-               module_path="my_app.adapters.my_facility",
-               class_name="MyFacilityAdapter",
-               description="Adapter for My Facility's logbook system",
-           ),
-       ],
-   )
-
-Once registered, you can use your adapter by setting ``ariel.ingestion.adapter: my_facility`` in ``config.yml``. See :class:`~osprey.services.ariel_search.ingestion.base.BaseAdapter` for the full interface (including the optional ``count_entries()`` method) and :class:`~osprey.services.ariel_search.models.EnhancedLogbookEntry` for the field reference.
+An adapter written and registered as described in :doc:`/contributing/extending-osprey` is selected the same way as a built-in one: set ``ariel.ingestion.adapter`` to its registered name in ``config.yml``, or pass it as ``--adapter`` --- both accept every registered name, the framework's and your own.
 
 .. admonition:: Collaboration Welcome
    :class: outreach
@@ -107,12 +59,68 @@ Once registered, you can use your adapter by setting ``ariel.ingestion.adapter: 
    The adapters above reflect the logbook schemas we have had access to so far. If you implement an adapter for your facility and test it successfully, we encourage you to open a pull request to make it natively available in Osprey --- this makes it easier for other sites running similar logbook systems to get started.
 
 
+Connecting to Your Logbook
+==========================
+
+The ``ariel.ingestion`` block says which adapter runs and how it reaches the source system.
+
+.. code-block:: yaml
+
+   ariel:
+     ingestion:
+       adapter: als_logbook              # required
+       source_url: https://logbook.example.org/api/entries
+       ca_bundle: /etc/ssl/certs/site-ca.pem   # optional, for a site CA
+
+``adapter`` is required. There is no default: a block that names no adapter is refused when the configuration loads, with the registered adapter names in the message, rather than failing later on the first ingest.
+
+**TLS.** Certificates are verified. A logbook served over HTTPS whose certificate does not check out fails the ingest instead of being trusted --- credentials for a write-enabled logbook and the entry text itself both travel over that connection. Two ways to make a site certificate verifiable:
+
+* Install your site CA into the image's trust store. Nothing needs to be configured; verification just succeeds.
+* Point ``ca_bundle`` at the CA's PEM file when it lives beside the deployment rather than in the image. Verification then runs against that bundle.
+
+If neither is possible, ``verify_ssl: false`` turns verification off for this ingestion source:
+
+.. code-block:: yaml
+
+   ariel:
+     ingestion:
+       verify_ssl: false
+
+Write it only as a deliberate choice. Nothing about the connection is authenticated afterwards.
+
+The same settings cover the sidecar-metadata fetch described below, so one ingest never reaches the logbook host two different ways.
+
+Sidecar Metadata
+~~~~~~~~~~~~~~~~
+
+An entry can carry its structured metadata in a JSON attachment beside the prose --- session ids, model names, whatever the tooling that wrote the entry recorded. During ingestion that file is fetched and merged into the entry's ``metadata``.
+
+The filename is a facility convention, not a standard, so each adapter declares its own:
+
+.. code-block:: python
+
+   class MyLogbookAdapter(FacilityAdapter):
+       metadata_sidecar_names = ("entry-meta.json",)
+
+The default is ``("metadata.json",)``. Matching is case-insensitive, and a name that never appears is simply a no-op --- there is no switch to turn this off. If an entry has attachments and none of them matched, ingestion says so at debug level rather than staying silent about metadata it did not collect.
+
+Attachment Size
+~~~~~~~~~~~~~~~
+
+``ariel.attachments.max_file_mb`` (default 10) is the largest file one entry may
+attach; a bigger one is refused, naming the file and the limit. Attachments are
+stored as rows in the same Postgres the logbook lives in, so this number is a
+storage decision in both directions --- raise it for a facility that attaches
+raw traces, lower it to keep the database small.
+
+
 .. _`Enhancement Pipeline`:
 
 Enhancement Pipeline
 ====================
 
-Enhancement modules run after ingestion to add computed fields to stored entries. While the base ingestion captures the raw logbook text and metadata, enhancement modules derive additional structure from that text --- generating vector embeddings that enable semantic similarity search, using an LLM to extract keywords and summaries that improve search recall and RAG context quality, or performing any other analysis that produces useful derived data. Each module inherits from ``BaseEnhancementModule`` and is discovered through the Osprey registry. Because enhancement is decoupled from ingestion, you can ingest a large dataset first and enhance it later, swap out models without re-ingesting, or run only the modules you need. Run them with ``osprey ariel enhance``.
+Enhancement modules run after ingestion to add computed fields to stored entries. While the base ingestion captures the raw logbook text and metadata, enhancement modules derive additional structure from that text --- generating vector embeddings that enable semantic similarity search, using an LLM to extract keywords and summaries that improve search recall and the quality of the context the agent layer surfaces, or performing any other analysis that produces useful derived data. Each module inherits from ``BaseEnhancementModule`` and is discovered through the Osprey registry. Because enhancement is decoupled from ingestion, you can ingest a large dataset first and enhance it later, swap out models without re-ingesting, or run only the modules you need. Run them with ``osprey ariel enhance``.
 
 The built-in enhancement modules:
 
@@ -120,65 +128,96 @@ The built-in enhancement modules:
 
    .. tab-item:: Text Embedding
 
-      **Module:** ``enhancement/text_embedding.py``
+      **Module:** ``enhancement/text_embedding/`` (entry point: ``embedder.py``)
 
-      Generates vector embeddings for each entry using a configurable embedding model. Embeddings are stored in dedicated per-model tables (e.g., ``embeddings_nomic_embed_text``), allowing multiple models to coexist.
+      Generates vector embeddings for each entry using a configurable embedding model. Embeddings are stored in dedicated per-model tables (e.g., ``text_embeddings_nomic_embed_text``), allowing multiple models to coexist.
 
       **Configuration:**
 
       .. code-block:: yaml
 
-         enhancement_modules:
-           text_embedding:
-             enabled: true
-             provider: ollama
-             models:
-               - name: nomic-embed-text
-                 dimension: 768
+         ariel:
+           enhancement_modules:
+             text_embedding:
+               enabled: true
+               provider: ollama
+               models:
+                 - name: nomic-embed-text
+                   dimension: 768
+
+      The vector index over those tables is an HNSW index. It takes no sizing
+      parameter, so there is nothing about it to author per deployment.
 
       **Requirements:** Ollama (or another embedding provider) running with the specified model.
 
    .. tab-item:: Semantic Processor
 
-      **Module:** ``enhancement/semantic_processor.py``
+      **Module:** ``enhancement/semantic_processor/`` (entry point: ``processor.py``)
 
-      Uses an LLM to extract keywords and generate summaries for each entry. These fields improve keyword search recall and RAG context quality.
+      Uses an LLM to extract keywords and generate summaries for each entry. These fields improve keyword search recall and the quality of context the agent layer surfaces over results.
 
       **Configuration:**
 
       .. code-block:: yaml
 
-         enhancement_modules:
-           semantic_processor:
-             enabled: true
-             provider: cborg
-             model:
+         ariel:
+           enhancement_modules:
+             semantic_processor:
+               enabled: true
                provider: cborg
-               model_id: anthropic/claude-haiku
-               max_tokens: 256
+               max_input_chars: 8000
+               model:
+                 model_id: anthropic/claude-haiku
+                 max_tokens: 256
 
-**Registering a custom enhancement module:**
+      ``max_input_chars`` (default 8000) is how much of an entry is sent. A
+      longer entry is cut at that point and the cut is logged, naming the
+      entry, so a summary that describes only an opening says so somewhere.
+      Raise it if your entries run long and your provider's context window has
+      the room.
 
-To add your own module, subclass ``BaseEnhancementModule``, implement the ``name`` property and ``enhance()`` method, and register it through your application's registry configuration:
+      The shipped extraction prompt asks for categories --- equipment names, measured quantities, actions taken, problem types, locations --- because a framework default cannot know what your site calls its equipment. ``prompt_template`` replaces that prompt outright, and is where your own vocabulary belongs: the device families, abbreviations and process words your operators actually write. Keep the ``{text}`` placeholder and the JSON schema the module parses, or enhancement fails for every entry.
 
-.. code-block:: python
+      .. code-block:: yaml
 
-   from osprey.registry.helpers import extend_framework_registry
-   from osprey.registry.base import ArielEnhancementModuleRegistration
+         ariel:
+           enhancement_modules:
+             semantic_processor:
+               prompt_template: |
+                 Extract keywords and generate a summary from this logbook entry.
 
-   app_config = extend_framework_registry(
-       ariel_enhancement_modules=[
-           ArielEnhancementModuleRegistration(
-               name="my_enhancer",
-               module_path="my_app.enhancement.my_enhancer",
-               class_name="MyEnhancerModule",
-               description="Custom enhancement module",
-               execution_order=30,  # Runs after built-in modules (10, 20)
-           ),
-       ],
-   )
+                 Entry text:
+                 {text}
 
-The ``execution_order`` field controls the order in which modules run during enhancement. Built-in modules use orders 10 (semantic processor) and 20 (text embedding). See :class:`~osprey.services.ariel_search.enhancement.base.BaseEnhancementModule` for the full interface, including ``configure()``, ``health_check()``, and the ``migration`` property.
+                 ... your instructions here ...
+
+                 Return ONLY valid JSON matching this schema:
+                 {{"keywords": ["keyword1", ...], "summary": "..."}}
+
+   .. tab-item:: qmd Export
+
+      **Module:** ``enhancement/qmd_export/`` (entry point: ``exporter.py``)
+
+      Writes one markdown file per entry into a **mirror tree** --- the corpus the qmd search sidecar indexes. It is what makes the ``hybrid`` :doc:`search mode <search-modes>` able to answer anything; the shipped templates enable both halves together, and they have to stay that way --- either one alone is useless. Entries created through the ARIEL panel or the agent's ``entry_create`` tool are mirrored inline at creation time (best-effort), so they become hybrid-searchable without waiting for the next enhancement run.
+
+      **Configuration:**
+
+      .. code-block:: yaml
+
+         ariel:
+           enhancement_modules:
+             qmd_export:
+               enabled: true
+               settings:
+                 mirror_path: var/ariel_mirror
+
+      ``mirror_path`` is resolved against the project root --- the deployment repo, not the ``build/`` render inside it, which is exactly where the qmd sidecar bind-mounts the same path from. Keep it under ``var/``: the mirror is machine-written from PostgreSQL, it is as large as the logbook, and ``var/`` is the directory git ignores --- a path under ``data/`` would commit a generated corpus. An enabled export with no ``mirror_path`` is refused at startup rather than skipped, because a mirror nobody writes looks exactly like "search returns nothing".
+
+      **Requirements:** the ``services.qmd`` sidecar, which bind-mounts this same directory read-only. See :ref:`qmd-search-sidecar`.
+
+**Using a custom enhancement module:**
+
+A module of your own runs alongside the built-in ones once it is registered --- see :doc:`/contributing/extending-osprey`. Its registration carries an ``execution_order`` that decides where in the run it lands; the built-ins use 10 (semantic processor), 20 (text embedding) and 30 (qmd export), so a value above 30 runs last.
 
 .. admonition:: Collaboration Welcome
    :class: outreach
@@ -276,107 +315,108 @@ The computed interval is capped at ``max_interval_seconds``. After a successful 
    scheduler will log a message and skip the cycle. Set ``require_initial_ingest: false``
    in the ``watch`` config block to start polling from the beginning of time instead.
 
-
-.. _`database`:
-
-Database Schema
-===============
-
-All ingested and enhanced data lives in PostgreSQL. The core ``enhanced_entries`` table stores one row per logbook entry with the normalized fields that every adapter produces --- entry ID, timestamp, author, raw text, and a JSONB metadata column for facility-specific extras. Enhancement modules write their results either into columns on this same table (keywords, summaries) or into dedicated per-model tables (vector embeddings). The pgvector extension provides the ``vector`` column type and cosine-distance operators that power semantic search. All tables are created and updated automatically by ``osprey ariel migrate``, which reads the current configuration to determine which embedding tables need to exist.
-
-.. admonition:: pgvector requirement
-   :class: important
-
-   The **pgvector** extension is required for semantic search. It is automatically installed in the Osprey-managed PostgreSQL container (``osprey deploy up``). For external databases, install it manually: ``CREATE EXTENSION IF NOT EXISTS vector;``
-
-Core Tables
------------
-
-**enhanced_entries** --- Primary storage for logbook entries:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 20 55
-
-   * - Column
-     - Type
-     - Description
-   * - ``entry_id``
-     - ``TEXT PRIMARY KEY``
-     - Unique entry identifier
-   * - ``source_system``
-     - ``TEXT``
-     - Origin system name (e.g., "ALS eLog")
-   * - ``timestamp``
-     - ``TIMESTAMPTZ``
-     - Entry creation time
-   * - ``author``
-     - ``TEXT``
-     - Entry author
-   * - ``raw_text``
-     - ``TEXT``
-     - Full entry text (subject + details)
-   * - ``summary``
-     - ``TEXT``
-     - LLM-generated summary (from semantic processor)
-   * - ``keywords``
-     - ``TEXT[]``
-     - LLM-extracted keywords (from semantic processor)
-   * - ``metadata``
-     - ``JSONB``
-     - Additional structured data (title, tags, attachments)
-
-**Per-model embedding tables** (e.g., ``embeddings_nomic_embed_text``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 25 50
-
-   * - Column
-     - Type
-     - Description
-   * - ``entry_id``
-     - ``TEXT PRIMARY KEY``
-     - Foreign key to enhanced_entries
-   * - ``embedding``
-     - ``vector(<dim>)``
-     - pgvector embedding column
-
-**ingestion_runs** --- Tracks ingestion history:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 20 55
-
-   * - Column
-     - Type
-     - Description
-   * - ``id``
-     - ``SERIAL``
-     - Auto-incrementing ID
-   * - ``started_at``
-     - ``TIMESTAMPTZ``
-     - Ingestion start time
-   * - ``completed_at``
-     - ``TIMESTAMPTZ``
-     - Ingestion completion time
-   * - ``entries_processed``
-     - ``INTEGER``
-     - Number of entries ingested
-   * - ``source_system``
-     - ``TEXT``
-     - Source adapter name
+The PostgreSQL schema this data lands in --- the ``enhanced_entries`` table, the
+per-model embedding tables, and the migrations that create them --- is documented
+in :doc:`/reference/contracts/ariel`.
 
 
-Migration System
-----------------
+Deployed Ingestion
+~~~~~~~~~~~~~~~~~~
 
-Migrations are run via ``osprey ariel migrate`` and managed by the ``run_migrations()`` function in ``database/migrate.py``. The migration system automatically creates embedding tables based on the ``enhancement_modules.text_embedding.models`` configuration.
+``osprey ariel watch`` keeps the mirror fresh only while you leave the command
+running. A deployment needs the same loop with no terminal attached, so Osprey
+ships a service that runs it in a container. Declare it in the build profile:
 
-.. admonition:: Schema Evolution
-   :class: outreach
+.. code-block:: yaml
 
-   The current schema was designed around three facility logbook formats (ALS, JLab, ORNL) and may not capture every field your facility needs. The ``metadata`` JSONB column provides flexibility for facility-specific extras, but if your logbook requires a fundamentally different table structure, please open a pull request or contact us --- the ingestion and storage layers are designed to accommodate new schemas without disrupting existing ones.
+   # profile.yml
+   services:
+     ariel_sync:
+       template: osprey.ariel_sync
+
+The build copies the bundled compose template into the project and adds
+``ariel_sync`` to ``deployed_services``. ``osprey up`` then starts a container
+that runs ``osprey ariel sync --watch``. That command syncs once on startup ---
+schema migration, an incremental ingest, and an enhancement pass over entries
+that are still missing derived fields --- and then enters the polling loop. Every later poll runs the same enhancement pass after it stores
+what it fetched, so a larger backlog is worked down over successive polls. A
+failure in that pass is logged and does not count toward
+``max_consecutive_failures``.
+
+The deployed loop does not wait for a prior ingest. It overrides
+``require_initial_ingest``, so a container started against an empty database
+does the full first ingest itself.
+
+The container runs the project image that ``osprey up`` builds, the same image
+the web terminals run by default, and the container runtime restarts it unless
+you stop it. That is what keeps the mirror moving between deployments instead of
+freezing at the last ``osprey up``. When the failure cap is reached the process
+exits with a non-zero status, and the restart policy starts it again. A
+repeatedly failing source therefore shows up as a restarting container, not as a
+stopped one. The two readings that tell the difference are the container's
+restart count and the ``ariel_last_ingestion`` health row described below.
+
+The service publishes no port and declares no container health check. It only
+makes outbound calls, to the logbook and to the database, so a container probe
+would have nothing to ask it. A container that is up but no longer ingesting is
+exactly the failure such a probe would report as healthy, so staleness is
+reported by ``osprey health`` instead --- see below.
+
+**Reaching the database.** When the deployment also runs the ARIEL database, the
+rendered compose file sets ``ARIEL_DATABASE_HOST`` and ``ARIEL_DATABASE_PORT`` in
+the container's environment. On the default bridge network they name the database
+container's network alias ``ariel-postgres`` and its container port ``5432``.
+When the service is declared with ``network: host`` under its ``config:`` key,
+they name ``localhost`` and the port the database publishes on the host. The two
+variables are written into the compose file only, never into the project's
+``.env``, so commands you run on the host are unaffected. They apply only where
+the connection string is derived from the ``services.postgresql`` block;
+:doc:`/reference/contracts/ariel` documents the full precedence order.
+
+When the deployment does not run the database, neither variable is written and
+the derived address stays ``localhost``. Inside a bridge-networked container
+that is the container itself. Point an external store at an address the
+container can resolve with ``ariel.database.uri``. Declaring the service with
+``network: host`` helps only when the store listens on the deployment host
+itself.
+
+.. admonition:: An authored URI is used exactly as written
+   :class: warning
+
+   If ``ariel.database.uri`` is set, that value is used verbatim and the two
+   variables above are ignored. A URI naming ``localhost`` is correct from the
+   host, but inside a bridge-networked container ``localhost`` is the container
+   itself, so the sync cannot reach the database. Either write a URI the
+   container can resolve, or remove the key and let the address be derived.
+
+**The mirror directory.** When ``ariel.enhancement_modules.qmd_export`` is
+enabled with a ``mirror_path``, the host directory it names is bind-mounted into
+the container read-write. The exporter runs inside this container, so without
+that mount its files would land in the container's own writable layer and be
+discarded on the next recreate. The web terminals mount the same directory, so
+every process that enhances an entry writes into one mirror.
+
+**A source nobody ingests.** If ``ariel.ingestion.source_url`` is an HTTP or
+HTTPS URL and the deployment declares no ``ariel_sync`` service, ``osprey build``
+prints one warning line:
+
+::
+
+   ⚠ ariel.ingestion.source_url is https://api.example.com/logbook, but no
+   service in this deployment ingests it — add a services: entry with
+   `template: osprey.ariel_sync`.
+
+The advisory never fails the build. A ``source_url`` naming a local file is
+silent, because a file needs no polling service.
+
+**Watching for a stalled mirror.** ``osprey health`` reports an
+``ariel_last_ingestion`` row. When the config carries an ``ariel.ingestion``
+block, that row becomes a warning once the newest ingestion is older than
+``poll_interval_seconds`` plus ``watch.max_interval_seconds`` --- two hours with
+the defaults above. The warning reads ``Last ingestion is <age> old, ingestion
+interval is <threshold>``. Without an ``ariel.ingestion`` block the expected
+cadence is unknown, and the row stays ``ok`` as long as some ingestion has been
+recorded. A store that has never been ingested warns either way.
 
 
 See Also
@@ -385,8 +425,8 @@ See Also
 :doc:`search-modes`
     How search uses the ingested and enhanced data
 
-:doc:`osprey-integration`
-    Capability, context flow, and error classification
+:doc:`/reference/contracts/ariel`
+    MCP tools, the capabilities API, and the database schema
 
-:doc:`/cli-reference/index`
+:doc:`/reference/cli`
     CLI reference for ``osprey ariel ingest``, ``osprey ariel enhance``, and other commands

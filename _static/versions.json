@@ -1,5 +1,11 @@
 [
   {
+    "name": "v2026.5.0 (stable)",
+    "version": "2026.5.0",
+    "url": "https://als-apg.github.io/osprey/",
+    "preferred": true
+  },
+  {
     "name": "latest (development)",
     "version": "dev",
     "url": "https://als-apg.github.io/osprey/latest/"

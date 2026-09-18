@@ -3,13 +3,21 @@ Getting Started
 
 Welcome to Osprey Framework! This comprehensive guide will take you from zero to building production-ready control system agents, with working results at every step.
 
+.. tip::
+
+   The fastest path to a deployment for your own facility is the **guided
+   installer** — a conversation with your coding agent that inventories what
+   you have and builds the project with you: :doc:`osprey-install`. The
+   step-by-step tutorials cover the same ground and remain the best way to
+   learn the concepts.
+
 **What You'll Accomplish**
 --------------------------
 
 By following this comprehensive learning path, you'll have:
 
 * A fully functional development environment
-* Your first working agent (weather assistant)
+* Your first working agent (hello world)
 * Production-grade control system patterns (control assistant)
 * Framework mastery through essential development patterns
 * Complete API reference for daily development
@@ -37,7 +45,7 @@ By following this comprehensive learning path, you'll have:
       :link-type: doc
       :class-header: bg-info text-white
 
-      Get your development environment running with Podman, dependencies, and configuration. Includes interactive CLI for easy project creation!
+      Install the ``osprey`` CLI and configure a provider. A container runtime (Docker or Podman) is optional and only needed for deployable services.
 
       **Outcome:**
       Working dev environment
@@ -65,12 +73,12 @@ By following this comprehensive learning path, you'll have:
       **Outcome:**
       Your first working agent
 
-   .. grid-item-card:: 🎯 3. Guided Build Interview
-      :link: osprey-build-interview
+   .. grid-item-card:: 🎯 3. Install and Set Up — ⭐ recommended
+      :link: osprey-install
       :link-type: doc
       :class-header: bg-success text-white
 
-      Generate a project profile for your own detector, beamline, or accelerator subsystem through a guided conversation.
+      Install OSPREY and set it up for your own detector, beamline, or accelerator subsystem through a guided conversation.
 
       **Outcome:**
       A tailored project for your facility
@@ -98,12 +106,12 @@ By following this comprehensive learning path, you'll have:
 .. grid:: 1 1 2 2
    :gutter: 3
 
-   .. grid-item-card:: ⚡ 5. Architecture
+   .. grid-item-card:: ⚡ 6. Architecture
       :link: ../architecture/index
       :link-type: doc
       :class-header: bg-warning text-white
 
-      Understand the Claude Code + MCP architecture, data flow, and key concepts.
+      Understand the Osprey agent + MCP architecture, data flow, and key concepts.
 
       **Outcome:**
       Architecture understanding
@@ -115,5 +123,5 @@ By following this comprehensive learning path, you'll have:
    installation
    conceptual-tutorial
    hello-world-tutorial
-   osprey-build-interview
+   osprey-install
    control-assistant

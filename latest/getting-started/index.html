@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Getting Started &#8212; Osprey Framework 0.0.0-dev documentation</title>
+    <title>Getting Started &#8212; Osprey Framework dev documentation</title>
   
   
   
@@ -35,7 +35,7 @@
     <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
     <link rel="stylesheet" type="text/css" href="../_static/workflow-autodoc.css?v=8680bdfd" />
     <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=a5f60b8d" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=1819b4a7" />
   
   <!-- So that users can add custom icons -->
   <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
@@ -43,7 +43,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../_static/documentation_options.js?v=b984d1c4"></script>
+    <script src="../_static/documentation_options.js?v=632f9628"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -53,10 +53,11 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://als-apg.github.io/osprey/_static/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.0.0-dev';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
-            false;
+            true;
         </script>
+    <link rel="canonical" href="https://als-apg.github.io/osprey/getting-started/index.html" />
     <link rel="icon" href="../_static/logo.svg"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
@@ -64,8 +65,8 @@
     <link rel="prev" title="Osprey Framework Documentation" href="../index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="" />
-    <meta name="docbuild:last-update" content="May 05, 2026"/>
+  <meta name="docsearch:version" content="dev" />
+    <meta name="docbuild:last-update" content="Sep 18, 2026"/>
   </head>
   
   
@@ -149,15 +150,22 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../architecture/index.html">
-    Architecture Overview
+  <a class="nav-link nav-internal" href="../how-to/index.html">
+    How-To Guides
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../how-to/index.html">
-    How-To Guides
+  <a class="nav-link nav-internal" href="../architecture/index.html">
+    Architecture
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference/index.html">
+    Reference
   </a>
 </li>
 
@@ -285,15 +293,22 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../architecture/index.html">
-    Architecture Overview
+  <a class="nav-link nav-internal" href="../how-to/index.html">
+    How-To Guides
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../how-to/index.html">
-    How-To Guides
+  <a class="nav-link nav-internal" href="../architecture/index.html">
+    Architecture
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../reference/index.html">
+    Reference
   </a>
 </li>
 
@@ -371,7 +386,7 @@
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation &amp; Setup</a></li>
 <li class="toctree-l1"><a class="reference internal" href="conceptual-tutorial.html">Conceptual Tutorial</a></li>
 <li class="toctree-l1"><a class="reference internal" href="hello-world-tutorial.html">Hello World Tutorial</a></li>
-<li class="toctree-l1"><a class="reference internal" href="osprey-build-interview.html">Guided Project Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="osprey-install.html">Install and Set Up</a></li>
 <li class="toctree-l1"><a class="reference internal" href="control-assistant.html">Production Control Systems Tutorial</a></li>
 </ul>
 </div>
@@ -433,12 +448,20 @@
   <section id="getting-started">
 <h1>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h1>
 <p>Welcome to Osprey Framework! This comprehensive guide will take you from zero to building production-ready control system agents, with working results at every step.</p>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>The fastest path to a deployment for your own facility is the <strong>guided
+installer</strong> — a conversation with your coding agent that inventories what
+you have and builds the project with you: <a class="reference internal" href="osprey-install.html"><span class="doc">Install and Set Up</span></a>. The
+step-by-step tutorials cover the same ground and remain the best way to
+learn the concepts.</p>
+</div>
 <section id="what-you-ll-accomplish">
 <h2><strong>What You’ll Accomplish</strong><a class="headerlink" href="#what-you-ll-accomplish" title="Link to this heading">#</a></h2>
 <p>By following this comprehensive learning path, you’ll have:</p>
 <ul class="simple">
 <li><p>A fully functional development environment</p></li>
-<li><p>Your first working agent (weather assistant)</p></li>
+<li><p>Your first working agent (hello world)</p></li>
 <li><p>Production-grade control system patterns (control assistant)</p></li>
 <li><p>Framework mastery through essential development patterns</p></li>
 <li><p>Complete API reference for daily development</p></li>
@@ -463,7 +486,7 @@
 <div class="sd-card-body docutils">
 <div class="sd-card-title sd-font-weight-bold docutils">
 📦 1. Fresh Installation</div>
-<p class="sd-card-text">Get your development environment running with Podman, dependencies, and configuration. Includes interactive CLI for easy project creation!</p>
+<p class="sd-card-text">Install the <code class="docutils literal notranslate"><span class="pre">osprey</span></code> CLI and configure a provider. A container runtime (Docker or Podman) is optional and only needed for deployable services.</p>
 <p class="sd-card-text"><strong>Outcome:</strong>
 Working dev environment</p>
 </div>
@@ -499,12 +522,12 @@ Your first working agent</p>
 <div class="sd-card sd-sphinx-override sd-w-100 sd-shadow-sm sd-card-hover docutils">
 <div class="sd-card-body docutils">
 <div class="sd-card-title sd-font-weight-bold docutils">
-🎯 3. Guided Build Interview</div>
-<p class="sd-card-text">Generate a project profile for your own detector, beamline, or accelerator subsystem through a guided conversation.</p>
+🎯 3. Install and Set Up — ⭐ recommended</div>
+<p class="sd-card-text">Install OSPREY and set it up for your own detector, beamline, or accelerator subsystem through a guided conversation.</p>
 <p class="sd-card-text"><strong>Outcome:</strong>
 A tailored project for your facility</p>
 </div>
-<a class="sd-stretched-link sd-hide-link-text reference internal" href="osprey-build-interview.html"><span class="doc">Guided Project Setup</span></a></div>
+<a class="sd-stretched-link sd-hide-link-text reference internal" href="osprey-install.html"><span class="doc">Install and Set Up</span></a></div>
 </div>
 <div class="sd-col sd-d-flex-row docutils">
 <div class="sd-card sd-sphinx-override sd-w-100 sd-shadow-sm sd-card-hover docutils">
@@ -536,12 +559,12 @@ Practical recipes</p>
 <div class="sd-card sd-sphinx-override sd-w-100 sd-shadow-sm sd-card-hover docutils">
 <div class="sd-card-body docutils">
 <div class="sd-card-title sd-font-weight-bold docutils">
-⚡ 5. Architecture</div>
-<p class="sd-card-text">Understand the Claude Code + MCP architecture, data flow, and key concepts.</p>
+⚡ 6. Architecture</div>
+<p class="sd-card-text">Understand the Osprey agent + MCP architecture, data flow, and key concepts.</p>
 <p class="sd-card-text"><strong>Outcome:</strong>
 Architecture understanding</p>
 </div>
-<a class="sd-stretched-link sd-hide-link-text reference internal" href="../architecture/index.html"><span class="doc">Architecture Overview</span></a></div>
+<a class="sd-stretched-link sd-hide-link-text reference internal" href="../architecture/index.html"><span class="doc">Architecture</span></a></div>
 </div>
 </div>
 </div>
