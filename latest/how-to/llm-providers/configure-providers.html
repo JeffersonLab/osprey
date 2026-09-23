@@ -66,7 +66,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="dev" />
-    <meta name="docbuild:last-update" content="Sep 18, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 23, 2026"/>
   </head>
   
   
@@ -519,14 +519,14 @@
                   
   <section id="configure-llm-providers">
 <span id="how-to-configure-providers"></span><h1>Configure LLM Providers<a class="headerlink" href="#configure-llm-providers" title="Link to this heading">#</a></h1>
-<p>Osprey uses LLM providers in two contexts: <strong>the Osprey agent</strong> (the main agent)
+<p>Osprey uses LLM providers in two contexts: <strong>the OSPREY agent</strong> (the main agent)
 communicates over the Anthropic Messages API, while <strong>MCP tool servers</strong> call
 the same named providers directly through <a class="reference external" href="https://docs.litellm.ai/">LiteLLM</a>.
 This guide covers how to configure providers for both.</p>
 <div class="osprey-diagram">
 <svg viewBox="0 0 960 380" role="img" aria-labelledby="provider-routing-title provider-routing-desc">
   <title id="provider-routing-title">How requests reach a provider</title>
-  <desc id="provider-routing-desc">The Osprey agent speaks the Anthropic Messages API. Providers that already speak it are reached directly; providers that offer only an OpenAI-compatible endpoint are reached through a local translation proxy that OSPREY starts at launch. MCP tool servers are a separate client stack — they use LiteLLM and do not travel the agent's path.</desc>
+  <desc id="provider-routing-desc">The OSPREY agent speaks the Anthropic Messages API. Providers that already speak it are reached directly; providers that offer only an OpenAI-compatible endpoint are reached through a local translation proxy that OSPREY starts at launch. MCP tool servers are a separate client stack — they use LiteLLM and do not travel the agent's path.</desc>
   <defs>
     <marker id="provider-routing-arr" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
       <polygon points="0,0 8,3 0,6" fill="context-stroke"/>
@@ -542,7 +542,7 @@ This guide covers how to configure providers for both.</p>
 
   <!-- clients -->
   <rect class="nb-in" x="16" y="100" width="200" height="60" rx="6"/>
-  <text class="tn" x="116" y="126" text-anchor="middle">Osprey agent</text>
+  <text class="tn" x="116" y="126" text-anchor="middle">OSPREY agent</text>
   <text class="ts" x="116" y="144" text-anchor="middle">Anthropic Messages API</text>
 
   <rect class="nb-in" x="16" y="250" width="200" height="60" rx="6"/>
@@ -659,7 +659,7 @@ This guide covers how to configure providers for both.</p>
 </tbody>
 </table>
 </div>
-<p><strong>Protocol</strong> indicates how the provider communicates with the Osprey agent:</p>
+<p><strong>Protocol</strong> indicates how the provider communicates with the OSPREY agent:</p>
 <ul class="simple">
 <li><p><strong>Anthropic (native)</strong>: Speaks the Anthropic Messages API directly. No
 translation needed.</p></li>
@@ -684,28 +684,27 @@ automatically starts a local translation proxy to bridge the protocols.</p></li>
 </pre></div>
 </div>
 <p>Ollama and vLLM run locally and do not require an API key.</p>
-<p><code class="docutils literal notranslate"><span class="pre">als-apg</span></code> needs one more variable: it fronts a gateway that each site hosts
-itself, so there is no endpoint to default to. Name it alongside the key, or
-put the URL straight into <code class="docutils literal notranslate"><span class="pre">providers.yml</span></code>:</p>
+<p><code class="docutils literal notranslate"><span class="pre">als-apg</span></code> ships the endpoint of the gateway it fronts,
+<code class="docutils literal notranslate"><span class="pre">https://llm.als.lbl.gov</span></code>, so the key is all a deployment needs. A site that
+reaches the gateway somewhere else names that host instead — in the shell, or
+straight in <code class="docutils literal notranslate"><span class="pre">providers.yml</span></code> under <code class="docutils literal notranslate"><span class="pre">api.providers.als-apg.base_url</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ALS_APG_BASE_URL</span><span class="o">=</span><span class="s2">&quot;https://your-gateway.example.org/v1&quot;</span>
 </pre></div>
 </div>
-<p>Without it, every path that would place a call refuses rather than sending the
-gateway’s token to another host. A launch — <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">chat</span></code>, <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">web</span></code>, an
-agent run — stops with:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Provider</span> <span class="s1">&#39;als-apg&#39;</span> <span class="n">has</span> <span class="n">no</span> <span class="n">base_url</span><span class="o">.</span> <span class="n">It</span> <span class="n">fronts</span> <span class="n">models</span> <span class="n">through</span> <span class="n">a</span> <span class="n">gateway</span> <span class="n">that</span>
-<span class="n">has</span> <span class="n">no</span> <span class="n">default</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">so</span> <span class="n">the</span> <span class="n">URL</span> <span class="n">has</span> <span class="n">to</span> <span class="n">be</span> <span class="n">named</span><span class="p">:</span> <span class="nb">set</span> <span class="n">ALS_APG_BASE_URL</span><span class="p">,</span>
-<span class="ow">or</span> <span class="n">api</span><span class="o">.</span><span class="n">providers</span><span class="o">.</span><span class="n">als</span><span class="o">-</span><span class="n">apg</span><span class="o">.</span><span class="n">base_url</span> <span class="ow">in</span> <span class="n">config</span><span class="o">.</span><span class="n">yml</span><span class="o">.</span>
-</pre></div>
-</div>
-<p>A direct model call and <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">health</span></code> report the same thing more briefly,
-as <code class="docutils literal notranslate"><span class="pre">Base</span> <span class="pre">URL</span> <span class="pre">required</span> <span class="pre">for</span> <span class="pre">als-apg</span></code>.</p>
-<p>On a multi-user deployment the endpoint has to be in the repository’s env chain
-rather than only in your shell. Each per-user terminal runs with <code class="docutils literal notranslate"><span class="pre">.env.users</span></code>,
-a generated file the deploy copies the provider’s key and endpoint into, and it
-is copied from what is on disk — never from the environment <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> runs
-in. A chain that sets neither is refused before any container starts, naming the
-variable.</p>
+<p>The variable beats a value in the config, which is what makes it a runtime
+redirect for a deployment whose endpoint is already baked into an image.</p>
+<p>A provider that requires an endpoint and ships none behaves differently: every
+path that would place a call refuses rather than sending the gateway’s token to
+another host. A launch — <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">chat</span></code>, <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">web</span></code>, an agent run — stops
+with a message naming the variable and the config key that would settle it, and
+a direct model call and <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">health</span></code> report the same thing more briefly, as
+<code class="docutils literal notranslate"><span class="pre">Base</span> <span class="pre">URL</span> <span class="pre">required</span> <span class="pre">for</span> <span class="pre">&lt;provider&gt;</span></code>.</p>
+<p>On a multi-user deployment such an endpoint has to be in the repository’s env
+chain rather than only in your shell. Each per-user terminal runs with
+<code class="docutils literal notranslate"><span class="pre">.env.users</span></code>, a generated file the deploy copies the provider’s key and
+endpoint into, and it is copied from what is on disk — never from the
+environment <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> runs in. A chain that sets neither is refused before
+any container starts, naming the variable.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>A shell export reaches a <strong>deployment</strong> only once, when <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">init</span></code>
@@ -748,7 +747,7 @@ rendered one. The rendered file has two relevant sections:</p>
 <ol class="arabic simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">api.providers</span></code> — declares available providers with their endpoints and
 model IDs.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">claude_code</span></code> — selects which provider the Osprey agent uses and at which
+<li><p><code class="docutils literal notranslate"><span class="pre">claude_code</span></code> — selects which provider the OSPREY agent uses and at which
 model tier.</p></li>
 </ol>
 <p>The YAML blocks below show that <strong>rendered</strong> <code class="docutils literal notranslate"><span class="pre">build/config.yml</span></code>, so you can
@@ -799,13 +798,14 @@ but it is not required: a tier that no source maps falls back to the default
 model, with a build warning naming each substitution. The framework never
 substitutes another provider’s model IDs; a provider with no <code class="docutils literal notranslate"><span class="pre">models</span></code>
 mapping <em>and</em> no <code class="docutils literal notranslate"><span class="pre">default_model</span></code> to fall back on is refused.</p>
-<p><code class="docutils literal notranslate"><span class="pre">base_url</span></code> is the endpoint the agent itself talks to. <code class="docutils literal notranslate"><span class="pre">cborg</span></code> and
-<code class="docutils literal notranslate"><span class="pre">als-apg</span></code> front a gateway each site hosts itself and ship no built-in URL:
-name the endpoint here (or, for <code class="docutils literal notranslate"><span class="pre">als-apg</span></code>, in <code class="docutils literal notranslate"><span class="pre">ALS_APG_BASE_URL</span></code> as above)
-or the provider refuses to start. <code class="docutils literal notranslate"><span class="pre">argo</span></code>, <code class="docutils literal notranslate"><span class="pre">stanford</span></code> and the local runtimes
-(<code class="docutils literal notranslate"><span class="pre">ollama</span></code>, <code class="docutils literal notranslate"><span class="pre">vllm</span></code>, <code class="docutils literal notranslate"><span class="pre">ds4</span></code>) ship a well-known endpoint that a value here
-overrides. <code class="docutils literal notranslate"><span class="pre">anthropic</span></code> and <code class="docutils literal notranslate"><span class="pre">openai</span></code> need none, so omitting it sends
-requests to the vendor’s own API. Keep the trailing
+<p><code class="docutils literal notranslate"><span class="pre">base_url</span></code> is the endpoint the agent itself talks to. Every entry the shipped
+catalog carries names one, and a value here replaces it: the institutional
+gateways (<code class="docutils literal notranslate"><span class="pre">cborg</span></code>, <code class="docutils literal notranslate"><span class="pre">amsc-i2</span></code>, <code class="docutils literal notranslate"><span class="pre">stanford</span></code>, <code class="docutils literal notranslate"><span class="pre">als-apg</span></code>) and the vendors’
+own APIs are spelled out, while <code class="docutils literal notranslate"><span class="pre">ollama</span></code> and <code class="docutils literal notranslate"><span class="pre">argo</span></code> are spelled as a
+variable with the well-known host as its default. For <code class="docutils literal notranslate"><span class="pre">als-apg</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ALS_APG_BASE_URL</span></code> overrides the entry in turn, as above. A gateway a
+deployment adds itself has no shipped entry, so it names its endpoint here or
+refuses to start. Keep the trailing
 <code class="docutils literal notranslate"><span class="pre">/v1</span></code> on OpenAI-compatible gateways — the translation proxy needs it, and the
 agent’s own requests have it stripped automatically.</p>
 <p><code class="docutils literal notranslate"><span class="pre">extra_body</span></code> is an optional mapping sent in the request body of every
@@ -838,7 +838,7 @@ custom providers.</p>
 </section>
 <section id="model-tier-mapping">
 <h2>Model Tier Mapping<a class="headerlink" href="#model-tier-mapping" title="Link to this heading">#</a></h2>
-<p>The Osprey agent uses three model tiers — <code class="docutils literal notranslate"><span class="pre">haiku</span></code> (fast/cheap), <code class="docutils literal notranslate"><span class="pre">sonnet</span></code>
+<p>The OSPREY agent uses three model tiers — <code class="docutils literal notranslate"><span class="pre">haiku</span></code> (fast/cheap), <code class="docutils literal notranslate"><span class="pre">sonnet</span></code>
 (balanced), and <code class="docutils literal notranslate"><span class="pre">opus</span></code> (most capable). Each provider maps these to its own model
 IDs via the <code class="docutils literal notranslate"><span class="pre">models</span></code> block in its <code class="docutils literal notranslate"><span class="pre">providers.yml</span></code> entry.</p>
 <p>The resolver applies model IDs in this priority order:</p>
@@ -871,11 +871,11 @@ deployment’s <code class="docutils literal notranslate"><span class="pre">prof
 </section>
 <section id="protocol-translation">
 <h2>Protocol Translation<a class="headerlink" href="#protocol-translation" title="Link to this heading">#</a></h2>
-<p>The Osprey agent speaks the Anthropic Messages API. Providers that only offer an
+<p>The OSPREY agent speaks the Anthropic Messages API. Providers that only offer an
 OpenAI-compatible endpoint (marked <em>OpenAI (proxied)</em> above) need protocol
 translation.</p>
 <p>Osprey handles this automatically: when an OpenAI-only provider is selected,
-a local translation proxy starts on a random port before the Osprey agent launches.
+a local translation proxy starts on a random port before the OSPREY agent launches.
 No manual configuration is required — you never invoke the proxy yourself.</p>
 <p>The path is identical whether the endpoint is self-hosted (<code class="docutils literal notranslate"><span class="pre">ollama</span></code>, <code class="docutils literal notranslate"><span class="pre">vllm</span></code>
 — local, so no API key) or a remote service that speaks only the OpenAI
@@ -970,15 +970,15 @@ deployment unhealthy. The rendered result in <code class="docutils literal notra
 <ul class="simple">
 <li><p>Detects that <code class="docutils literal notranslate"><span class="pre">my-provider</span></code> is not a built-in Anthropic-native provider.</p></li>
 <li><p>Starts the translation proxy to bridge Anthropic → OpenAI protocols.</p></li>
-<li><p>Reads the Osprey agent’s auth token from <code class="docutils literal notranslate"><span class="pre">MY_PROVIDER_API_KEY</span></code>. The launcher
+<li><p>Reads the OSPREY agent’s auth token from <code class="docutils literal notranslate"><span class="pre">MY_PROVIDER_API_KEY</span></code>. The launcher
 derives that variable name from the provider’s own name — uppercased, dashes to
 underscores — and never reads the entry’s <code class="docutils literal notranslate"><span class="pre">api_key</span></code> value, so the name here
 lines up only because the provider is called <code class="docutils literal notranslate"><span class="pre">my-provider</span></code>.</p></li>
-<li><p>Injects the resolved model IDs into the Osprey agent’s environment.</p></li>
+<li><p>Injects the resolved model IDs into the OSPREY agent’s environment.</p></li>
 </ul>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>This no-code entry serves the Osprey agent.</strong> MCP tool servers resolve a
+<p><strong>This no-code entry serves the OSPREY agent.</strong> MCP tool servers resolve a
 provider by <em>name</em> against the built-in table in this guide, so a
 config-only entry means nothing to them and a tool call that asks for it
 fails with <code class="docutils literal notranslate"><span class="pre">Unknown</span> <span class="pre">provider</span></code>. Giving an MCP tool server a new provider

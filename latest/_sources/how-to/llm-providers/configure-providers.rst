@@ -3,7 +3,7 @@
 Configure LLM Providers
 =======================
 
-Osprey uses LLM providers in two contexts: **the Osprey agent** (the main agent)
+Osprey uses LLM providers in two contexts: **the OSPREY agent** (the main agent)
 communicates over the Anthropic Messages API, while **MCP tool servers** call
 the same named providers directly through `LiteLLM <https://docs.litellm.ai/>`_.
 This guide covers how to configure providers for both.
@@ -73,7 +73,7 @@ Available Providers
      - *(none)*
      - OpenAI (proxied)
 
-**Protocol** indicates how the provider communicates with the Osprey agent:
+**Protocol** indicates how the provider communicates with the OSPREY agent:
 
 - **Anthropic (native)**: Speaks the Anthropic Messages API directly. No
   translation needed.
@@ -101,31 +101,31 @@ Set the API key as an environment variable before running Osprey:
 
 Ollama and vLLM run locally and do not require an API key.
 
-``als-apg`` needs one more variable: it fronts a gateway that each site hosts
-itself, so there is no endpoint to default to. Name it alongside the key, or
-put the URL straight into ``providers.yml``:
+``als-apg`` ships the endpoint of the gateway it fronts,
+``https://llm.als.lbl.gov``, so the key is all a deployment needs. A site that
+reaches the gateway somewhere else names that host instead — in the shell, or
+straight in ``providers.yml`` under ``api.providers.als-apg.base_url``:
 
 .. code-block:: bash
 
    export ALS_APG_BASE_URL="https://your-gateway.example.org/v1"
 
-Without it, every path that would place a call refuses rather than sending the
-gateway's token to another host. A launch — ``osprey chat``, ``osprey web``, an
-agent run — stops with::
+The variable beats a value in the config, which is what makes it a runtime
+redirect for a deployment whose endpoint is already baked into an image.
 
-   Provider 'als-apg' has no base_url. It fronts models through a gateway that
-   has no default endpoint, so the URL has to be named: set ALS_APG_BASE_URL,
-   or api.providers.als-apg.base_url in config.yml.
+A provider that requires an endpoint and ships none behaves differently: every
+path that would place a call refuses rather than sending the gateway's token to
+another host. A launch — ``osprey chat``, ``osprey web``, an agent run — stops
+with a message naming the variable and the config key that would settle it, and
+a direct model call and ``osprey health`` report the same thing more briefly, as
+``Base URL required for <provider>``.
 
-A direct model call and ``osprey health`` report the same thing more briefly,
-as ``Base URL required for als-apg``.
-
-On a multi-user deployment the endpoint has to be in the repository's env chain
-rather than only in your shell. Each per-user terminal runs with ``.env.users``,
-a generated file the deploy copies the provider's key and endpoint into, and it
-is copied from what is on disk — never from the environment ``osprey up`` runs
-in. A chain that sets neither is refused before any container starts, naming the
-variable.
+On a multi-user deployment such an endpoint has to be in the repository's env
+chain rather than only in your shell. Each per-user terminal runs with
+``.env.users``, a generated file the deploy copies the provider's key and
+endpoint into, and it is copied from what is on disk — never from the
+environment ``osprey up`` runs in. A chain that sets neither is refused before
+any container starts, naming the variable.
 
 .. note::
 
@@ -178,7 +178,7 @@ rendered one. The rendered file has two relevant sections:
 
 1. ``api.providers`` — declares available providers with their endpoints and
    model IDs.
-2. ``claude_code`` — selects which provider the Osprey agent uses and at which
+2. ``claude_code`` — selects which provider the OSPREY agent uses and at which
    model tier.
 
 The YAML blocks below show that **rendered** ``build/config.yml``, so you can
@@ -232,13 +232,14 @@ model, with a build warning naming each substitution. The framework never
 substitutes another provider's model IDs; a provider with no ``models``
 mapping *and* no ``default_model`` to fall back on is refused.
 
-``base_url`` is the endpoint the agent itself talks to. ``cborg`` and
-``als-apg`` front a gateway each site hosts itself and ship no built-in URL:
-name the endpoint here (or, for ``als-apg``, in ``ALS_APG_BASE_URL`` as above)
-or the provider refuses to start. ``argo``, ``stanford`` and the local runtimes
-(``ollama``, ``vllm``, ``ds4``) ship a well-known endpoint that a value here
-overrides. ``anthropic`` and ``openai`` need none, so omitting it sends
-requests to the vendor's own API. Keep the trailing
+``base_url`` is the endpoint the agent itself talks to. Every entry the shipped
+catalog carries names one, and a value here replaces it: the institutional
+gateways (``cborg``, ``amsc-i2``, ``stanford``, ``als-apg``) and the vendors'
+own APIs are spelled out, while ``ollama`` and ``argo`` are spelled as a
+variable with the well-known host as its default. For ``als-apg``,
+``ALS_APG_BASE_URL`` overrides the entry in turn, as above. A gateway a
+deployment adds itself has no shipped entry, so it names its endpoint here or
+refuses to start. Keep the trailing
 ``/v1`` on OpenAI-compatible gateways — the translation proxy needs it, and the
 agent's own requests have it stripped automatically.
 
@@ -279,7 +280,7 @@ custom providers.
 Model Tier Mapping
 ------------------
 
-The Osprey agent uses three model tiers — ``haiku`` (fast/cheap), ``sonnet``
+The OSPREY agent uses three model tiers — ``haiku`` (fast/cheap), ``sonnet``
 (balanced), and ``opus`` (most capable). Each provider maps these to its own model
 IDs via the ``models`` block in its ``providers.yml`` entry.
 
@@ -318,12 +319,12 @@ Agents can also be pinned to specific tiers:
 Protocol Translation
 --------------------
 
-The Osprey agent speaks the Anthropic Messages API. Providers that only offer an
+The OSPREY agent speaks the Anthropic Messages API. Providers that only offer an
 OpenAI-compatible endpoint (marked *OpenAI (proxied)* above) need protocol
 translation.
 
 Osprey handles this automatically: when an OpenAI-only provider is selected,
-a local translation proxy starts on a random port before the Osprey agent launches.
+a local translation proxy starts on a random port before the OSPREY agent launches.
 No manual configuration is required — you never invoke the proxy yourself.
 
 The path is identical whether the endpoint is self-hosted (``ollama``, ``vllm``
@@ -433,15 +434,15 @@ The framework automatically:
 
 - Detects that ``my-provider`` is not a built-in Anthropic-native provider.
 - Starts the translation proxy to bridge Anthropic → OpenAI protocols.
-- Reads the Osprey agent's auth token from ``MY_PROVIDER_API_KEY``. The launcher
+- Reads the OSPREY agent's auth token from ``MY_PROVIDER_API_KEY``. The launcher
   derives that variable name from the provider's own name — uppercased, dashes to
   underscores — and never reads the entry's ``api_key`` value, so the name here
   lines up only because the provider is called ``my-provider``.
-- Injects the resolved model IDs into the Osprey agent's environment.
+- Injects the resolved model IDs into the OSPREY agent's environment.
 
 .. note::
 
-   **This no-code entry serves the Osprey agent.** MCP tool servers resolve a
+   **This no-code entry serves the OSPREY agent.** MCP tool servers resolve a
    provider by *name* against the built-in table in this guide, so a
    config-only entry means nothing to them and a tool call that asks for it
    fails with ``Unknown provider``. Giving an MCP tool server a new provider
