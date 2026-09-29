@@ -1,13 +1,15 @@
 """Check that the emitted raw-put block holds in an interpreter without osprey.
 
-Usage: ``python tests/services/python_executor/_no_osprey_check.py readonly``
+Usage: ``python tests/services/python_executor/_no_osprey_check.py readonly|armed``
 
-The executor embeds the guard into the script it runs, and that script must
+The executor embeds the block into the script it runs, and that script must
 refuse a raw put even where ``osprey`` and ``osprey_connectors`` cannot be
-imported. This emits the guard here, then runs it in a fresh interpreter with
-both packages blocked, and asserts that a raw put refuses with the readonly
-marker. Exits non-zero on any failure. Not collected by pytest (leading
-underscore); it is a gate helper.
+imported. This emits the block for the given mode here, then runs it in a fresh
+interpreter with both packages blocked, and asserts that a raw put refuses with
+the mode's marker: the readonly marker for the readonly guard (which also
+refuses ``ctypes``), the raw-client-write marker for the armed block (which
+leaves ``ctypes`` alone). Exits non-zero on any failure. Not collected by
+pytest (leading underscore); it is a gate helper.
 """
 
 import subprocess
@@ -18,6 +20,7 @@ from osprey.services.python_executor.execution.wrapper import (
     READONLY_REFUSAL_MARKER,
     ExecutionWrapper,
 )
+from osprey_connectors.errors import RAW_CLIENT_WRITE_MARKER
 
 _PROBE = textwrap.dedent(
     """
@@ -35,10 +38,11 @@ _PROBE = textwrap.dedent(
     exec(compile(sys.stdin.read(), "<emitted guard>", "exec"), {})
 
     marker = sys.argv[1]
-    for name, attempt in (
-        ("epics.caput", lambda: epics.caput("SR:PV", 1.0)),
-        ("ctypes.CDLL", lambda: __import__("ctypes").CDLL(None)),
-    ):
+    refuses_ctypes = sys.argv[2] == "refuses-ctypes"
+    attempts = [("epics.caput", lambda: epics.caput("SR:PV", 1.0))]
+    if refuses_ctypes:
+        attempts.append(("ctypes.CDLL", lambda: __import__("ctypes").CDLL(None)))
+    for name, attempt in attempts:
         try:
             attempt()
         except RuntimeError as error:
@@ -46,6 +50,11 @@ _PROBE = textwrap.dedent(
                 sys.exit(f"{name}: refused without the marker: {error}")
         else:
             sys.exit(f"{name}: raw put was NOT refused")
+    if not refuses_ctypes:
+        try:
+            __import__("ctypes").CDLL(None)
+        except Exception as error:
+            sys.exit(f"ctypes.CDLL: refused where it should pass: {error}")
     try:
         import osprey  # noqa: F401
     except ImportError:
@@ -57,19 +66,24 @@ _PROBE = textwrap.dedent(
 )
 
 
-def _emit(mode: str) -> str:
+def _emit(mode: str) -> tuple[str, str, str]:
+    """The emitted block, its refusal marker, and whether it refuses ctypes."""
     if mode == "readonly":
-        return ExecutionWrapper(execution_mode="readonly")._get_readonly_guard()
-    raise SystemExit(f"unknown mode {mode!r}; expected: readonly")
+        source = ExecutionWrapper(execution_mode="readonly")._get_readonly_guard()
+        return source, READONLY_REFUSAL_MARKER, "refuses-ctypes"
+    if mode == "armed":
+        source = ExecutionWrapper(execution_mode="readwrite")._get_armed_block()
+        return source, RAW_CLIENT_WRITE_MARKER, "passes-ctypes"
+    raise SystemExit(f"unknown mode {mode!r}; expected: readonly, armed")
 
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
-    source = _emit(argv[1])
+    source, marker, ctypes_expectation = _emit(argv[1])
     result = subprocess.run(
-        [sys.executable, "-c", _PROBE, READONLY_REFUSAL_MARKER],
+        [sys.executable, "-c", _PROBE, marker, ctypes_expectation],
         input=source,
         capture_output=True,
         text=True,
