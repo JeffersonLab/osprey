@@ -87,10 +87,13 @@ Python the agent wrote
 A Python run carries a whole program, so the per-write checks can only judge what they can read
 in it. The Python executor takes over from there. Before the code runs, it is read: dangerous
 patterns are refused, code that writes into the deployment's own files is refused, and
-read-only code may neither import a control-system client library nor spell a write. Then
-the code runs in its own process with guards in place: read-only code cannot write even if it
-tries, writes through the client libraries are checked against the limits, it cannot write
-into the deployment's own files, and it is stopped after a time limit. When the code finishes, its result is saved to a record and the process ends at once,
+read-only code may neither import a control-system client library nor spell a write;
+read-write code that plainly spells a client library's own put is refused by the approval hook
+before anyone is asked to approve it. Then the code runs in its own process with guards in
+place: read-only code cannot write even if it tries, read-write code writes through the
+connector only because a client library's own put is refused (a PVAccess put, which the
+connector cannot carry yet, is limits-checked instead), it cannot write into the
+deployment's own files, and it is stopped after a time limit. When the code finishes, its result is saved to a record and the process ends at once,
 so nothing a library does on the way out can hold it open; the executor reports the run from
 that record. All nine layers are described on :doc:`python-executor`.
 
@@ -138,7 +141,10 @@ A cell is run by a person, so no tool call and none of the checks are involved. 
 are the deployment's settings, which the notebook kernel carries. The kernel starts with writes
 off, and before every cell it re-reads which machine the deployment points at and whether it
 may write; a switch made anywhere reaches the next cell, and narrowing the machine reaches a
-cell already running, because the connector checks the narrowing on every write. A refused
+cell already running, because the connector checks the narrowing on every write. A cell writes
+through ``osprey.runtime.write_channel``; a client library's own put is refused whatever the
+chip says, so every write a cell makes reaches the connector, PVAccess puts excepted until
+the connector writes PVAccess. A refused
 write is shown in the cell, with a line saying what to do where something in the notebook
 would change it. The agent may edit notebooks only in the ``notebooks`` and ``artifacts``
 folders under the agent-data root, held there by a file-write guard that protects the host's
@@ -240,6 +246,16 @@ this deployment deploys. An external-worker lane (``bluesky.external:``) is a fa
 RunEngine and devices: no OSPREY check runs inside it, so neither a person's narrowing nor the
 lane's ceiling reaches its writes. The name OSPREY puts on such an item is attribution --- it
 says who queued the plan, not what gated it.
+
+The raw-put block that sends Python runs and notebook cells through the connector has gaps of
+the same kind. It refuses a client library's own put, and it tells a connector's put apart by
+the connector's write door, which records who is making the put rather than guarding it. Code
+that goes around the client library altogether is not stopped: a ``libca`` handle loaded
+through ``ctypes``, a raw socket, a pyepics callback under ``PREEMPTIVE_CALLBACK=False`` run
+inside a connector's waiting put, a connector subclass written in the run itself, or a shell
+escape in a notebook (``!python -c …``), which starts a fresh interpreter with no block at all.
+These are **cooperative bypasses**: the block keeps honest code on the checked path, and it is
+not a sandbox. See :ref:`python-executor-armed-block` and :ref:`connector-write-door`.
 
 The name the control system sees
 --------------------------------

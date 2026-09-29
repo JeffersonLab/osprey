@@ -42,7 +42,8 @@ logger = get_logger("execution_wrapper")
 READONLY_REFUSAL = (
     "readonly execution mode: control-system writes are refused — "
     "resubmit with execution_mode='readwrite' (human approval required) "
-    "if the write is intended"
+    "if the write is intended, and write through "
+    "osprey.runtime.write_channel(address, value)"
 )
 
 #: The substring every readonly refusal message carries, whichever layer
