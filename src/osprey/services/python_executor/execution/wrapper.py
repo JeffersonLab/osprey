@@ -77,6 +77,14 @@ READONLY_FS_REFUSAL_PREFIX = f"Refused ({READONLY_REFUSAL_MARKER}):"
 #: is still the right trade.
 READWRITE_FS_REFUSAL_PREFIX = DEFAULT_DENYLIST_PREFIX
 
+#: Source of the raw-put block the readonly guard embeds. Read by path rather
+#: than imported, so that emitting the guard never imports ``osprey.runtime``.
+_RAW_PUT_BLOCK_SOURCE = Path(__file__).resolve().parents[3] / "runtime" / "raw_put_block.py"
+
+#: Filename the embedded block is compiled under, so a traceback through it
+#: names the module it came from.
+_RAW_PUT_BLOCK_FILENAME = "osprey/runtime/raw_put_block.py"
+
 
 class ExecutionWrapper:
     """
@@ -1614,37 +1622,14 @@ if not _execution_dir.exists():
         validator: a deployment with limits checking off is exactly the one
         with nothing else standing behind the regex.
 
-        The table covers three kinds of route: the control-system client
-        libraries themselves, the process-spawning surface that could shell out
-        to ``caput``, and ``ctypes``, which reaches Channel Access without
-        importing any client package at all. The ``ctypes`` rows are gated
-        rather than refused outright, because a readonly run reads through
-        ``osprey.runtime`` and its EPICS connector is pyepics, which reaches
-        Channel Access by loading ``libca`` through ``ctypes``: a load is let
-        through only while pyepics' own ``initialize_libca`` is on the stack,
-        and the handle it gets back has its put entry points refused, so the
-        raw route through the library is closed like every other spelling.
-        Every other load refuses, pyepics present or not. Each patched
-        attribute is also
-        followed back to the module that defined it, so a write a package
-        merely re-exports refuses under both of its spellings. That step is
-        what covers the defining modules no table can enumerate — PyTango
-        defines its writes in ``tango.device_proxy`` and ``tango.connection``
-        and binds them onto ``DeviceProxy``, and every binding has its own
-        such layout; the one row that does name a private module
-        (``aioca._catools``) is belt-and-braces for the single library whose
-        second spelling is known.
-
-        The two halves of the table are patched at different moments. The
-        client and escape rows are resolved and refused before the user code
-        runs, because a readonly script may not import a client at all and
-        because a client module may load a shared library while it executes.
-        The two acquisition-framework rows are refused when their module is
-        imported, through a ``sys.meta_path`` finder that wraps the located
-        loader, because those are the rows a readonly script is allowed to
-        import and a script that imports neither should not pay for them. A
-        framework already imported when the guard installs is patched on the
-        spot.
+        The guard itself is :mod:`osprey.runtime.raw_put_block`. Its *source*
+        is read by path and embedded, then executed in a private namespace, so
+        the script stays self-contained — it holds in an interpreter where
+        ``osprey`` cannot be imported — no guard name leaks into the user code,
+        and this process never imports ``osprey.runtime``, whose package import
+        registers an exit handler. The tables are emitted as literals read from
+        this module's globals at emission time; the framework rows are the
+        deferred half, patched when the script imports their module.
 
         The connector side of the same contract lives in
         ``osprey_connectors.control_system.base`` (refuses ``write_channel``
@@ -1655,300 +1640,23 @@ if not _execution_dir.exists():
             return ""
         deferred = _FRAMEWORK_WRITE_TARGETS
         eager = tuple(row for row in _READONLY_WRITE_TARGETS if row not in deferred)
-
-        guard = f"""
-            # Readonly run: refuse every control-system write entry point, and
-            # every route out of Python that could reach one. Installed before
-            # user code, so an alias bound later resolves here.
-            import importlib as _osprey_importlib
-            import sys as _osprey_sys
-
-            # CPython resolves ``platform.uname().processor`` lazily, by
-            # shelling out to ``uname -p`` on first read — and h5py reads it
-            # while ``import at`` initialises its type layer, so the subprocess
-            # refusal below would kill the import of a pure-simulation library.
-            # Resolve it once now, while spawning is still allowed; the cached
-            # value answers every later lookup without touching subprocess.
-            import platform as _osprey_platform
-
-            _osprey_platform.processor()
-            del _osprey_platform
-
-            _osprey_eager_targets = {eager!r}
-            _osprey_deferred_targets = {deferred!r}
-
-
-            def _osprey_readonly_refuse(*_args, **_kwargs):
-                raise RuntimeError("@@REFUSAL@@")
-
-
-            # The shared-library loaders are the one refusal with an exception:
-            # pyepics, which ``osprey.runtime`` reads through, reaches Channel
-            # Access by loading ``libca`` via ``ctypes``. A load is permitted
-            # only while pyepics' own ``initialize_libca`` is on the stack —
-            # matched by code object, not by name, so a same-named function
-            # opens nothing — and the handle it returns has its put entry
-            # points refused, so the raw route through the library is closed
-            # as every other spelling is. Absent pyepics, every load refuses.
-            _osprey_gated_loader_rows = ("ctypes", "ctypes.LibraryLoader")
-            _osprey_handle_put_symbols = ("ca_array_put", "ca_array_put_callback")
-
-
-            def _osprey_pyepics_is_loading(_sys=_osprey_sys, _max_depth=8):
-                \"\"\"True while ``epics.ca.initialize_libca`` is a near caller.\"\"\"
-                _code = getattr(
-                    getattr(_sys.modules.get("epics.ca"), "initialize_libca", None),
-                    "__code__",
-                    None,
-                )
-                if _code is None:
-                    return False
-                # Frame 0 is this function, frame 1 the gated loader.
-                _frame = _sys._getframe(2)
-                for _ in range(_max_depth):
-                    if _frame is None:
-                        return False
-                    if _frame.f_code is _code:
-                        return True
-                    _frame = _frame.f_back
-                return False
-
-
-            def _osprey_gate_loader(_original):
-                def _osprey_gated_load(*_args, **_kwargs):
-                    if not _osprey_pyepics_is_loading():
-                        _osprey_readonly_refuse()
-                    _handle = _original(*_args, **_kwargs)
-                    try:
-                        for _symbol in _osprey_handle_put_symbols:
-                            setattr(_handle, _symbol, _osprey_readonly_refuse)
-                    except Exception:
-                        # A handle whose put symbols cannot be closed is not
-                        # handed out at all.
-                        _osprey_readonly_refuse()
-                    return _handle
-
-                return _osprey_gated_load
-
-
-            def _osprey_patch_row(_osprey_dotted, _osprey_attrs, _osprey_obj):
-                \"\"\"Refuse every attribute of one row on the object it resolved to.\"\"\"
-                try:
-                    for _osprey_attr in _osprey_attrs:
-                        if not hasattr(_osprey_obj, _osprey_attr):
-                            continue
-                        _osprey_original = getattr(_osprey_obj, _osprey_attr)
-                        if _osprey_dotted in _osprey_gated_loader_rows:
-                            _osprey_replacement = _osprey_gate_loader(_osprey_original)
-                        else:
-                            _osprey_replacement = _osprey_readonly_refuse
-                        setattr(_osprey_obj, _osprey_attr, _osprey_replacement)
-                        # A re-export leaves a second spelling behind that no
-                        # table can name for every binding: PyTango defines
-                        # its writes in ``tango.device_proxy`` and
-                        # ``tango.connection`` and binds them onto
-                        # ``DeviceProxy``, so patching the class attribute
-                        # alone leaves the module-level function writing.
-                        # Follow the original back to the module that defined
-                        # it and refuse there too. The identity check is what
-                        # makes this safe to run generically: ``__module__``
-                        # and ``__name__`` are metadata a decorator or a rebind
-                        # can leave pointing at a module holding something else
-                        # entirely, and replacing an attribute on a name match
-                        # alone could silently refuse an unrelated read.
-                        try:
-                            _osprey_home = _osprey_sys.modules.get(
-                                getattr(_osprey_original, "__module__", None)
-                            )
-                            _osprey_name = getattr(_osprey_original, "__name__", None)
-                            if (
-                                _osprey_home is not None
-                                and isinstance(_osprey_name, str)
-                                and getattr(_osprey_home, _osprey_name, None)
-                                is _osprey_original
-                            ):
-                                setattr(_osprey_home, _osprey_name, _osprey_replacement)
-                        except Exception as _osprey_home_error:
-                            # Secondary, best-effort step: the attribute the
-                            # table names already refuses. A failure here — an
-                            # unhashable ``__module__``, a module ``__getattr__``
-                            # that raises — must name the attribute and let the
-                            # REST of the row be patched, so it is caught here
-                            # rather than at the row level.
-                            print(
-                                "⚠️  readonly guard "
-                                f"({{_osprey_dotted}}.{{_osprey_attr}}) "
-                                f"defining-module step failed: {{_osprey_home_error}}"
-                            )
-                    # pvaPy spells one typed setter per scalar and array type
-                    # (putDouble, putScalarArray, ...). Enumerating them would
-                    # go stale against the binding; the prefix will not. Three
-                    # writes sit outside that prefix — asyncPut, parsePut and
-                    # parsePutGet — and they reach the machine exactly as the
-                    # rest do, so they are swept with them.
-                    if _osprey_dotted == "pvaccess.Channel":
-                        for _osprey_attr in dir(_osprey_obj):
-                            if _osprey_attr.startswith(
-                                ("put", "asyncPut", "parsePut")
-                            ):
-                                setattr(_osprey_obj, _osprey_attr, _osprey_readonly_refuse)
-                except Exception as _osprey_guard_error:
-                    # A target that cannot be patched must not stop the ones
-                    # after it, and the operator needs to know which one.
-                    print(
-                        f"⚠️  readonly guard ({{_osprey_dotted}}) failed: {{_osprey_guard_error}}"
-                    )
-
-
-            def _osprey_resolve(dotted):
-                \"\"\"Import the longest importable prefix of *dotted*, then walk attributes.
-
-                One spelling for modules, module attributes and classes alike.
-                Returns None when the target is not present, which is the
-                ordinary case for most of the table — an uninstalled library,
-                or an optional flavour of an installed one. That case has to
-                stay SILENT: it is true on every ordinary deployment, and a
-                warning per absent target would print on every readonly run.
-                \"\"\"
-                parts = dotted.split(".")
-                for _cut in range(len(parts), 0, -1):
-                    try:
-                        obj = _osprey_importlib.import_module(".".join(parts[:_cut]))
-                    except ImportError:
-                        continue
-                    for _attr in parts[_cut:]:
-                        try:
-                            obj = getattr(obj, _attr)
-                        except AttributeError:
-                            # An importable parent without the child: the
-                            # target does not exist here either.
-                            return None
-                    return obj
-                return None
-
-
-            # The client and escape rows are resolved before the loader is
-            # gated, in table order, because a client module may load a shared
-            # library while it executes: ``epicscorelibs.ca.cadef`` loads
-            # ``libca`` through ``ctypes.CDLL`` in its module body, and that
-            # row precedes the ``ctypes`` rows.
-            for _osprey_dotted, _osprey_attrs in _osprey_eager_targets:
-                try:
-                    _osprey_obj = _osprey_resolve(_osprey_dotted)
-                except Exception as _osprey_guard_error:
-                    print(
-                        f"⚠️  readonly guard ({{_osprey_dotted}}) failed: {{_osprey_guard_error}}"
-                    )
-                    continue
-                if _osprey_obj is None:
-                    continue
-                _osprey_patch_row(_osprey_dotted, _osprey_attrs, _osprey_obj)
-
-
-            # The framework rows wait for the script's own import. Each row is
-            # indexed under every module prefix of its dotted name, so it is
-            # reconsidered as each module on its path finishes executing; a key
-            # that never names a module simply never fires.
-            _osprey_rows_by_module = {{}}
-            for _osprey_dotted, _osprey_attrs in _osprey_deferred_targets:
-                _osprey_parts = _osprey_dotted.split(".")
-                for _osprey_cut in range(1, len(_osprey_parts) + 1):
-                    _osprey_rows_by_module.setdefault(
-                        ".".join(_osprey_parts[:_osprey_cut]), []
-                    ).append((_osprey_dotted, _osprey_attrs))
-
-
-            def _osprey_walk(module, fullname, dotted):
-                \"\"\"Walk the rest of *dotted* off *module*; None when it is not there.\"\"\"
-                obj = module
-                for _attr in dotted.split(".")[len(fullname.split(".")):]:
-                    try:
-                        obj = getattr(obj, _attr)
-                    except AttributeError:
-                        return None
-                return obj
-
-
-            def _osprey_patch_module(fullname, module):
-                for _dotted, _attrs in _osprey_rows_by_module.get(fullname, ()):
-                    _obj = _osprey_walk(module, fullname, _dotted)
-                    if _obj is not None:
-                        _osprey_patch_row(_dotted, _attrs, _obj)
-
-
-            class _OspreyReadonlyGuardLoader:
-                \"\"\"Run the located loader, then refuse the writes its module defines.\"\"\"
-
-                _osprey_readonly_guard = True
-
-                def __init__(self, loader):
-                    self._osprey_loader = loader
-
-                def create_module(self, spec):
-                    return self._osprey_loader.create_module(spec)
-
-                def exec_module(self, module):
-                    self._osprey_loader.exec_module(module)
-                    try:
-                        _osprey_patch_module(module.__name__, module)
-                    except Exception as _error:
-                        print(f"⚠️  readonly guard ({{module.__name__}}) failed: {{_error}}")
-
-                def __getattr__(self, name):
-                    # Everything else a loader answers (get_code, is_package,
-                    # get_source, ...) is the located loader's answer.
-                    if name == "_osprey_loader":
-                        raise AttributeError(name)
-                    return getattr(self._osprey_loader, name)
-
-
-            class _OspreyReadonlyGuardFinder:
-                \"\"\"Wrap the loader of every module a deferred write target lives in.\"\"\"
-
-                _osprey_readonly_guard = True
-
-                def find_spec(self, fullname, path, target=None):
-                    if fullname not in _osprey_rows_by_module:
-                        return None
-                    for _finder in _osprey_sys.meta_path:
-                        # Every guard finder is skipped, not only this one: two
-                        # guards delegating to each other would never return.
-                        if getattr(_finder, "_osprey_readonly_guard", False):
-                            continue
-                        _find_spec = getattr(_finder, "find_spec", None)
-                        if _find_spec is None:
-                            continue
-                        _spec = _find_spec(fullname, path, target)
-                        if _spec is not None:
-                            break
-                    else:
-                        return None
-                    _loader = _spec.loader
-                    # A namespace package or a legacy loader carries no write
-                    # target's definition; wrapping it would change how the
-                    # module is created.
-                    if (
-                        _loader is not None
-                        and hasattr(_loader, "exec_module")
-                        and not getattr(_loader, "_osprey_readonly_guard", False)
-                    ):
-                        _spec.loader = _OspreyReadonlyGuardLoader(_loader)
-                    return _spec
-
-
-            _osprey_sys.meta_path.insert(0, _OspreyReadonlyGuardFinder())
-            for _osprey_name in list(_osprey_sys.modules):
-                if _osprey_name in _osprey_rows_by_module:
-                    _osprey_module = _osprey_sys.modules.get(_osprey_name)
-                    if _osprey_module is not None:
-                        _osprey_patch_module(_osprey_name, _osprey_module)
-
-            # The remaining ``_osprey_`` names are the import hook's state:
-            # dropping them would break a patch the script has not triggered yet.
-            del _osprey_importlib, _osprey_eager_targets, _osprey_deferred_targets
-            del _osprey_resolve
-        """
-        return textwrap.dedent(guard).strip().replace("@@REFUSAL@@", READONLY_REFUSAL)
+        source = _RAW_PUT_BLOCK_SOURCE.read_text(encoding="utf-8")
+        return "\n".join(
+            (
+                "# Readonly run: refuse every control-system write entry point, and",
+                "# every route out of Python that could reach one. Installed before",
+                "# user code, so an alias bound later resolves here.",
+                "_ns = {}",
+                f'exec(compile({source!r}, {_RAW_PUT_BLOCK_FILENAME!r}, "exec"), _ns)',
+                '_ns["install"](',
+                '    "readonly",',
+                f"    eager_targets={eager!r},",
+                f"    deferred_targets={deferred!r},",
+                f"    refusal={READONLY_REFUSAL!r},",
+                ")",
+                "del _ns",
+            )
+        )
 
     def _get_filesystem_guard(self, execution_folder: Path | None) -> str:
         """Generate the runtime filesystem guard. Emitted in EVERY mode.
