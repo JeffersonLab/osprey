@@ -888,7 +888,7 @@ def test_a_sandboxed_cell_refuses_writes_with_the_turn_writes_on_line(
     assert record["reason"] == "channel_write_blocked"
     assert record["session"] == f"kernel:{terminal.kernel_id}"
     assert record["subject"] == "notebook_cell"
-    assert record["detail"] == f"channel={CHANNEL}"
+    assert dict(token.split("=", 1) for token in record["detail"].split())["channel"] == CHANNEL
 
 
 # ---------------------------------------------------------------------------

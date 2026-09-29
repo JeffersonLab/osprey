@@ -196,6 +196,12 @@ class ExecutionResult:
     #: class the error envelope: a dead backend is an infrastructure outage,
     #: not a bug in the user's script.
     failure_kind: str | None = None
+    #: Every channel the run's ``osprey.runtime`` attempted to write, in first
+    #: attempt order and without repeats, read from the ledger the wrapper keeps
+    #: in the execution folder. Filled after a timeout too — a killed run's
+    #: ledger holds the attempts it reached. Empty for a readonly run and for a
+    #: run that never started.
+    written_channels: list[str] = field(default_factory=list)
 
 
 def _read_config() -> dict:
@@ -994,6 +1000,7 @@ async def _execute_via_local(
                 error_message=f"Execution timed out after {timeout} seconds",
                 control_target=control_target,
                 failure_kind=FAILURE_KIND_TIMEOUT,
+                written_channels=_read_written_channels(execution_folder),
             )
 
     return _result_from_run(
@@ -1054,7 +1061,35 @@ def _result_from_run(
         execution_time_seconds=elapsed,
         error_message=error_msg,
         control_target=control_target,
+        written_channels=_read_written_channels(execution_folder),
     )
+
+
+def _read_written_channels(execution_folder: Path) -> list[str]:
+    """Read the channels a run attempted to write from its write ledger. Never raises.
+
+    One JSON object per line; a line that does not parse — the last one of a
+    run killed mid-append — is skipped, so a truncated ledger yields the
+    attempts that were fully recorded. A missing ledger is an empty list.
+    """
+    from osprey.services.python_executor.execution.wrapper import WRITES_LEDGER_FILENAME
+
+    try:
+        text = (execution_folder / WRITES_LEDGER_FILENAME).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return []
+    channels: list[str] = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        channel = entry.get("channel") if isinstance(entry, dict) else None
+        if isinstance(channel, str) and channel and channel not in channels:
+            channels.append(channel)
+    return channels
 
 
 def _read_execution_metadata(execution_folder: Path) -> dict | None:

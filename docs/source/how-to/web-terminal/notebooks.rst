@@ -143,6 +143,14 @@ gives the container it runs in --- is what survives the stripping. In a
 multi-user deployment both answers are the user whose terminal the kernel
 belongs to, so a cell reads that user's own chip settings and nobody else's.
 
+Each channel a cell writes leaves one ``allowed`` record in
+``notebook_kernel.jsonl``, filed after the put. Its reason says how the write
+ended: ``write_landed`` when the write was verified, ``write_unconfirmed`` when
+the value was sent but not verified. The record's ``detail`` names the channel
+and the account and host the control system saw the write come from, which is
+what joins it to a gateway's put-log. A refused write reaches no channel and
+leaves only its refusal record. See :ref:`audit-trail-attribution`.
+
 A cell carries no target at all in two cases: the deployment's control-context
 record is missing or unreadable, or it names a machine this deployment cannot
 build --- a target whose connector block was never rendered, or was removed

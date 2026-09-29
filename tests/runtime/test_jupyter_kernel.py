@@ -23,6 +23,8 @@ import io
 import json
 import logging
 import os
+import pwd
+import socket
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -32,7 +34,7 @@ import pytest
 
 from osprey import jupyter_kernel, runtime
 from osprey.audit import posture
-from osprey.audit.envelope import DECISION_REFUSED
+from osprey.audit.envelope import DECISION_ALLOWED, DECISION_REFUSED
 from osprey.mcp_server.control_system import target_state
 from osprey.mcp_server.python_executor import executor
 from osprey.runtime import ControlTargetChangedError, SwitchInProgressError
@@ -57,6 +59,41 @@ def kernel_env():
     os.environ.clear()
     os.environ.update(saved)
     posture_store.invalidate_cache()
+
+
+#: The account and host this process writes as — what a kernel record names.
+CA_USER = pwd.getpwuid(os.getuid()).pw_name
+CA_HOST = socket.gethostname()
+
+
+@pytest.fixture(autouse=True)
+def write_observers():
+    """The runtime's write observers, emptied for the test and restored after.
+
+    Registration is process-global, and ``main()`` registers the kernel's
+    observer: without this, one test's registration would record every write
+    a later test makes.
+    """
+    saved = list(runtime._write_observers)
+    runtime._write_observers.clear()
+    yield runtime._write_observers
+    runtime._write_observers[:] = saved
+
+
+def detail_tokens(detail: str | None) -> dict[str, str]:
+    """A record's ``detail`` read as its ``key=value`` tokens."""
+    return dict(token.split("=", 1) for token in (detail or "").split())
+
+
+def kernel_ledger(zone: Path) -> list[dict]:
+    """Every record filed under the kernel's surface in the audit *zone*."""
+    records = []
+    for path in sorted(zone.glob("**/*.jsonl")):
+        for line in path.read_text().splitlines():
+            entry = json.loads(line)
+            if entry.get("surface") == jupyter_kernel.SURFACE_NOTEBOOK_KERNEL:
+                records.append(entry)
+    return records
 
 
 def connection_argv(root: Path, name: str = f"kernel-{KERNEL_ID}.json") -> list[str]:
@@ -468,15 +505,130 @@ class TestTheAuditRecord:
         fire(shell, REFUSALS["write_blocked"]())
 
         assert audit_records[0]["reason"] == "channel_write_blocked"
-        assert audit_records[0]["detail"] == "channel=SR:MAG:1"
+        assert detail_tokens(audit_records[0]["detail"]) == {
+            "channel": "SR:MAG:1",
+            "ca_user": CA_USER,
+        }
 
     @pytest.mark.usefixtures("unstamped")
-    def test_a_refusal_with_no_channel_carries_no_detail(self, shell, audit_records):
-        """``ControlTargetChangedError`` names no channel, and detail is optional."""
+    def test_a_refusal_with_no_channel_carries_only_the_account(self, shell, audit_records):
+        """``ControlTargetChangedError`` names no channel; the account is still named."""
         fire(shell, REFUSALS["target_changed"]())
 
-        assert audit_records[0]["detail"] is None
+        assert detail_tokens(audit_records[0]["detail"]) == {"ca_user": CA_USER}
         assert audit_records[0]["reason"] == "control_target_changed"
+
+
+class TestTheWriteRecord:
+    """One record per channel a cell put on the wire, read back from the ledger."""
+
+    @pytest.fixture
+    def observed(self, write_observers):
+        """The kernel's observer registered the way ``main()`` registers it."""
+        runtime._register_write_observer(jupyter_kernel._record_write)
+        return write_observers
+
+    @pytest.mark.usefixtures("observed", "unstamped")
+    def test_kernel_write_record_a_landed_write_files_one_allowed_record(self, _isolate_audit_zone):
+        """A write a re-read verified is ``allowed`` with ``write_landed``."""
+        runtime._notify_write("SR:MAG:1", "attempt")
+        runtime._notify_write("SR:MAG:1", "landed")
+
+        records = kernel_ledger(_isolate_audit_zone)
+        assert len(records) == 1, records
+        assert records[0]["decision"] == DECISION_ALLOWED
+        assert records[0]["reason"] == "write_landed"
+        assert records[0]["subject"] == jupyter_kernel.REFUSAL_SUBJECT
+
+    @pytest.mark.usefixtures("observed", "unstamped")
+    def test_kernel_write_record_a_sent_write_files_write_unconfirmed(self, _isolate_audit_zone):
+        """A write sent without verification is still ``allowed``, and says so."""
+        runtime._notify_write("SR:MAG:1", "attempt")
+        runtime._notify_write("SR:MAG:1", "sent")
+
+        records = kernel_ledger(_isolate_audit_zone)
+        assert len(records) == 1, records
+        assert records[0]["decision"] == DECISION_ALLOWED
+        assert records[0]["reason"] == "write_unconfirmed"
+
+    @pytest.mark.usefixtures("observed", "unstamped")
+    def test_kernel_write_record_an_attempt_alone_files_nothing(self, _isolate_audit_zone):
+        """A refused write gets only ``attempt``, and its record is the refusal's."""
+        runtime._notify_write("SR:MAG:1", "attempt")
+
+        assert kernel_ledger(_isolate_audit_zone) == []
+
+    @pytest.mark.usefixtures("observed", "unstamped")
+    def test_kernel_write_record_the_detail_names_channel_account_and_host(
+        self, _isolate_audit_zone
+    ):
+        """The stamps travel as detail tokens, read in the writing process."""
+        runtime._notify_write("SR:MAG:1", "landed")
+
+        (entry,) = kernel_ledger(_isolate_audit_zone)
+        assert detail_tokens(entry["detail"]) == {
+            "channel": "SR:MAG:1",
+            "ca_user": CA_USER,
+            "ca_host": CA_HOST,
+        }
+
+    @pytest.mark.usefixtures("observed", "unstamped")
+    def test_kernel_write_record_each_channel_files_its_own_record(self, _isolate_audit_zone):
+        """A multi-channel write files one record per channel, each with its outcome."""
+        runtime._notify_write("SR:MAG:1", "landed")
+        runtime._notify_write("SR:MAG:2", "sent")
+
+        records = kernel_ledger(_isolate_audit_zone)
+        assert [(detail_tokens(r["detail"])["channel"], r["reason"]) for r in records] == [
+            ("SR:MAG:1", "write_landed"),
+            ("SR:MAG:2", "write_unconfirmed"),
+        ]
+
+    @pytest.mark.usefixtures("unstamped")
+    def test_kernel_write_record_main_registers_the_observer(
+        self, monkeypatch, write_observers, _isolate_audit_zone
+    ):
+        """After ``main()`` a write in this process files its record, once."""
+
+        class StubKernelApp:
+            @classmethod
+            def instance(cls):
+                app = cls()
+                app.shell = StubShell()
+                return app
+
+            def initialize(self, _argv):
+                pass
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(jupyter_kernel, "_route_logs_to_process_stderr", lambda: None)
+        monkeypatch.setattr(jupyter_kernel, "_prepare_environment", dict)
+        monkeypatch.setattr("osprey.registry.initialize_registry", lambda **kwargs: None)
+        monkeypatch.setattr(jupyter_kernel, "install_shell_stream_rearm", lambda shell_stream: None)
+        monkeypatch.setattr("ipykernel.kernelapp.IPKernelApp", StubKernelApp)
+
+        jupyter_kernel.main([])
+        jupyter_kernel.main([])
+        runtime._notify_write("SR:MAG:1", "landed")
+
+        assert write_observers == [jupyter_kernel._record_write]
+        (entry,) = kernel_ledger(_isolate_audit_zone)
+        assert entry["reason"] == "write_landed"
+
+    def test_an_audit_failure_does_not_reach_the_write(self, monkeypatch, caplog):
+        """The trail degrades to a warning; the observer itself never raises."""
+
+        def broken_record(**fields):
+            raise RuntimeError("no ledger here")
+
+        monkeypatch.setattr("osprey.audit.writer.record", broken_record)
+
+        with caplog.at_level("WARNING", logger=jupyter_kernel.__name__):
+            jupyter_kernel._record_write("SR:MAG:1", "landed")
+
+        assert "Could not record the notebook write" in caplog.text
 
     @pytest.mark.usefixtures("unstamped")
     def test_a_writer_that_fails_does_not_swallow_the_refusal(self, shell, monkeypatch):

@@ -436,6 +436,14 @@ _REFUSAL_REASONS = {
     "ControlTargetChangedError": "control_target_changed",
 }
 
+#: ``reason`` codes for a write a cell made, keyed by the phase the runtime
+#: reports once the connector has answered. ``landed`` is a write a re-read
+#: verified; ``sent`` put the value on the wire without that verification.
+_WRITE_REASONS = {
+    "landed": "write_landed",
+    "sent": "write_unconfirmed",
+}
+
 #: The target moved while the cell was running. A kernel re-routes itself from
 #: the record before every cell, so the cell is what picks the new target up.
 HINT_TARGET_CHANGED = "The control target changed while this cell ran. Re-run the cell."
@@ -494,6 +502,76 @@ def _hint_for(value: BaseException) -> str | None:
     return HINT_WRITES_OFF
 
 
+def _detail_tokens(channel: object, *, with_host: bool) -> str | None:
+    """The ``detail`` of a kernel record: space-separated ``key=value`` tokens.
+
+    The envelope's field set is closed, so the channel and the account and host
+    the control system sees this process as travel here. ``ca_user`` and
+    ``ca_host`` are read in this process, because this process is the one that
+    writes; a stamp that cannot be read is left out rather than guessed.
+
+    Args:
+        channel: The channel the write named; anything but a non-empty string
+            contributes no token.
+        with_host: Whether ``ca_host`` is one of the tokens.
+
+    Returns:
+        The tokens joined by single spaces, or ``None`` when there are none.
+    """
+    import pwd
+    import socket
+
+    tokens: list[str] = []
+    if isinstance(channel, str) and channel:
+        tokens.append(f"channel={channel}")
+    try:
+        tokens.append(f"ca_user={pwd.getpwuid(os.getuid()).pw_name}")
+    except Exception:
+        pass
+    if with_host:
+        try:
+            host = socket.gethostname()
+            if host:
+                tokens.append(f"ca_host={host}")
+        except Exception:
+            pass
+    return " ".join(tokens) or None
+
+
+def _record_write(address: str, phase: str) -> None:
+    """File one ``allowed`` record for a write a cell put on the wire. Never raises.
+
+    Registered as a runtime write observer, so it hears every phase of every
+    channel; only the phases after the connector answered are recorded, one
+    record per channel. ``attempt`` precedes the send and a refused write gets
+    no later phase, so neither files anything here.
+
+    Args:
+        address: The channel written.
+        phase: The runtime's write phase.
+    """
+    reason = _WRITE_REASONS.get(phase)
+    if reason is None:
+        return
+    try:
+        from osprey.audit import posture
+        from osprey.audit.envelope import DECISION_ALLOWED
+        from osprey.audit.writer import record
+
+        record(
+            decision=DECISION_ALLOWED,
+            reason=reason,
+            surface=SURFACE_NOTEBOOK_KERNEL,
+            posture=posture.posture(),
+            posture_source=posture.posture_source(),
+            session=posture.posture_session(),
+            subject=REFUSAL_SUBJECT,
+            detail=_detail_tokens(address, with_host=True),
+        )
+    except Exception:  # the audit trail degrades; the write does not
+        logger.warning("Could not record the notebook write for audit", exc_info=True)
+
+
 def _record_refusal(value: BaseException) -> None:
     """File one audit record for *value* under :data:`SURFACE_NOTEBOOK_KERNEL`.
 
@@ -516,7 +594,7 @@ def _record_refusal(value: BaseException) -> None:
             posture_source=posture.posture_source(),
             session=posture.posture_session(),
             subject=REFUSAL_SUBJECT,
-            detail=f"channel={channel}" if isinstance(channel, str) and channel else None,
+            detail=_detail_tokens(channel, with_host=False),
         )
     except Exception:  # the audit trail degrades; the refusal does not
         logger.warning("Could not record the notebook refusal for audit", exc_info=True)
@@ -703,6 +781,8 @@ def main(argv: list[str] | None = None) -> None:
     The environment is prepared before the registry is loaded, because the
     registry is created from the config path the preparation publishes; and
     both happen before the kernel exists, so no cell can run ahead of them.
+    The write observer is registered in the same window, so every write a
+    cell makes files its record.
 
     The kernel statements are separate rather than one chained call because
     things go between them: the shell stream re-arm is installed before
@@ -719,6 +799,10 @@ def main(argv: list[str] | None = None) -> None:
     _route_logs_to_process_stderr()
     _prepare_environment(argv if argv is not None else sys.argv[1:])
     _initialize_registry()
+
+    from osprey.runtime import _register_write_observer
+
+    _register_write_observer(_record_write)
 
     from ipykernel.kernelapp import IPKernelApp
 

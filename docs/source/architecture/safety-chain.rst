@@ -241,6 +241,42 @@ RunEngine and devices: no OSPREY check runs inside it, so neither a person's nar
 lane's ceiling reaches its writes. The name OSPREY puts on such an item is attribution --- it
 says who queued the plan, not what gated it.
 
+The name the control system sees
+--------------------------------
+
+The name above is OSPREY's. The control system reads a different one: a Channel Access or PV
+Access client tells the server the account name of the process making the put, and a gateway's
+put-log and an IOC's access-security rules see that name. Inside a container every process runs
+as uid 1000, so by default every write arrives as ``osprey``.
+
+A personal card behind a login wall can carry a ``control_identity`` in the roster, and its
+container then gives uid 1000 that name at start (:ref:`multi-user-control-identity`). The
+shared writers carry fixed service names instead: dispatch worker *i* writes as
+``osprey-dispatch-<i>``, and each Bluesky lane OSPREY renders writes as ``osprey-bluesky`` or
+``osprey-bluesky-<lane>``. An external-worker lane writes under whatever account the facility
+runs it as. The audit ledger records the same name beside the person who asked, so a put-log
+line joins back to them; see :ref:`audit-trail-attribution`.
+
+**The name is attribution, not authentication.** The client asserts it and the server takes it
+on trust. OSPREY authenticates the person at the login wall, and the name repeats that answer
+in a place the control system can read. It is process-wide, so it covers every write route in
+the card --- the connector, the Python executor, notebook kernels and raw client libraries ---
+but it is not a sandbox: a process running as uid 1000 can still reach the client library
+through ``ctypes`` or a raw socket, and what gates a write is the chain above, not the name.
+
+.. note::
+
+   **A control identity inherits the grants of the account it names.** Where a gateway or IOC
+   access-security file (ACF) grants access by user name, a card whose identity is ``alice``
+   gets what ``alice`` gets when writing from a host those rules admit. That is the intent: a
+   person writes from their card with the same standing as from their own login. Review the
+   ACF rules before assigning identities. The service names also change what a site's rules see
+   from the shared writers: dispatch workers write as ``osprey-dispatch-<i>`` rather than
+   ``osprey``, and rendered Bluesky lanes as ``osprey-bluesky*`` rather than ``root``. An ACF
+   or put-log rule keyed on ``osprey`` or ``root`` needs updating to match. Roll the images and
+   the rendered project together; ``osprey health`` reports a card or worker writing under a
+   different name than the render expects.
+
 Where the narrowing records live
 --------------------------------
 

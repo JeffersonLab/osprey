@@ -55,6 +55,12 @@ READONLY_REFUSAL = (
 #: either side without the other fails rather than silently stopping the alert.
 READONLY_REFUSAL_MARKER = "readonly execution mode"
 
+#: File in the execution folder where a readwrite run records every channel
+#: ``osprey.runtime`` attempted to write, one ``{"channel": <address>}`` JSON
+#: object per line. Appended per attempt, so a killed run leaves the list of
+#: the writes it reached.
+WRITES_LEDGER_FILENAME = "writes.jsonl"
+
 #: Refusal prefix the filesystem guard carries in a readonly run. It embeds
 #: :data:`READONLY_REFUSAL_MARKER` so that a write refused into the render zone
 #: or the profile sources, and an open refused on a secret file, reaches the
@@ -185,6 +191,7 @@ class ExecutionWrapper:
         # Build wrapper components
         imports = self._get_imports()
         environment_setup = self._get_environment_setup(execution_folder)
+        write_ledger_observer = self._get_write_ledger_observer(execution_folder)
         limits_checking = self._get_limits_checking_monkeypatch()
         readonly_guard = self._get_readonly_guard()
         filesystem_guard = self._get_filesystem_guard(execution_folder)
@@ -200,6 +207,7 @@ class ExecutionWrapper:
             [
                 imports,
                 environment_setup,
+                write_ledger_observer,
                 limits_checking,
                 readonly_guard,
                 filesystem_guard,
@@ -318,6 +326,42 @@ if not _execution_dir.exists():
 """
 
         return textwrap.dedent(setup).strip()
+
+    def _get_write_ledger_observer(self, execution_folder: Path | None) -> str:
+        """Generate the write-ledger observer registration; empty for a readonly run.
+
+        A readwrite run registers an ``osprey.runtime`` write observer that
+        appends ``{"channel": <address>}`` to :data:`WRITES_LEDGER_FILENAME` in
+        the execution folder on every ``attempt`` phase. Each line is written
+        and closed on its own, so the file holds every attempt made before the
+        child was killed. A readonly run cannot write through the runtime, and a
+        run without an execution folder has nowhere for the parent to read the
+        ledger from, so neither gets the section. Without an importable
+        ``osprey.runtime`` there is no runtime write to record, and the section
+        does nothing.
+        """
+        if self.execution_mode == "readonly" or execution_folder is None:
+            return ""
+        ledger_path = Path(execution_folder) / WRITES_LEDGER_FILENAME
+        return textwrap.dedent(
+            f"""
+            # Write ledger: every channel osprey.runtime attempts to write
+            try:
+                import osprey.runtime as _write_ledger_runtime
+
+                _write_ledger_path = r"{ledger_path}"
+
+                def _write_ledger_observer(address, phase):
+                    if phase != "attempt":
+                        return
+                    with open(_write_ledger_path, "a", encoding="utf-8") as _ledger:
+                        _ledger.write(json.dumps({{"channel": str(address)}}) + "\\n")
+
+                _write_ledger_runtime._register_write_observer(_write_ledger_observer)
+            except ImportError:
+                pass
+            """
+        ).strip()
 
     def _get_limits_checking_monkeypatch(self) -> str:
         """Generate monkeypatch code with embedded validator config."""
