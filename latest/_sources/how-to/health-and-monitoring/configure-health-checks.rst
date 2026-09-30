@@ -67,6 +67,64 @@ Reads go through the same connector the agent itself uses (selected by
 ``control_system.type``), so a green canary also proves the connector
 configuration end to end.
 
+Recipe: host health from the facility's own host IOC
+----------------------------------------------------
+
+The built-in suite reports on the deployment — containers, services,
+providers, the unit — and says exactly one thing about the machine underneath
+it: ``file_system.disk_space``, how full the filesystem holding the project
+directory is. There is no CPU load and no memory reading, so a deploy host
+that is merely saturated still reports healthy while every terminal on it
+crawls.
+
+Most control-system facilities already measure that. A small statistics IOC on
+each host publishes CPU load, free memory and uptime as ordinary channels, and
+where the machine OSPREY runs on is one of them, nothing new has to be
+installed to see those readings here — they are channels, and ``channel_read``
+grades a channel:
+
+.. code-block:: yaml
+
+   health:
+     categories:
+       host:                     # any name that is not a built-in category
+         checks:
+           - name: host_ioc      # no bands: the row grades reachability
+             type: channel_read
+             address: HOST01:CPU_CNT
+           - name: cpu_load
+             type: channel_read
+             address: HOST01:SYS_CPU_LOAD
+             ok_range: [0, 70]        # over 70 % busy is a warning
+             warn_range: [0, 90]      # over 90 % busy is an error
+             requires: [host_ioc]
+           - name: memory_free
+             type: channel_read
+             address: HOST01:MEM_FREE
+             requires: [host_ioc]
+
+Record names differ between facilities, so substitute the ones your host IOC
+publishes. The first check is the recipe's one piece of structure: it names a
+reading with no bands, and the graded rows ``requires:`` it. A row with no
+bands can only be ``ok`` or ``error``, so the values behind it are skipped when
+the IOC is unreachable and never merely because the host is busy — an IOC that
+is down costs one ``error`` row carrying the reason instead of three rows
+saying the same thing.
+
+Reads use the same connector the agent uses, so the channels have to be visible
+from the deployment: a gateway that does not export the statistics IOC's
+records makes the row an ``error``, because a read that cannot connect is a
+failure and not a skip — and one ``error`` row fails the whole run.
+
+Adopting the facility's reading beats measuring the host a second time here:
+the tile then carries the same number the facility's own displays, archiver and
+alarm handler carry, so the dashboard and the control room never disagree about
+whether the machine is busy. What it does not answer is *which* container is
+busy — the built-in ``containers`` category reports each service's state, not
+its share of the machine. A facility whose hosts publish no such statistics has
+to measure them itself, which is a ``health.plugins`` module rather than a YAML
+check.
+
 Recipe: archive freshness, without declaring a check
 -----------------------------------------------------
 
@@ -94,6 +152,27 @@ time, because the two would be one fact in two homes.
    On a ``mock`` control system the recorder idles by design, so the check
    reports the archive as **stale** — a ``warning``, never an ``error``, and
    an honest answer: the store is reachable, it is simply not being written.
+
+Which account each card and worker writes as
+--------------------------------------------
+
+The control system records the account name a write arrives under. The built-in
+``web_terminals`` category needs no configuration: it asks every web-terminal
+card and every dispatch worker which name its process runs as (``ca_user`` on
+its ``/health``) and compares that with the name your config intends, one row
+each.
+
+- A card behind a login wall (``auth.method: password`` or ``oidc``) should run
+  as its roster ``control_identity``. Every other card runs as ``osprey``.
+- Dispatch worker *i* should run as ``osprey-dispatch-<i>``.
+
+A row is an ``error`` when the name differs, or when the image is too old to
+report one while a name other than ``osprey`` is expected — that image ignores
+the setting, so rebuild and redeploy. It is a ``warning`` when the container
+started without root and so could not apply the name (``/health`` then carries
+``control_identity_skipped``), or when the process does not answer. Workers on
+a bridge network publish no host port, so their rows are ``skip`` rows; check
+those with ``docker exec <worker> whoami``.
 
 Checks that need real Python
 ----------------------------
