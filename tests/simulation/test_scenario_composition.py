@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 
-from osprey.simulation import SimulationEngine
+from osprey_connectors.simulation import SimulationEngine
 
 DCCT = "SR:DIAG:DCCT:01:CURRENT:RB"
 

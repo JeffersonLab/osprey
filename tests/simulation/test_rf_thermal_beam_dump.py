@@ -21,7 +21,7 @@ from datetime import datetime, time, timedelta
 
 import numpy as np
 
-from osprey.utils.config import get_facility_timezone
+from osprey_connectors.config import get_facility_timezone
 
 DCCT = "SR:DIAG:DCCT:01:CURRENT:RB"
 NOMINAL_MA = 500.0
