@@ -57,11 +57,9 @@ Only the connectors you actually use need their backing libraries installed;
 none of the following are declared as hard dependencies of this package, so
 importing `osprey_connectors` never requires them:
 
-- **EPICS Channel Access client libraries** — `pyepics` itself is a declared
-  dependency, but it needs a working `libca` at runtime to talk to real IOCs.
-  Install `epicscorelibs` (or otherwise make a per-architecture `libca`
-  available) if you use `EPICSConnector` or `EPICSArchiverConnector` against a
-  live control system; `PYEPICS_LIBCA` can also point at one explicitly.
+- **EPICS Channel Access** — `EPICSConnector` speaks Channel Access through
+  `aioca`, a declared dependency, which loads the per-architecture `libca`
+  that `epicscorelibs` ships. Nothing else is needed to talk to real IOCs.
 - **`pymongo`** — required by `MongoDBArchiverConnector`. Installed with this
   package; the connector imports it inside `connect()` so registration stays
   cheap, not because it is optional.

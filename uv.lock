@@ -4899,6 +4899,7 @@ wheels = [
 name = "osprey-connectors"
 source = { editable = "packages/osprey-connectors" }
 dependencies = [
+    { name = "aioca" },
     { name = "numpy" },
     { name = "p4p" },
     { name = "pandas" },
@@ -4912,6 +4913,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioca", specifier = ">=2.1" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "p4p", specifier = ">=4.3" },
     { name = "pandas", specifier = ">=2.2.3" },

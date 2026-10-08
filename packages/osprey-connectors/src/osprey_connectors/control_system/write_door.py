@@ -18,11 +18,12 @@ connector that puts behind one of those hops is refused.
 some paths open it for code that is not a connector's own put. These are
 accepted, because attribution is not a boundary:
 
-- pyepics' preemptive callback threads are started by libca, not from the
-  caller's context, so they never carry the door. With
-  ``PREEMPTIVE_CALLBACK=False`` pyepics runs callbacks only while a thread
-  polls, including the poll inside a connector's own waiting put, so a put
-  made from such a callback runs inside the open door.
+- The EPICS connector hands its Channel Access put to the process's CA loop
+  (``ca_loop``) with ``asyncio.run_coroutine_threadsafe``, which runs the work
+  in a copy of the caller's context, so the open door crosses to the loop's
+  thread with it. Anything that coroutine starts while it runs inherits the
+  door too. libca's own callback threads start from a fresh context and never
+  carry it.
 - ``ControlSystemConnector`` wraps every subclass's ``write_channel`` and
   ``write_multiple_channels``, including those of a user-defined connector
   subclass, so a user-defined connector puts inside an open door.

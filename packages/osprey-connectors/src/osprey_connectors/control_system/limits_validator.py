@@ -124,9 +124,9 @@ def _numeral_or_reason(value: str) -> tuple[float | None, str | None]:
     The validator does not know the channel's type, so a string is accepted
     only when every reading that succeeds gives the same number; ``"010"`` is
     refused as ambiguous. That makes it exactly as permissive as the C rules
-    or stricter, never looser. pyepics (``int(text, 0)`` for an integer field,
-    ``float()`` otherwise) either delivers the same number for every string
-    accepted here or refuses the write.
+    or stricter, never looser. The EPICS connector's client (aioca) sends text
+    to the IOC as a string, and the IOC converts it by exactly those C rules,
+    so every string accepted here lands as the number it was checked as.
 
     ``nan``, ``inf`` and ``infinity`` (which ``strtod`` takes) are not numerals
     here and are refused, like their float counterparts.

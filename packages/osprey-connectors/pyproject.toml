@@ -17,6 +17,9 @@ dependencies = [
     "pandas>=2.2.3",
     "python-dateutil>=2.9.0",
     "pyepics",
+    # Channel Access client for the EPICS connector. Pure Python on top of
+    # epicscorelibs, which ships a libca per architecture.
+    "aioca>=2.1",
     # pvAccess client for the EPICS connector's PVA transport. Core, not an
     # extra: extras get forgotten by deployments, and a platform marker would
     # strip p4p from exactly the arm64 images that need it. Wheels ship for

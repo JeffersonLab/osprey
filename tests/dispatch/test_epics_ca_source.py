@@ -1,13 +1,14 @@
 """Unit tests for osprey.dispatch.sources.epics_ca.EpicsCaSource.
 
 Exercises edge detection, cool-down suppression, first-read suppression, and
-multi-PV independence without a live IOC.  pyepics is replaced by a minimal
+multi-PV independence without a live IOC.  the CA monitor seam is replaced by a minimal
 fake that injects callbacks synchronously.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -47,22 +48,21 @@ def _trigger(
 
 
 class _FakePV:
-    """Minimal pyepics.PV stand-in; stores callback and exposes fire()."""
+    """Stand-in for an opened CA monitor; stores the callback and exposes fire()."""
 
-    def __init__(self, pvname: str, callback=None, **kw: Any) -> None:
+    def __init__(self, pvname: str, callback=None) -> None:
         self.pvname = pvname
         self._callback = callback
+        self.closed = False
 
     def fire(self, value: Any) -> None:
-        """Synchronously invoke the callback as if a CA monitor event arrived."""
+        """Synchronously invoke the callback as if a CA monitor update arrived."""
         if self._callback is not None:
-            self._callback(pvname=self.pvname, value=value)
+            self._callback(value)
 
-    def clear_callbacks(self) -> None:
+    def close(self) -> None:
+        self.closed = True
         self._callback = None
-
-    def disconnect(self) -> None:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ class TestPvWatcherEdgeDetection:
 # Integration-style tests: _PvWatcher with a fake CA monitor and a real asyncio
 # loop running in a background thread.
 #
-# This mirrors production: pyepics delivers CA callbacks on its own thread while
+# This mirrors production: aioca delivers CA callbacks on the CA loop's thread while
 # the dispatcher's asyncio loop runs elsewhere, and ``_PvWatcher`` bridges the
 # two via ``run_coroutine_threadsafe``.  Running a genuine loop (rather than
 # hand-stepping one) keeps the threadsafe hand-off deterministic regardless of
@@ -197,12 +197,12 @@ def _arm_watcher(
     """Arm a _PvWatcher with a _FakePV and return both."""
     fake_pv = None
 
-    def _fake_epics_pv(pvname, callback=None, **kw):
+    def _fake_epics_pv(pvname, callback=None):
         nonlocal fake_pv
         fake_pv = _FakePV(pvname, callback=callback)
         return fake_pv
 
-    with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_fake_epics_pv):
+    with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_fake_epics_pv):
         watcher = _PvWatcher(trigger=trigger, fire_callback=fire_cb, loop=loop)
         watcher.start()
 
@@ -416,7 +416,7 @@ class TestEpicsCaSourceLifecycle:
             created.append(pv)
             return pv
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_fake_pv):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_fake_pv):
             await source.start(triggers, fire_cb)
 
         assert len(source._watchers) == 2
@@ -435,7 +435,7 @@ class TestEpicsCaSourceLifecycle:
         )
         fire_cb = AsyncMock(return_value=None)
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV") as mock_pv:
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor") as mock_pv:
             await source.start([bad_trigger], fire_cb)
 
         mock_pv.assert_not_called()
@@ -449,7 +449,7 @@ class TestEpicsCaSourceLifecycle:
 
         with (
             caplog.at_level("WARNING", logger="osprey.dispatch.sources.epics_ca"),
-            patch("osprey.dispatch.sources.epics_ca.epics.PV") as mock_pv,
+            patch("osprey.dispatch.sources.epics_ca._open_monitor") as mock_pv,
         ):
             await source.start([_trigger(name="typo", edge="up")], fire_cb)
 
@@ -475,7 +475,7 @@ class TestEpicsCaSourceLifecycle:
             created.append(pv)
             return pv
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_fake_pv):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_fake_pv):
             await source.start(triggers, fire_cb)
 
         assert len(source._watchers) == 1
@@ -488,7 +488,7 @@ class TestEpicsCaSourceLifecycle:
         source = EpicsCaSource()
         fire_cb = AsyncMock(return_value=None)
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_FakePV):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_FakePV):
             await source.start([_trigger(edge=edge)], fire_cb)
 
         assert len(source._watchers) == 1
@@ -505,7 +505,7 @@ class TestEpicsCaSourceLifecycle:
             source_config={"pv": "SIM:PV"},
         )
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_FakePV):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_FakePV):
             await source.start([trigger], fire_cb)
 
         assert len(source._watchers) == 1
@@ -534,7 +534,7 @@ class TestEpicsCaSourceLifecycle:
             source_config={"pv": "SIM:PV", key: value},
         )
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV") as mock_pv:
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor") as mock_pv:
             await source.start([trigger], fire_cb)
 
         mock_pv.assert_not_called()
@@ -565,7 +565,7 @@ class TestEpicsCaSourceLifecycle:
             created.append(pv)
             return pv
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_fake_pv):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_fake_pv):
             await source.start(triggers, fire_cb)
 
         assert len(source._watchers) == 1
@@ -583,7 +583,7 @@ class TestEpicsCaSourceLifecycle:
             source_config={"pv": "SIM:PV", "threshold": None, "cool_down_sec": None},
         )
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_FakePV):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_FakePV):
             await source.start([trigger], fire_cb)
 
         assert len(source._watchers) == 1
@@ -602,7 +602,7 @@ class TestEpicsCaSourceLifecycle:
             source_config={"pv": "SIM:PV", "threshold": "1e-3"},
         )
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_FakePV):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_FakePV):
             await source.start([trigger], fire_cb)
 
         assert len(source._watchers) == 1
@@ -614,7 +614,7 @@ class TestEpicsCaSourceLifecycle:
         triggers = [_trigger(name="t1", pv="SIM:PV:1")]
         fire_cb = AsyncMock(return_value=None)
 
-        with patch("osprey.dispatch.sources.epics_ca.epics.PV", side_effect=_FakePV):
+        with patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_FakePV):
             await source.start(triggers, fire_cb)
 
         assert len(source._watchers) == 1
@@ -623,3 +623,36 @@ class TestEpicsCaSourceLifecycle:
 
     def test_source_type_classvar(self) -> None:
         assert EpicsCaSource.source_type == "epics_ca"
+
+
+# ---------------------------------------------------------------------------
+# _open_monitor: the seam the watchers arm through
+# ---------------------------------------------------------------------------
+
+
+class TestOpenMonitor:
+    """The monitor is opened, and later closed, on the process's CA loop."""
+
+    def test_opens_an_aioca_monitor_on_the_ca_loop_and_closes_it_there(self, monkeypatch) -> None:
+        from osprey.dispatch.sources import epics_ca
+
+        opened: list[tuple] = []
+        subscription = MagicMock()
+
+        def camonitor(pv_name, callback):
+            opened.append((pv_name, callback))
+            return subscription
+
+        fake_aioca = MagicMock(camonitor=camonitor)
+        ca_loop = MagicMock()
+        ca_loop.run_sync.side_effect = lambda coro, timeout=None: asyncio.run(coro)
+        monkeypatch.setitem(sys.modules, "aioca", fake_aioca)
+        monkeypatch.setattr("osprey_connectors.control_system.ca_loop.get_ca_loop", lambda: ca_loop)
+        callback = MagicMock()
+
+        monitor = epics_ca._open_monitor("SIM:PV", callback)
+        monitor.close()
+
+        assert opened == [("SIM:PV", callback)]
+        ca_loop.call_soon.assert_called_once_with(subscription.close)
+        subscription.close.assert_not_called()  # the loop runs it

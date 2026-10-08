@@ -1,8 +1,10 @@
 """EPICS Channel Access trigger source for the event dispatcher.
 
-Manages one pyepics CA monitor per trigger, applies threshold/edge/cool-down/
-first-read-suppression logic, and forwards threshold-crossing events to the
-asyncio serving loop via ``run_coroutine_threadsafe``.
+Manages one aioca CA monitor per trigger, opened on the process's Channel
+Access loop (``osprey_connectors.control_system.ca_loop``), applies
+threshold/edge/cool-down/first-read-suppression logic, and forwards
+threshold-crossing events to the asyncio serving loop via
+``run_coroutine_threadsafe``.
 """
 
 from __future__ import annotations
@@ -14,8 +16,6 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
-
-import epics
 
 from osprey.dispatch.pool import QueueFullError
 
@@ -32,6 +32,42 @@ logger = logging.getLogger("osprey.dispatch.sources.epics_ca")
 #: trigger that fired on both crossings — the opposite of what it asked for, and
 #: silently.
 VALID_EDGES = frozenset({"rising", "falling", "both"})
+
+
+#: How long arming one monitor may take. Opening a monitor only queues the
+#: channel search, so this bounds a stalled CA loop, not a slow IOC.
+_OPEN_TIMEOUT_S = 5.0
+
+
+class _Monitor:
+    """An aioca monitor, closed on the CA loop that owns it."""
+
+    def __init__(self, subscription: Any, ca_loop: Any) -> None:
+        self._subscription = subscription
+        self._ca_loop = ca_loop
+
+    def close(self) -> None:
+        self._ca_loop.call_soon(self._subscription.close)
+
+
+def _open_monitor(pv_name: str, callback: Any) -> _Monitor:
+    """Open a CA monitor on ``pv_name`` delivering each update to ``callback``.
+
+    aioca binds a monitor to the event loop it is opened on, so it is opened on
+    the process's CA loop, the same one the EPICS connector uses: one Channel
+    Access context for the whole process. ``callback`` then runs on that
+    loop's thread.
+    """
+    import aioca
+
+    from osprey_connectors.control_system.ca_loop import get_ca_loop
+
+    ca_loop = get_ca_loop()
+
+    async def open_() -> Any:
+        return aioca.camonitor(pv_name, callback)
+
+    return _Monitor(ca_loop.run_sync(open_(), timeout=_OPEN_TIMEOUT_S), ca_loop)
 
 
 def _number_setting(
@@ -69,8 +105,8 @@ def _number_setting(
 class _PvWatcher:
     """Monitor one PV and fire a callback when its value crosses a threshold.
 
-    Runs on pyepics' CA thread; hands off to the asyncio serving loop via
-    ``run_coroutine_threadsafe``.  Each instance is self-contained so that
+    Updates arrive on the CA loop's thread; hands off to the asyncio serving
+    loop via ``run_coroutine_threadsafe``.  Each instance is self-contained so that
     multiple PVs are independent: a cool-down or first-read on one does not
     affect the others.
     """
@@ -89,21 +125,20 @@ class _PvWatcher:
         self._trigger = trigger
         self._fire = fire_callback
         self._loop = loop
-        self._pv: epics.PV | None = None
+        self._monitor: _Monitor | None = None
         self._last_fire_ts: float | None = None  # None = has not fired yet
         self._last_value: float | None = None  # None = first read not yet seen
 
     def start(self) -> None:
-        self._pv = epics.PV(self._pv_name, callback=self._on_change)
+        self._monitor = _open_monitor(self._pv_name, self._on_change)
 
     def stop(self) -> None:
-        if self._pv is not None:
-            self._pv.clear_callbacks()
-            self._pv.disconnect()
-            self._pv = None
+        if self._monitor is not None:
+            self._monitor.close()
+            self._monitor = None
 
     # ------------------------------------------------------------------
-    # Internals (run on pyepics CA thread)
+    # Internals (run on the CA loop's thread)
     # ------------------------------------------------------------------
 
     def _detect_edge(self, prev: float, curr: float) -> bool:
@@ -120,21 +155,16 @@ class _PvWatcher:
         # "both"
         return (prev < self._threshold <= curr) or (prev > self._threshold >= curr)
 
-    def _on_change(
-        self,
-        pvname: str | None = None,  # noqa: ARG002 - Channel Access monitor callbacks arrive by keyword; the threshold reads the value
-        value: Any = None,
-        **kw: Any,
-    ) -> None:
-        """pyepics CA-thread callback. Schedules the fire coroutine on the loop."""
+    def _on_change(self, value: Any) -> None:
+        """CA monitor callback. Schedules the fire coroutine on the serving loop."""
         if value is None:
             return
         try:
             numeric = float(value)
         except (TypeError, ValueError):
             # Non-numeric PV (enum string, waveform, …): nothing to threshold on.
-            # Log and return rather than raise on the CA thread, where pyepics
-            # swallows the exception and the watcher would silently die.
+            # Log and return rather than raise on the CA thread, where the
+            # exception would be swallowed and the watcher would silently die.
             logger.warning(
                 "EPICS CA trigger '%s' PV '%s' produced non-numeric value %r; ignoring",
                 self._trigger.name,

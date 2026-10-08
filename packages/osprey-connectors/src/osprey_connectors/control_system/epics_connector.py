@@ -1,17 +1,14 @@
 """
-EPICS control system connector using pyepics.
+EPICS control system connector: Channel Access through aioca, PVAccess through p4p.
 
-Provides interface to EPICS Channel Access (CA) control system.
-Refactored from existing EPICS integration code.
-
+Every Channel Access call runs on the process's one CA event loop
+(:mod:`osprey_connectors.control_system.ca_loop`), whichever loop or thread
+the connector was called from.
 """
 
 import asyncio
-import atexit
 import fnmatch
 import os
-import sys
-import threading
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -26,6 +23,7 @@ from osprey_connectors.control_system.base import (
     is_readonly_run,
     values_match,
 )
+from osprey_connectors.control_system.ca_loop import get_ca_loop
 from osprey_connectors.control_system.call_timeout import call_timeout_s
 from osprey_connectors.control_system.limits_validator import (
     DEFAULT_STEP_READ_TIMEOUT_SECONDS,
@@ -37,63 +35,48 @@ from osprey_connectors.types import writes_enabled_key
 logger = get_logger("epics_connector")
 
 
-def _configure_pyepics_libca() -> None:
-    """Point pyepics at epicscorelibs' per-architecture libca before it loads CA.
+# The environment a Channel Access context is created from, as connect() sets it.
+_CA_ENV_KEYS = (
+    "EPICS_CA_ADDR_LIST",
+    "EPICS_CA_SERVER_PORT",
+    "EPICS_CA_NAME_SERVERS",
+    "EPICS_CA_AUTO_ADDR_LIST",
+)
 
-    pyepics's bundled ``clibs`` are x86_64-only: its ``find_libca()`` selects
-    ``clibs/linux64`` for any 64-bit OS, so on an arm64 host it loads a
-    mismatched-architecture ``libca.so`` and Channel Access initialization
-    fails outright. ``epicscorelibs`` (already present via the CA stack) ships a
-    correct per-architecture libca; exporting ``PYEPICS_LIBCA`` to it makes the
-    connector's CA work in arm64 and amd64 containers alike.
+# Channel Access status codes the connector branches on (EPICS base caerr.h).
+# epicscorelibs' cadef names only some of them, so they are spelled out here.
+_ECA_TIMEOUT = 80  # "User specified timeout on IO operation expired"
+_ECA_NOWTACCESS = 376  # "Write access denied"
 
-    Only sets the variable when it is unset, so an operator's explicit
-    ``PYEPICS_LIBCA`` override always wins. A no-op that leaves pyepics' own
-    resolution in place when ``epicscorelibs`` is not installed.
-    """
-    if os.environ.get("PYEPICS_LIBCA"):
-        return
-    try:
-        from epicscorelibs.path import get_lib
+# EPICS alarm status names, indexed by the code Channel Access reports
+# (EPICS base alarm.h; the same table pyepics' AlarmStatus carried).
+_ALARM_NAMES = (
+    "NO_ALARM",
+    "READ",
+    "WRITE",
+    "HIHI",
+    "HIGH",
+    "LOLO",
+    "LOW",
+    "STATE",
+    "COS",
+    "COMM",
+    "TIMEOUT",
+    "HW_LIMIT",
+    "CALC",
+    "SCAN",
+    "LINK",
+    "SOFT",
+    "BAD_SUB",
+    "UDF",
+    "DISABLE",
+    "SIMM",
+    "READ_ACCESS",
+    "WRITE_ACCESS",
+)
 
-        os.environ["PYEPICS_LIBCA"] = get_lib("ca")
-        logger.debug("Configured PYEPICS_LIBCA from epicscorelibs: %s", os.environ["PYEPICS_LIBCA"])
-    except Exception:  # epicscorelibs absent/failed -> pyepics falls back to its own resolution
-        logger.debug("epicscorelibs libca unavailable; using pyepics default libca resolution")
-
-
-def _keep_shared_ca_context(epics: Any) -> None:
-    """Stop aioca destroying a Channel Access context pyepics also uses.
-
-    A CA context belongs to a thread. When aioca makes the first CA call on a
-    thread, it creates the context there and registers an ``atexit`` hook that
-    destroys it. If pyepics later loads libca on that same thread, it adopts
-    that context instead of making its own. At exit aioca destroys the
-    context, and the interpreter then garbage-collects pyepics' cached PVs,
-    whose ``__del__`` clears subscriptions on the freed context: a segfault.
-
-    So aioca is told not to destroy the shared context. That matches this
-    connector's choice to skip pyepics' own ``finalize_libca``: nobody tears CA
-    down at exit, and the OS reclaims the sockets. aioca still clears its own
-    channels at exit, on a context that is still alive. A no-op when aioca is
-    not loaded, when it adopted a context rather than creating one, or when
-    pyepics runs on a context of its own.
-    """
-    catools = sys.modules.get("aioca._catools")
-    if catools is None:
-        return
-    context = getattr(catools, "_Context", None)
-    initial = getattr(epics.ca, "initial_context", None)
-    if (
-        context is not None
-        and getattr(context, "_should_destroy", False)
-        and initial
-        and getattr(context, "_ca_context", None) == initial
-    ):
-        context._should_destroy = False
-        logger.debug(
-            "EPICS connector: pyepics shares aioca's CA context; aioca will not destroy it"
-        )
+# Channel Access field types, indexed by DBF code (db_access.h).
+_DBF_NAMES = ("string", "short", "float", "enum", "char", "long", "double")
 
 
 def _alarm_name(code: Any) -> str:
@@ -104,28 +87,68 @@ def _alarm_name(code: Any) -> str:
     PVAccess already emits. This is the one place codes become names, so the
     shared connector core stays free of EPICS constants.
 
-    Anything the enum cannot map — an out-of-range code, ``None`` from a PV
-    that has not reported yet — becomes ``"UNKNOWN"``. pyepics' enum already
-    does that itself (verified on 3.5.9), but the guard keeps the read path
-    from failing on a pyepics build that decides otherwise, or one where the
-    import is unavailable.
+    Anything the table cannot map — an out-of-range code, ``None`` from a
+    channel that has not reported yet — becomes ``"UNKNOWN"``.
     """
-    try:
-        from epics.dbr import AlarmStatus
-
-        return str(AlarmStatus(code).name)
-    except Exception:  # unmappable code, or pyepics unavailable
+    if isinstance(code, bool):
         return "UNKNOWN"
+    try:
+        index = int(code)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    return _ALARM_NAMES[index] if 0 <= index < len(_ALARM_NAMES) else "UNKNOWN"
+
+
+def _ca_type_name(datatype: Any) -> str | None:
+    """The field type of a reading, spelled ``time_<type>`` as pyepics spelled it.
+
+    Readings are requested in the ``TIME`` form, and ``raw_metadata["type"]``
+    has always carried that spelling, so it is kept.
+    """
+    if isinstance(datatype, int) and 0 <= datatype < len(_DBF_NAMES):
+        return f"time_{_DBF_NAMES[datatype]}"
+    return None
 
 
 def _is_enum_type(pv_type: Any) -> bool:
     """True when a Channel Access field type names an enumeration.
 
-    pyepics spells the type of an ``mbbi``/``bi``/``bo`` as ``"enum"`` or, in
-    the connector's default ``time`` form, ``"time_enum"`` — hence the substring
-    test rather than an equality check against one spelling.
+    The type of an ``mbbi``/``bi``/``bo`` is spelled ``"enum"`` or, in the
+    ``time`` form readings are requested in, ``"time_enum"`` — hence the
+    substring test rather than an equality check against one spelling.
     """
     return "enum" in str(pv_type)
+
+
+def _ca_plain(value: Any) -> Any:
+    """An aioca reading as a plain Python value.
+
+    aioca hands back subclasses of ``str``/``int``/``float`` and of
+    ``numpy.ndarray`` that carry the reading's metadata as attributes. Those
+    attributes are copied into :class:`ChannelMetadata`; the value itself
+    leaves the connector as the plain type, so nothing downstream sees or
+    serializes aioca's classes.
+    """
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if hasattr(value, "__array__"):
+        import numpy
+
+        return numpy.asarray(value)
+    return value
+
+
+def _ca_failure(channel_address: str, failure: Any, action: str) -> Exception:
+    """The exception a failed aioca call is raised as: a timeout, or a lost channel."""
+    if getattr(failure, "errorcode", None) == _ECA_TIMEOUT:
+        return TimeoutError(f"{action} '{channel_address}' timed out: {failure}")
+    return ConnectionError(f"{action} '{channel_address}' failed: {failure}")
 
 
 def _enum_label_fields(labels: Any, index: Any) -> tuple[list[str] | None, str | None]:
@@ -153,22 +176,6 @@ def _enum_label_fields(labels: Any, index: Any) -> tuple[list[str] | None, str |
     if isinstance(index, int) and 0 <= index < len(normalized):
         label = normalized[index]
     return normalized, label
-
-
-def _ca_enum_labels(pv: Any, index: Any) -> tuple[list[str] | None, str | None]:
-    """The state labels of an enum-typed PV, and the one this reading is in.
-
-    ``pv.enum_strs`` triggers pyepics' lazy ``get_ctrlvars`` fetch, which is a
-    round trip to the IOC and so can time out or fail on a PV that answered its
-    value perfectly well. That is caught here: labels are an enrichment, never a
-    precondition of the read.
-    """
-    try:
-        labels = pv.enum_strs
-    except Exception as exc:  # ctrlvars fetch failed — the value still stands
-        logger.debug("Could not fetch enum labels for '%s': %s", getattr(pv, "pvname", pv), exc)
-        return None, None
-    return _enum_label_fields(labels, index)
 
 
 def _severity_int(severity: Any) -> int | None:
@@ -202,75 +209,6 @@ def _readback_alarm_fields(readback: Any) -> tuple[str | None, int | None]:
     severity = _severity_int(raw.get("severity") if isinstance(raw, dict) else None)
 
     return (str(status) if status is not None else None, severity)
-
-
-#: Channel Access native types that carry integers, with the range each one's
-#: wire type holds: DBR_SHORT is int16, DBR_LONG int32 and DBR_CHAR uint8.
-#: pyepics casts a value into that type without checking it, so 1.5 reaches a
-#: ``longout`` as 1 and 2**31 as -2147483648.
-_CA_INTEGER_RANGES = {1: (-(2**15), 2**15 - 1), 4: (0, 2**8 - 1), 5: (-(2**31), 2**31 - 1)}
-_CA_CHAR = 4
-
-
-def _ca_native_type(ftype: Any) -> int | None:
-    """The plain DBR type of a pyepics field type, or ``None`` when unknown.
-
-    The plain, STS, TIME, GR and CTRL families are seven types apart, so the
-    native type is the remainder — the arithmetic ``epics.dbr.native_type``
-    does, without importing pyepics here.
-    """
-    if isinstance(ftype, int) and not isinstance(ftype, bool) and ftype >= 0:
-        return ftype % 7
-    return None
-
-
-def _integer_write_problem(native_type: int | None, value: Any) -> str | None:
-    """Why *value* cannot go to an integer channel exactly, or ``None`` if it can.
-
-    Each element is read the way pyepics would convert it — ``int(text, 0)``
-    for a string, ``int()`` for a number — and must stay the same number and
-    fit the channel's wire type. Text bound for a char array is the one string
-    write left alone: pyepics writes it as characters.
-    """
-    if native_type not in _CA_INTEGER_RANGES:
-        return None
-    if isinstance(value, str | bytes):
-        if native_type == _CA_CHAR:
-            return None
-        elements: Any = [value]
-    elif isinstance(value, list | tuple) or hasattr(value, "tolist"):
-        elements = value.tolist() if hasattr(value, "tolist") else value
-        if not isinstance(elements, list):
-            elements = [elements]
-    else:
-        elements = [value]
-    low, high = _CA_INTEGER_RANGES[native_type]
-    for element in elements:
-        if isinstance(element, str | bytes):
-            try:
-                number: Any = int(element, 0)
-            except ValueError:
-                return f"{element!r} is not a whole number, and the channel holds integers"
-        elif isinstance(element, bool | int):
-            number = int(element)
-        elif isinstance(element, float) and element.is_integer():
-            number = int(element)
-        else:
-            return f"{element!r} is not a whole number, and the channel holds integers"
-        if not low <= number <= high:
-            return f"{element!r} is outside the channel's integer range [{low}, {high}]"
-    return None
-
-
-def _char_array_text(value: Any) -> str | None:
-    """The text a char array holds, up to its first NUL, or ``None`` if not text."""
-    elements = value.tolist() if hasattr(value, "tolist") else value
-    if not isinstance(elements, list | tuple) or not all(
-        isinstance(element, int) and not isinstance(element, bool) for element in elements
-    ):
-        return None
-    raw = bytes(element & 0xFF for element in elements)
-    return raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
 
 
 # Normative-type identifiers the PVA read path maps specially. Compared with a
@@ -332,10 +270,11 @@ class _ChannelSubscription:
     """One active subscription plus the teardown its transport needs.
 
     Both transports store one of these in ``EPICSConnector._subscriptions``:
-    Channel Access keeps the pyepics ``PV`` (released with
-    ``clear_callbacks()``), PVAccess keeps the p4p ``Subscription`` (released
-    with ``close()`` — it has no ``clear_callbacks`` at all). Dispatching here
-    is what lets ``unsubscribe`` and ``disconnect`` walk subscription ids
+    Channel Access keeps the aioca ``Subscription``, PVAccess the p4p
+    ``Subscription``; both are released with ``close()``. The aioca one
+    belongs to the CA loop, so its ``close()`` is handed to that loop
+    (``ca_loop``) rather than run on whichever thread unsubscribes. Dispatching
+    here is what lets ``unsubscribe`` and ``disconnect`` walk subscription ids
     without knowing which protocol opened them.
 
     ``close()`` is idempotent and best effort: closing twice is a no-op, and a
@@ -343,11 +282,12 @@ class _ChannelSubscription:
     a whole connector cannot be derailed by one dead channel.
     """
 
-    __slots__ = ("_closed", "handle", "kind")
+    __slots__ = ("_closed", "ca_loop", "handle", "kind")
 
-    def __init__(self, kind: str, handle: Any) -> None:
+    def __init__(self, kind: str, handle: Any, ca_loop: Any = None) -> None:
         self.kind = kind
         self.handle = handle
+        self.ca_loop = ca_loop
         self._closed = False
 
     @property
@@ -361,21 +301,22 @@ class _ChannelSubscription:
             return
         self._closed = True
         try:
-            if self.kind == "pva":
-                self.handle.close()
+            if self.ca_loop is not None:
+                self.ca_loop.call_soon(self.handle.close)
             else:
-                self.handle.clear_callbacks()
+                self.handle.close()
         except Exception as exc:  # teardown is best effort, never fatal
             logger.debug(f"Subscription teardown failed for {self.kind} handle: {exc}")
 
 
 class EPICSConnector(ControlSystemConnector):
     """
-    EPICS control system connector using pyepics.
+    EPICS control system connector: Channel Access through aioca.
 
-    Provides read/write access to EPICS Process Variables through
-    Channel Access protocol. Supports gateway configuration for
-    remote access and read-only/write-access gateways.
+    Provides read/write access to EPICS Process Variables through the
+    Channel Access protocol (and PVAccess for configured ``pva_channels``).
+    Supports gateway configuration for remote access and
+    read-only/write-access gateways.
 
     Example:
         Direct gateway connection:
@@ -417,11 +358,18 @@ class EPICSConnector(ControlSystemConnector):
         # connector that has not connected — the fallback is the same number
         # the block's default resolves to.
         self._step_read_timeout = DEFAULT_STEP_READ_TIMEOUT_SECONDS
-        # Whether every Channel Access read goes to the wire; see connect().
+        # The `fresh_reads` key, kept readable; every CA read goes to the wire.
         self._fresh_reads = False
         self._subscriptions: dict[str, Any] = {}
-        self._pv_cache: dict[str, Any] = {}
-        self._pv_cache_lock = threading.Lock()  # Thread safety for PV cache
+        # aioca, and the CA loop every call to it runs on; both set by connect().
+        self._aioca: Any = None
+        self._ca: Any = None
+        # Per channel, the CTRL-form reading that carries units, precision and
+        # enum labels: fetched on a channel's first read, then reused, since
+        # they describe the record rather than the reading. Touched only on
+        # the CA loop.
+        self._ca_ctrl: dict[str, Any] = {}
+        self._ca_ctrl_fetches: set[Any] = set()
         self._epics_configured = False
         # PVA routing state. Empty globs => this connector is pure Channel
         # Access: p4p is never imported and no PVA environment variable is set.
@@ -436,10 +384,8 @@ class EPICSConnector(ControlSystemConnector):
         Args:
             config: Configuration with keys:
                 - timeout_s: Default timeout in seconds (default: 5.0)
-                - fresh_reads: (optional) Read every Channel Access channel
-                  from the IOC (``use_monitor=False``) instead of pyepics'
-                  monitor cache. For IOCs that compute readbacks on get and
-                  post no monitor event. Default: False
+                - fresh_reads: (optional, no effect) Kept so existing configs
+                  load. Every Channel Access read now asks the IOC.
                 - gateways: Gateway configuration dict with:
                     - read_only: {address, port, use_name_server} for read operations
                     - write_access: {address, port, use_name_server} for write operations
@@ -470,35 +416,23 @@ class EPICSConnector(ControlSystemConnector):
                       Required for SSH tunnels. Default: False
 
         Raises:
-            ImportError: If pyepics is not installed, or if PVA channels are
+            ImportError: If aioca is not installed, or if PVA channels are
                 configured and p4p is not installed
+            RuntimeError: If this process's Channel Access context already
+                serves different ``EPICS_CA_*`` settings
             ValueError: If the block still carries ``timeout``, or if
                 ``timeout_s`` is not a positive, finite number
         """
-        # Ensure pyepics loads a correct-architecture libca before first CA use.
-        _configure_pyepics_libca()
-
-        # Import epics here to give clear error if not installed
+        # Import aioca here to give a clear error if it is not installed. It
+        # loads libca from epicscorelibs, which ships one per architecture.
         try:
-            import epics
+            import aioca
 
-            self._epics = epics
+            self._aioca = aioca
         except ImportError:
             raise ImportError(
-                "pyepics is required for EPICS connector. Install with: pip install pyepics"
+                "aioca is required for EPICS Channel Access. Install with: pip install aioca"
             ) from None
-
-        # pyepics registers ``finalize_libca`` with ``atexit`` the first time
-        # libca loads. Once Channel Access has been used from a worker thread —
-        # which this connector always does, via ``asyncio.to_thread`` — that
-        # finalizer wedges or crashes the interpreter on the way out, and a
-        # process that cannot exit is worse than one that skips the hook: the
-        # OS reclaims the sockets, and nothing is lost. Switched off here,
-        # before the first CA call below loads libca and would register it; a
-        # process whose libca loaded earlier already carries the hook, so it
-        # is taken out as well.
-        epics.ca.AUTO_CLEANUP = False
-        atexit.unregister(epics.ca.finalize_libca)
 
         # Refused before the gateway selection below rewrites the process-wide
         # EPICS_CA_* environment, so an unusable bound never repoints CA.
@@ -571,18 +505,16 @@ class EPICSConnector(ControlSystemConnector):
 
             os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
 
-            # Clear EPICS cache to pick up new environment. Only once libca is
-            # loaded: before that there is nothing to clear, and the context
-            # pyepics creates on first use reads the environment set above.
-            # Calling it anyway would load libca on this thread, where it
-            # would adopt (then detach this thread from) any CA context aioca
-            # already made here.
-            if getattr(self._epics.ca, "libca", None) is not None:
-                self._epics.ca.clear_cache()
-                _keep_shared_ca_context(self._epics)
-
             logger.debug(f"Configured EPICS gateway: {address}:{port}")
             self._epics_configured = True
+
+        # Channel Access reads the EPICS_CA_* environment once, when the
+        # process's CA context is created on the first call. A context already
+        # serving other settings cannot be repointed in-process, so a connect()
+        # that would need that is refused rather than left on the old gateway:
+        # a read-only run must never ride an earlier connector's write gateway.
+        self._ca = get_ca_loop()
+        self._ca.claim_env({key: os.environ.get(key) for key in _CA_ENV_KEYS})
 
         # The ceiling on the fresh read a `max_step` check makes before a
         # write. A facility-network fact like `timeout_s`, and read from
@@ -591,10 +523,10 @@ class EPICSConnector(ControlSystemConnector):
         # the write — raising it buys a slow channel more room, never a
         # weaker check.
         self._step_read_timeout = step_read_timeout_seconds(config, self._connector_type)
-        # An ordinary read answers from pyepics' monitor cache, which only moves
-        # when the IOC posts an event. An IOC that computes a readback on get
-        # posts none, so a cached read of it never changes. `fresh_reads` makes
-        # every Channel Access read ask the IOC instead, at one round trip each.
+        # `fresh_reads` once made every read bypass pyepics' monitor cache.
+        # Every Channel Access read now asks the IOC, so the key changes
+        # nothing; it is still read, so a deployment that sets it keeps
+        # loading, and a misspelt value still refuses to connect.
         self._fresh_reads = config_flag(
             config.get("fresh_reads"),
             key=f"control_system.connector.{self._connector_type}.fresh_reads",
@@ -611,7 +543,7 @@ class EPICSConnector(ControlSystemConnector):
 
         if self._pva_channel_globs:
             # Import p4p here (never at module scope) to give a clear error if
-            # the PVA client is not installed, mirroring the pyepics guard above.
+            # the PVA client is not installed, mirroring the aioca guard above.
             try:
                 import p4p
                 import p4p.client.thread  # loads the client API
@@ -723,14 +655,9 @@ class EPICSConnector(ControlSystemConnector):
             else:
                 logger.debug("PVA client context closed")
 
-        # Disconnect and clear cached PVs
-        with self._pv_cache_lock:
-            for pv in self._pv_cache.values():
-                try:
-                    pv.disconnect()
-                except Exception:
-                    pass  # Best effort cleanup
-            self._pv_cache.clear()
+        # Channel Access channels belong to the process's CA loop and outlive
+        # any one connector; only this connector's cached control fields go.
+        self._ca_ctrl.clear()
 
         self._connected = False
         logger.info("EPICS connector disconnected")
@@ -742,8 +669,8 @@ class EPICSConnector(ControlSystemConnector):
         Read current value from EPICS channel.
 
         Addresses matching one of the configured ``pva_channels`` globs are read
-        over PVAccess; every other address is read over Channel Access. Both
-        paths are blocking client calls, so both run in a worker thread.
+        over PVAccess, a blocking client call run in a worker thread. Every
+        other address is read over Channel Access, on the process's CA loop.
 
         Args:
             channel_address: EPICS channel address (e.g., 'BEAM:CURRENT')
@@ -759,74 +686,125 @@ class EPICSConnector(ControlSystemConnector):
         """
         timeout = timeout or self._timeout
 
-        # Use asyncio.to_thread for blocking EPICS operations
         if self._is_pva_channel(channel_address):
+            # p4p's thread client blocks, so it runs in a worker thread.
             return await asyncio.to_thread(self._read_channel_pva, channel_address, timeout)
 
-        return await asyncio.to_thread(
-            self._read_channel_sync, channel_address, timeout, use_monitor=not self._fresh_reads
-        )
+        return await self._ca.run(self._read_channel_ca(channel_address, timeout))
 
-    def _read_channel_sync(
-        self, pv_address: str, timeout: float, use_monitor: bool = True
-    ) -> ChannelValue:
-        """Synchronous PV read (runs in thread pool).
+    # ------------------------------------------------------------------
+    # Channel Access (aioca). Every coroutine here runs on the CA loop.
+    # ------------------------------------------------------------------
 
-        Uses PV cache to reuse PV objects for the same channel address.
-        This prevents subscription floods when reading the same channel rapidly,
-        which can crash soft IOCs like caproto due to race conditions.
+    async def _read_channel_ca(self, channel_address: str, timeout: float) -> ChannelValue:
+        """Read a channel's value, alarm state and timestamp from the IOC.
 
-        ``use_monitor=False`` bypasses that cache for this one call and asks the
-        IOC for the value now — what a write confirmation needs, and what an
-        ordinary read deliberately does not pay for.
+        Connecting is a step of its own, so a channel nobody answers for is
+        reported as the connection failure it is, apart from a get that timed
+        out on a channel that did connect. Every read asks the IOC: there is
+        no monitor cache to answer from, so no reading can be stale.
         """
-        # Get or create cached PV object (thread-safe)
-        with self._pv_cache_lock:
-            if pv_address not in self._pv_cache:
-                self._pv_cache[pv_address] = self._epics.PV(pv_address)
-            pv = self._pv_cache[pv_address]
-
-        pv.wait_for_connection(timeout=timeout)
-
-        if not pv.connected:
+        aioca = self._aioca
+        connected = await aioca.connect(channel_address, timeout=timeout, throw=False)
+        if not connected:
             raise ConnectionError(
-                f"Failed to connect to PV '{pv_address}' (timeout after {timeout}s)"
+                f"Failed to connect to PV '{channel_address}' (timeout after {timeout}s)"
             )
+        reading = await aioca.caget(
+            channel_address, format=aioca.FORMAT_TIME, timeout=timeout, throw=False
+        )
+        if isinstance(reading, aioca.CANothing):
+            raise _ca_failure(channel_address, reading, "Read of")
+        ctrl = await self._ca_ctrl_fields(channel_address, timeout)
+        return self._ca_channel_value(reading, ctrl)
 
-        # Use pv.get() with explicit timeout instead of pv.value.
-        # pv.value uses a 1s default timeout for ca.get() which is too short
-        # when running in asyncio.to_thread() worker threads where the CA
-        # context needs extra time to receive the first value.
-        value = pv.get(timeout=timeout, use_monitor=use_monitor)
+    async def _ca_ctrl_fields(self, channel_address: str, timeout: float) -> Any:
+        """The channel's CTRL-form reading (units, precision, enum labels), or ``None``.
 
-        # Get timestamp from EPICS (seconds since epoch), rendered in facility tz
-        if pv.timestamp:
-            timestamp = datetime.fromtimestamp(pv.timestamp, get_facility_timezone())
-        else:
-            timestamp = datetime.now(get_facility_timezone())
+        Fetched once per channel and reused: these fields describe the record,
+        not the reading. A fetch that fails is logged and not cached, so the
+        next read tries again; the reading it was meant to enrich still stands.
+        """
+        cached = self._ca_ctrl.get(channel_address)
+        if cached is not None:
+            return cached
+        aioca = self._aioca
+        ctrl = await aioca.caget(
+            channel_address, format=aioca.FORMAT_CTRL, timeout=timeout, throw=False
+        )
+        if isinstance(ctrl, aioca.CANothing):
+            logger.debug("Could not fetch control fields for '%s': %s", channel_address, ctrl)
+            return None
+        self._ca_ctrl[channel_address] = ctrl
+        return ctrl
 
-        # Extract metadata. The alarm status is reported by name; the raw CA
-        # code stays in raw_metadata next to the severity so nothing is lost.
-        alarm_code = getattr(pv, "status", None)
-        pv_type = getattr(pv, "type", None)
-        labels, label = _ca_enum_labels(pv, value) if _is_enum_type(pv_type) else (None, None)
+    def _ca_channel_value(self, reading: Any, ctrl: Any) -> ChannelValue:
+        """Build the connector's ChannelValue from a TIME-form reading and its CTRL fields.
+
+        The alarm status is reported by name; the raw CA code stays in
+        raw_metadata next to the severity so nothing is lost. The read path and
+        the monitor path both come through here, so they cannot drift apart.
+        """
+        tz = get_facility_timezone()
+        value = _ca_plain(reading)
+        stamp = getattr(reading, "timestamp", None)
+        timestamp = datetime.fromtimestamp(stamp, tz) if stamp else datetime.now(tz)
+        alarm_code = getattr(reading, "status", None)
+        severity = getattr(reading, "severity", None)
+        pv_type = _ca_type_name(getattr(reading, "datatype", None))
+        labels, label = (
+            _enum_label_fields(getattr(ctrl, "enums", None), value)
+            if _is_enum_type(pv_type)
+            else (None, None)
+        )
         metadata = ChannelMetadata(
-            units=getattr(pv, "units", "") or "",
-            precision=getattr(pv, "precision", None),
+            units=getattr(ctrl, "units", "") or "",
+            precision=getattr(ctrl, "precision", None),
             alarm_status=_alarm_name(alarm_code),
-            alarm_severity=_severity_int(getattr(pv, "severity", None)),
+            alarm_severity=_severity_int(severity),
             timestamp=timestamp,
             enum_labels=labels,
             enum_label=label,
             raw_metadata={
                 "status": alarm_code,
-                "severity": getattr(pv, "severity", None),
+                "severity": severity,
                 "type": pv_type,
-                "count": getattr(pv, "count", None),
+                "count": getattr(reading, "element_count", None),
             },
         )
-
         return ChannelValue(value=value, timestamp=timestamp, metadata=metadata)
+
+    async def _put_ca(
+        self, channel_address: str, value: Any, wait: bool, timeout: float
+    ) -> tuple[str, Any]:
+        """Put ``value``; say whether it was sent, acknowledged, or refused.
+
+        Answers one of:
+
+        - ``("not_sent", failure)``: the channel never connected, so nothing
+          left this process.
+        - ``("unacknowledged", failure)``: the put went out and its callback did
+          not arrive in time. aioca reports this and a connect timeout with the
+          same code, which is why connecting is a step of its own here.
+        - ``("cs_refused", failure)``: the IOC's access security denied it.
+        - ``("sent", None)``: sent, and, when ``wait``, acknowledged.
+
+        Any other failure is raised: it leaves the outcome genuinely unknown,
+        and every answer above claims to know it.
+        """
+        aioca = self._aioca
+        connected = await aioca.connect(channel_address, timeout=timeout, throw=False)
+        if not connected:
+            return "not_sent", connected
+        done = await aioca.caput(channel_address, value, wait=wait, timeout=timeout, throw=False)
+        if done:
+            return "sent", None
+        code = getattr(done, "errorcode", None)
+        if code == _ECA_TIMEOUT:
+            return "unacknowledged", done
+        if code == _ECA_NOWTACCESS:
+            return "cs_refused", done
+        raise ConnectionError(f"Write to '{channel_address}' failed: {done}")
 
     # ------------------------------------------------------------------
     # PVAccess read path
@@ -1062,20 +1040,32 @@ class EPICSConnector(ControlSystemConnector):
     def _current_value_reader(self) -> Callable[[str], Any] | None:
         """The channel's present value, read with the client this connector connected with.
 
-        Never ``import epics`` here: the module this connector actually holds
-        is the one the deployment configured (gateway routing included), and
-        this file is held to import isolation besides.
+        The limits validator calls this synchronously from a worker thread, so
+        the read is run on the CA loop and waited for here. Any failure — no
+        connection, no answer within ``step_read_timeout`` — answers ``None``,
+        which fails the step check closed.
 
-        A PVA-routed address answers ``None``, which fails the step check
-        closed. ``write_channel`` refuses those before validation ever runs,
-        so this is the belt to that braces: the CA client must not be pointed
-        at an address routed over PVAccess.
+        A PVA-routed address answers ``None`` too. ``write_channel`` refuses
+        those before validation ever runs, so this is the belt to that braces:
+        the CA client must not be pointed at an address routed over PVAccess.
         """
 
         def read_current(channel_address: str) -> Any:
             if self._is_pva_channel(channel_address):
                 return None
-            return self._epics.caget(channel_address, timeout=self._step_read_timeout)
+            aioca = self._aioca
+            budget = self._step_read_timeout
+            try:
+                reading = self._ca.run_sync(
+                    aioca.caget(channel_address, timeout=budget, throw=False),
+                    timeout=budget + 1.0,
+                )
+            except Exception as exc:  # the CA loop did not answer in time
+                logger.debug(f"max_step read of '{channel_address}' failed: {exc}")
+                return None
+            if isinstance(reading, aioca.CANothing):
+                return None
+            return _ca_plain(reading)
 
         return read_current
 
@@ -1142,26 +1132,10 @@ class EPICSConnector(ControlSystemConnector):
         # Import here to avoid circular dependency
         from osprey_connectors.errors import ChannelLimitsViolationError
 
-        # Step 2: Validate limits (FAIL CLOSED) and issue the caput in ONE thread
-        # offload, so a caller on the event loop is never stalled by the blocking
-        # caget that max_step validation performs.
-
-        # A control-system denial (IOC access security answering the put with
-        # "Write access denied") is not a client bug and must not be reported as
-        # one. It is caught by class, resolved off the module this connector
-        # actually connected with — this module must never import pyepics
-        # (tests/connectors/test_import_isolation.py, and the readonly runtime
-        # forbids it outright). An empty tuple catches nothing, so a connector
-        # whose client library does not expose the class behaves exactly as
-        # before.
-        _refusal_class = getattr(getattr(self._epics, "ca", None), "CASeverityException", None)
-        control_system_refusals: tuple[type[BaseException], ...] = (
-            (_refusal_class,)
-            if isinstance(_refusal_class, type) and issubclass(_refusal_class, BaseException)
-            else ()
-        )
-
-        def _validate_and_put():
+        # Step 2: Validate limits (FAIL CLOSED) in a worker thread, so a caller
+        # on the event loop is never stalled by the blocking read that max_step
+        # validation waits for.
+        def _validate():
             if self._limits_validator:
                 try:
                     self._limits_validator.validate(
@@ -1174,39 +1148,24 @@ class EPICSConnector(ControlSystemConnector):
                     # FAIL CLOSED: any other validation error refuses the write — no caput
                     # issued. The refusal itself is built on the loop, by the base class's
                     # one helper, so all four connectors word it identically.
-                    return ("refused", e)  # sentinel: no caput issued
-            # The channel's own type decides whether the value can go out
-            # exactly. caput looks the PV up in the same pyepics cache, so this
-            # adds no second connection; a PV that never connects is answered
-            # here, where nothing has been sent.
-            pv = self._epics.get_pv(channel_address, connect=True)
-            if not pv.connected:
-                return ("unreachable", None)
-            native_type = _ca_native_type(getattr(pv, "ftype", None))
-            problem = _integer_write_problem(native_type, value)
-            if problem is not None:
-                return ("refused", ValueError(problem))
-            payload = value
-            if native_type in _CA_INTEGER_RANGES and isinstance(value, list | tuple):
-                # pyepics refuses a float element of an integer array outright,
-                # even a whole one; the check above has proved each is whole.
-                payload = [int(e) if isinstance(e, float) else e for e in value]
-            try:
-                # The put-callback is Channel Access's acknowledgement that the
-                # IOC processed the put, so a confirming write waits for it: the
-                # read that follows would otherwise race the record's own
-                # processing. A write nobody asked to confirm does not wait.
-                success = self._epics.caput(channel_address, payload, wait=confirm, timeout=timeout)
-            except control_system_refusals as e:
-                # The control system was asked and said no. Every other caput
-                # error stays a raised failure: it leaves the outcome genuinely
-                # unknown, and a refusal claims the opposite.
-                return ("cs_refused", e)
-            return ("ok", success)
+                    return e
+            return None
 
-        put_result, payload = await asyncio.to_thread(_validate_and_put)
+        validation_error = await asyncio.to_thread(_validate)
+        if validation_error is not None:
+            return self._validation_refusal(channel_address, value, validation_error)
+
+        # Step 3: The put. The put-callback is Channel Access's acknowledgement
+        # that the IOC processed the put, so a confirming write waits for it:
+        # the read that follows would otherwise race the record's own
+        # processing. A write nobody asked to confirm does not wait.
+        put_result, payload = await self._ca.run(
+            self._put_ca(channel_address, value, wait=bool(confirm), timeout=timeout)
+        )
 
         if put_result == "cs_refused":
+            # The control system was asked and said no: access security, not
+            # a client bug, and nothing was written.
             logger.warning(f"Control system refused write to {channel_address}: {payload}")
             return ChannelWriteResult(
                 channel_address=channel_address,
@@ -1219,16 +1178,9 @@ class EPICSConnector(ControlSystemConnector):
                 ),
             )
 
-        if put_result == "refused":
-            return self._validation_refusal(channel_address, value, payload)
-
-        # pyepics answers a put whose callback never arrived with -1, not with
-        # a falsy value: ``ca.put`` waits for the callback and, on timeout,
-        # negates its return (``ret = -ret``). -1 is truthy, so it must be
-        # caught before the falsy check below or it would sail on to the
-        # confirming read as a success. The value was sent; nothing has said
-        # the IOC took it, so the outcome is unknown and no re-read is made.
-        if payload == -1:
+        # The value was sent and its callback never came: nothing has said the
+        # IOC took it, so the outcome is unknown and no re-read is made.
+        if put_result == "unacknowledged":
             logger.warning(
                 f"EPICS put not acknowledged within {timeout}s: {channel_address} = {value}"
             )
@@ -1242,25 +1194,15 @@ class EPICSConnector(ControlSystemConnector):
                 ),
             )
 
-        if put_result == "unreachable" or payload is None:
-            # pyepics answers None only for a PV that is not connected, and
-            # returns it before any put is made.
+        if put_result == "not_sent":
             return ChannelWriteResult(
                 channel_address=channel_address,
                 value_written=value,
                 outcome=WriteOutcome.FAILED,
                 error_message=(
-                    f"Write to '{channel_address}' failed: the channel did not connect, "
-                    "so nothing was sent"
+                    f"Failed to write to channel '{channel_address}': it did not connect "
+                    f"within {timeout}s, so no value was sent"
                 ),
-            )
-
-        if not payload:
-            return ChannelWriteResult(
-                channel_address=channel_address,
-                value_written=value,
-                outcome=WriteOutcome.FAILED,
-                error_message=f"Failed to write to channel '{channel_address}'",
             )
 
         if not confirm:
@@ -1273,7 +1215,7 @@ class EPICSConnector(ControlSystemConnector):
                 outcome=WriteOutcome.UNREQUESTED,
             )
 
-        # Step 3: One fresh read of the channel that was just written.
+        # Step 4: One fresh read of the channel that was just written.
         try:
             observed = await self._confirming_read(channel_address, timeout)
         except Exception as e:
@@ -1291,18 +1233,6 @@ class EPICSConnector(ControlSystemConnector):
         alarm_status, alarm_severity = _readback_alarm_fields(observed)
         metadata = getattr(observed, "metadata", None)
         enum_label = getattr(metadata, "enum_label", None) if metadata is not None else None
-
-        if isinstance(value, str):
-            # Text written to a char array comes back as its bytes: the channel
-            # holds the text when those bytes, up to the NUL pyepics appends,
-            # spell it.
-            raw = getattr(metadata, "raw_metadata", None) or {}
-            if "char" in str(raw.get("type") if isinstance(raw, dict) else ""):
-                text = _char_array_text(observed.value)
-                if text is not None:
-                    observed = ChannelValue(
-                        value=text, timestamp=observed.timestamp, metadata=observed.metadata
-                    )
 
         if values_match(value, observed.value, enum_label=enum_label):
             logger.debug(f"EPICS write confirmed: {channel_address} = {observed.value}")
@@ -1335,28 +1265,12 @@ class EPICSConnector(ControlSystemConnector):
     async def _confirming_read(self, channel_address: str, timeout: float) -> ChannelValue:
         """Read the channel a write just touched, straight off the wire.
 
-        An ordinary read is answered from pyepics' auto-monitor cache, which can
-        still hold the pre-write value: the put-callback says the IOC processed
-        the put, not that a cached subscription update has arrived. Confirming
-        against that stale reading would report a mismatch the machine never
-        had, so this read asks for the current value with ``use_monitor=False``.
-        Everything else — alarm state, enum labels, timestamp — is the ordinary
-        read path's construction, unchanged.
-
-        A ``pv.get()`` that times out answers ``None`` rather than raising, and
-        a ``None`` compared against the setpoint would not match — reporting a
-        mismatch, and an ``observed_value`` of ``None``, for an observation that
-        was never made. Confirmation is the one caller that cannot tolerate
-        that, so here (and only here) an unanswered read is raised as the
-        timeout it is, and the write is reported as unconfirmed: what the
-        channel holds is unknown, not different.
+        The ordinary read path already asks the IOC every time, so a reading
+        taken after the put-callback cannot be a stale cached one. A read that
+        fails raises, and the caller reports the write as unconfirmed: what
+        the channel holds is unknown, not different.
         """
-        observed = await asyncio.to_thread(
-            self._read_channel_sync, channel_address, timeout, use_monitor=False
-        )
-        if observed.value is None:
-            raise TimeoutError(f"confirming read of '{channel_address}' timed out after {timeout}s")
-        return observed
+        return await self._ca.run(self._read_channel_ca(channel_address, timeout))
 
     async def read_multiple_channels(
         self, channel_addresses: list[str], timeout: float | None = None
@@ -1382,52 +1296,46 @@ class EPICSConnector(ControlSystemConnector):
         subscriber callback runs on the event loop, never on the transport's
         own worker thread.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         if self._is_pva_channel(channel_address):
             return self._subscribe_pva(channel_address, callback, loop)
 
-        def epics_callback(pvname=None, value=None, timestamp=None, **kwargs):  # noqa: ARG001 - pyepics monitor callback signature; the subscriber reads the value and its timestamp
-            """Wrapper to convert EPICS callback to our format.
+        aioca = self._aioca
 
-            pyepics hands a monitor callback a copy of the PV's whole argument
-            set, so ``enum_strs`` is among the kwargs — carrying the labels once
-            the PV's control variables have been fetched, and ``None`` until
-            then (pyepics does not fetch them on connect). Both cases are
-            handled: an update with no labels reports the index alone rather
-            than being dropped or delayed by a synchronous fetch on the
-            transport's own callback thread.
+        def ca_callback(reading: Any) -> None:
+            """Adapt one aioca monitor update; runs on the CA loop.
+
+            A disconnect arrives as a ``CANothing`` rather than a reading: it is
+            connection state, not a channel value, so it never reaches the
+            subscriber. Units and enum labels come from the channel's CTRL
+            fields, fetched in the background when the monitor opens: an update
+            that lands first carries the index alone rather than waiting.
             """
-            alarm_code = kwargs.get("status")
-            labels, label = _enum_label_fields(kwargs.get("enum_strs"), value)
-            pv_value = ChannelValue(
-                value=value,
-                timestamp=(
-                    datetime.fromtimestamp(timestamp, get_facility_timezone())
-                    if timestamp
-                    else datetime.now(get_facility_timezone())
-                ),
-                metadata=ChannelMetadata(
-                    units=kwargs.get("units", ""),
-                    alarm_status=_alarm_name(alarm_code),
-                    alarm_severity=_severity_int(kwargs.get("severity")),
-                    enum_labels=labels,
-                    enum_label=label,
-                    raw_metadata={
-                        "status": alarm_code,
-                        "severity": kwargs.get("severity"),
-                    },
-                ),
+            if isinstance(reading, aioca.CANothing):
+                logger.debug(f"CA monitor event for '{channel_address}': {reading}")
+                return
+            try:
+                channel_value = self._ca_channel_value(reading, self._ca_ctrl.get(channel_address))
+            except Exception as exc:
+                logger.warning(f"Dropping CA update for '{channel_address}': {exc}")
+                return
+            loop.call_soon_threadsafe(callback, channel_value)
+
+        async def open_monitor() -> Any:
+            # aioca binds a monitor to the loop it is opened on: this one. The
+            # task is held until it finishes, so it is not collected mid-fetch.
+            fetch = asyncio.ensure_future(self._ca_ctrl_fields(channel_address, self._timeout))
+            self._ca_ctrl_fetches.add(fetch)
+            fetch.add_done_callback(self._ca_ctrl_fetches.discard)
+            return aioca.camonitor(
+                channel_address, ca_callback, format=aioca.FORMAT_TIME, notify_disconnect=True
             )
-            # Schedule callback in event loop
-            loop.call_soon_threadsafe(callback, pv_value)
 
-        # Create PV and add callback
-        pv = self._epics.PV(channel_address, callback=epics_callback)
+        monitor = await self._ca.run(open_monitor())
 
-        # Generate subscription ID
-        sub_id = f"{channel_address}_{id(pv)}"
-        self._subscriptions[sub_id] = _ChannelSubscription("ca", pv)
+        sub_id = f"{channel_address}_{id(monitor)}"
+        self._subscriptions[sub_id] = _ChannelSubscription("ca", monitor, ca_loop=self._ca)
 
         logger.debug(f"EPICS subscription created: {sub_id}")
         return sub_id
@@ -1515,7 +1423,7 @@ class EPICSConnector(ControlSystemConnector):
 
         The PVA path asks for the metadata fields alone rather than reading the
         channel and discarding its value; the CA path keeps reading the channel,
-        because pyepics reports units and precision off the PV it just read.
+        because a read carries units and precision with the value.
         """
         if self._is_pva_channel(channel_address):
             return await asyncio.to_thread(self._read_metadata_pva, channel_address, self._timeout)
