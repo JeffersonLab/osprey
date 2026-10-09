@@ -312,7 +312,7 @@ connector, which makes it on the write itself.
 
 That read is bounded: ``control_system.connector.<type>.step_read_timeout_s``
 (default 2.0 seconds) is how long it waits, beside the connector's own
-``timeout`` and for the same reason — a gateway two hops away answers more
+``timeout_s`` and for the same reason — a gateway two hops away answers more
 slowly than an IOC on the deploy host. The bound is fail-closed: a channel that
 does not answer inside it reads as "could not be measured", which refuses the
 write. Raising it buys a slow channel room, never a weaker check. The python
@@ -400,6 +400,10 @@ applied independently to each channel's own samples:
 - A bin width your backend cannot express must raise ``ValueError``, never
   round to one it can (the Archiver Appliance connector rejects a positive
   ``precision_ms`` that is not a multiple of 1000).
+- Bins are anchored on ``start_date``: one request cuts one lattice, the same
+  for every channel in it and every processing mode. A backend that bins on a
+  grid of its own is the documented exception -- the Archiver Appliance's
+  operators are epoch-anchored, and the window merely clips them.
 
 The shared helpers in ``osprey.connectors.archiver._timerange`` (``to_utc``,
 ``require_datetime``, ``resolve_processing``, ``long_frame``, ``decimate_raw``,

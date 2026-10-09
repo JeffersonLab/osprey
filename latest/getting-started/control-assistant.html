@@ -66,7 +66,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="dev" />
-    <meta name="docbuild:last-update" content="Sep 30, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 09, 2026"/>
   </head>
   
   
@@ -639,24 +639,27 @@ strategies, see <a class="reference internal" href="../how-to/use-channel-finder
 <h2>Step 4: Search the Electronic Logbook<a class="headerlink" href="#step-4-search-the-electronic-logbook" title="Link to this heading">#</a></h2>
 <p>The control-assistant bundle seeds an electronic logbook with realistic
 operations entries — RF trips, vacuum maintenance, beam-recovery shifts,
-radiation surveys, and more. Ask the agent about past events in natural language:</p>
+radiation surveys, and more. A fresh deployment starts in the <code class="docutils literal notranslate"><span class="pre">rf-thermal</span></code>
+scenario, so the logbook and the archived history also carry its incident: an RF
+cavity that tripped on a thermal excursion four days ago. Ask the agent about
+past events in natural language:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>You: Search the logbook for RF cavity temperature trips
 </pre></div>
 </div>
 <p>The agent delegates to the <strong>logbook-search</strong> sub-agent, which matches the query
 against the logbook and summarizes what it finds:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Found 3 related entries:
-- &quot;Beam dump — RF cavity C1 reflected power trip (thermal excursion)&quot;
-- &quot;Investigation: Recurring cavity C1 thermal excursions&quot;
-- &quot;RF cavity C1 cooling manifold repair&quot;
+- &quot;Beam dump — RF CAVITY01 reflected power trip (thermal excursion)&quot;
+- &quot;Investigation: Recurring CAVITY01 thermal excursions&quot;
+- &quot;RF CAVITY01 cooling manifold repair&quot;
 
-Summary: Cavity C1 tripped on reflected power after its temperature climbed;
+Summary: CAVITY01 tripped on reflected power after its temperature climbed;
 a follow-up investigation traced it to reduced cooling-water flow, later fixed
 by a manifold repair.
 </pre></div>
 </div>
 <p>For questions that span several entries and need synthesis (for example, <em>“trace
-the root cause of the recurring C1 trips and what finally resolved them”</em>), the
+the root cause of the recurring CAVITY01 trips and what finally resolved them”</em>), the
 agent can use the <strong>logbook-deep-research</strong> sub-agent, which performs a multi-hop
 search and stitches the entries into a single narrative.</p>
 </section>
@@ -759,18 +762,23 @@ copy these keys into the project’s <code class="docutils literal notranslate">
 from the block, and a second copy is free to disagree with the first.</p>
 <p><strong>Switch to real hardware.</strong> As in Hello World, moving to production is a
 configuration change, not a code change. Point the connectors at your facility
-in <code class="docutils literal notranslate"><span class="pre">profile.yml</span></code>:</p>
+in <code class="docutils literal notranslate"><span class="pre">profile.yml</span></code> — EPICS here, as the example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>osprey<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="nv">connector</span><span class="o">=</span>epics
 osprey<span class="w"> </span><span class="nb">set</span><span class="w"> </span>config.archiver.type<span class="o">=</span>epics_archiver
 osprey<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="nv">va_archiver</span><span class="o">=</span>null
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">connector</span></code> names your control system — <code class="docutils literal notranslate"><span class="pre">epics</span></code>, <code class="docutils literal notranslate"><span class="pre">doocs</span></code> or <code class="docutils literal notranslate"><span class="pre">tango</span></code> —
+and <code class="docutils literal notranslate"><span class="pre">config.archiver.type</span></code> the archiver that records it;
+<a class="reference internal" href="../how-to/control-systems/use-connectors.html"><span class="doc">Use Connectors</span></a> lists every one and the keys
+each needs.</p>
 <p>The archive this tutorial deploys is a <em>simulated</em> machine’s history, which is
-not what you want against hardware — so the archiver moves to your facility’s
-appliance at the same time as the control system, and the recorded store is
-dropped. All three lines are needed: the build refuses a facility baseline that
-still carries a <code class="docutils literal notranslate"><span class="pre">va_archiver:</span></code> block, because that store would be served as
-the real machine’s past.</p>
+not what you want against hardware — so the agent’s archiver switches to the
+one your facility runs at the same time as the control system, and the recorded
+store is dropped. All three lines are needed. The build refuses a facility
+baseline that still carries a <code class="docutils literal notranslate"><span class="pre">va_archiver:</span></code> block, because that store would
+be served as the real machine’s past. It does not check the archiver line:
+without it the agent stays pointed at the MongoDB store you just dropped.</p>
 <p>Because these are build-time inputs, re-render the agent’s artifacts and
 relaunch:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>osprey<span class="w"> </span>build
@@ -779,7 +787,7 @@ osprey<span class="w"> </span>chat
 </div>
 <p>Your queries don’t change — “Read the current in the booster’s defocusing
 quadrupole” and “Plot the storage-ring beam current over the last 24 hours” now
-run against live EPICS and your real archiver. The connectors handle the
+run against your control system and its archiver. The connectors handle the
 difference; the agent, the channel finder, and your prompts stay the same.</p>
 <section id="next-steps">
 <h3>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h3>

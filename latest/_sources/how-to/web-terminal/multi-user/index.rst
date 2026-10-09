@@ -117,9 +117,10 @@ persona is already a whole project, so it can differ in what it *is* as
 easily as in what it may write. Both cards are shared — any roster login
 opens them with their own password (:ref:`multi-user-shared-card`).
 
-``osprey build`` renders one persona project per delta in ``personas/``, and
-``osprey up`` builds each one's container image locally, so no registry or CI is
-involved.
+``osprey build`` renders one persona project per delta in ``personas/``. In the
+preset's local mode, ``osprey up`` builds each one's container image locally, so
+no registry or CI is involved. A deployment can pull them from a registry
+instead; see :ref:`multi-user-registry-images`.
 
 **One front door.** An nginx reverse proxy serves the landing page and proxies
 ``/u/<name>/`` to that user's container. The per-user containers are pinned to
@@ -177,25 +178,15 @@ The config block
                   display_name: "Deployment Admin (Carol)"
                 personas:
                   readonly:
-                    project: control-assistant-readonly
-                    project_path: build/control-assistant-readonly
                     build_profile: personas/readonly.yml
                   readwrite:
-                    project: control-assistant-readwrite
-                    project_path: build/control-assistant-readwrite
                     build_profile: personas/readwrite.yml
                   admin:
-                    project: control-assistant-admin
-                    project_path: build/control-assistant-admin
                     build_profile: personas/admin.yml
                   logbook:
-                    project: control-assistant-logbook
-                    project_path: build/control-assistant-logbook
                     build_profile: personas/logbook.yml
                     landing_group: Standalone deployments
                   knowledge:
-                    project: control-assistant-knowledge
-                    project_path: build/control-assistant-knowledge
                     build_profile: personas/knowledge.yml
                     landing_group: Standalone deployments
 
@@ -203,7 +194,16 @@ The config block
          repository — the file ``osprey init`` writes under ``personas/`` and
          points the catalog at. The delta merges over ``profile.yml``, so every
          persona shares one data
-         tree, one set of secrets, and one set of your own artifacts. A bundled
+         tree, one set of secrets, and one set of your own artifacts. Where the
+         persona renders is not stated here: the build derives
+         ``build/<project_name>-<persona>`` from the profile's ``project_name:``
+         and writes it into ``build/config.yml`` as the persona's ``project`` and
+         ``project_path``. Spelling either key beside a ``build_profile`` is
+         refused. An entry with no ``build_profile`` — a persona rendered
+         somewhere else — still names its ``project_path`` itself, and proves
+         its tier by that render: the build reads the ``config.yml`` there, the
+         same file ``osprey up`` reads, so such a persona may be the
+         ``default_persona`` or sit on a shared card like any other. A bundled
          preset name, an absolute path, or a path outside ``personas/`` is
          rejected by both ``osprey scaffold web-terminals lint`` and
          ``osprey up``.
@@ -242,9 +242,13 @@ The config block
          on. Leave it out and that address is derived from ``deploy.fqdn`` and
          ``nginx_port``, which is right whenever a browser talks to this nginx
          directly. Set it when something else stands in front — a facility load
-         balancer terminating TLS, a reverse proxy, a DNS alias — because the
-         terminals check it before allowing any action, and nothing here can guess
-         what that front door answers on. See :ref:`multi-user-https`.
+         balancer terminating TLS, a reverse proxy — because the terminals check
+         it before allowing any action, and nothing here can guess what that
+         front door answers on. nginx answers only on that address. A request
+         under any other name, whether another DNS name, the bare IP or
+         ``localhost``, is redirected to the same path there, so put the name
+         browsers should open in ``deploy.fqdn`` or ``external_origin``. See
+         :ref:`multi-user-https`.
 
          A persona may also name a landing-page section with ``landing_group``.
          Its users are lifted out of the roster's default section into one of
@@ -375,18 +379,31 @@ What ``osprey build`` and ``osprey up`` do for the web tier
 #. **The start builds each persona's image.** In the preset's local mode
    (``image_source: local``), ``osprey up`` builds each persona's image
    (tagged ``<project>:local`` after the persona's rendered project, e.g.
-   ``my-control-assistant-readwrite:local``) from that rendered project —
-   no registry, no CI.
+   ``control-assistant-readwrite:local``) from that rendered project —
+   no registry, no CI. Registry mode pulls them instead; see
+   :ref:`multi-user-registry-images`.
 
-#. **Brings up the web tier.** An nginx reverse proxy (container ``ca-nginx``)
-   serves the landing page on ``http://127.0.0.1:10000``, and one Web Terminal
-   container comes up per user — ``ca-web-alice`` on host port ``10100``,
-   ``ca-web-bob`` on ``10101``, ``ca-web-logbook`` on ``10102``,
-   ``ca-web-carol`` on ``10103`` and ``ca-web-knowledge`` on ``10104`` — each
-   reached
-   through the landing page. (The
-   ``ca-`` prefix is the preset's ``facility.prefix``; change it for your
-   site.)
+#. **Brings up the web tier.** An nginx reverse proxy (container
+   ``control-assistant-nginx``) serves the landing page on
+   ``http://127.0.0.1:10000``, and one Web Terminal container comes up per
+   user — ``control-assistant-web-alice`` on host port ``10100``,
+   ``control-assistant-web-bob`` on ``10101``, ``control-assistant-web-logbook``
+   on ``10102``, ``control-assistant-web-carol`` on ``10103`` and
+   ``control-assistant-web-knowledge`` on ``10104`` — each reached through the
+   landing page. With login on, the auth sidecar runs as
+   ``control-assistant-auth``, from a locally built
+   ``control-assistant-auth:local`` image. Every one of these names is
+   ``<project_name>-…``, after the profile's ``project_name:``, which
+   ``osprey init`` took from the folder name.
+
+   .. note:: Upgrading a multi-user deployment
+
+      Before this naming, the web containers and the auth image took their
+      prefix from ``facility.prefix`` (``ca-nginx``, ``ca-web-alice``,
+      ``ca-assistant-auth:local``). The first ``osprey up`` after upgrading
+      replaces them with the ``<project_name>-…`` containers and builds the auth
+      image under its new tag; no old-named container is left running. The
+      volumes keep their names, so every user's workspace carries over.
 
 Stop the stack again with ``osprey down``; check on it with
 ``osprey status``.
@@ -394,15 +411,110 @@ Stop the stack again with ``osprey down``; check on it with
 .. note::
 
    The web stack runs with host networking. On Linux,
-   ``http://127.0.0.1:10000`` is reachable as-is. On **macOS**, a container's
-   "host" is Docker Desktop's Linux VM — enable *host networking* in Docker
-   Desktop (Settings → Resources → Network) so the stack's ports reach your
-   browser.
+   ``http://127.0.0.1:10000`` is reachable as-is. That address is the
+   preset's ``deploy.fqdn``, and ``http://localhost:10000`` redirects to it.
+   On **macOS**, a container's "host" is Docker Desktop's Linux VM — enable
+   *host networking* in Docker Desktop (Settings → Resources → Network) so the
+   stack's ports reach your browser. Host networking is one of the limits
+   listed in :ref:`perimeter-limits`.
 
    If another OSPREY deployment already occupies these ports on this host, give
    this one its own block rather than moving services one by one — for example
    ``osprey set config.deployment.port_base=20000 && osprey build`` — before
    ``osprey up``. See :ref:`reference-ports`.
+
+.. _multi-user-registry-images:
+
+Pull the terminal images from a registry
+----------------------------------------
+
+With ``image_source: registry`` (the value whenever the key is unset),
+``osprey up`` builds no terminal image. It pulls one image per persona, under
+names it derives itself.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Who pulls it
+     - Image
+   * - The ``default_persona``, and every user when there is no ``personas`` catalog
+     - ``<registry.url>/web-terminal:<tag>``
+   * - Every other persona
+     - ``<registry.url>/web-terminal-<persona>:<tag>``
+
+``<persona>`` is the persona's key in the ``personas`` catalog, not its
+``project``. The ``project`` is ``<project_name>-<persona>``, which the build
+derives from the profile's ``project_name:``.
+The default persona keeps the unsuffixed name, so adding a catalog never
+renames the image its users already pull.
+
+``<tag>`` is ``modules.web_terminals.image_tag``, ``latest`` when unset.
+A ``${VAR}`` in it is expanded from the environment of ``osprey up``, and a
+variable that is unset there expands to nothing.
+``osprey scaffold web-terminals lint`` warns when the whole tag comes out empty
+(code ``web_terminals.empty_image_tag``).
+
+``<registry.url>`` is the top-level ``registry.url`` of ``config.yml``, with no
+scheme.
+It is the only namespace: two deployments that share a registry keep their
+images apart by giving ``registry.url`` different paths.
+There is no per-persona ``image:`` key.
+
+When the profile has a ``deploy:`` block in registry mode, the build writes
+``deploy.registry.url`` into this ``registry.url``, so the registry is named once.
+Setting ``registry.url`` in the profile's ``config:`` block
+(``osprey set config.registry.url=<path>``) points the terminal images somewhere
+else, and that value wins.
+A profile with no ``deploy:`` block sets it there.
+
+The scaffolded pipeline builds only the facility's own service images, not
+these, so the facility's pipeline must push them.
+Put that job in ``ci-extra.yml`` (see :doc:`../../deploy-a-facility`).
+Build each image from that persona's rendered project,
+``build/<project_name>-<persona>``: the same render ``image_source: local``
+builds as ``<project_name>-<persona>:local``.
+
+Registry mode also pulls the auth sidecar from
+``modules.web_terminals.auth.image`` when login is on; see :doc:`login`.
+
+``osprey scaffold web-terminals lint``, ``osprey profile validate`` and
+``osprey build`` refuse a registry-mode config with no ``registry.url`` (code
+``web_terminals.registry_mode_missing_url``), with or without a ``personas``
+catalog.
+``osprey up`` refuses to render it.
+
+For example, with this config:
+
+.. code-block:: yaml
+
+   registry:
+     url: registry.example.org/accelerator/demo
+
+   modules:
+     web_terminals:
+       image_tag: "2026.09.1"
+       default_persona: readonly
+       users:
+       - name: alice
+         index: 0
+         persona: readwrite
+       - name: bob
+         index: 1
+       personas:
+         readonly:
+           build_profile: personas/readonly.yml
+         readwrite:
+           build_profile: personas/readwrite.yml
+
+``osprey up`` pulls:
+
+.. code-block:: text
+
+   alice  registry.example.org/accelerator/demo/web-terminal-readwrite:2026.09.1
+   bob    registry.example.org/accelerator/demo/web-terminal:2026.09.1
+
+``bob`` names no persona, so he gets the ``default_persona`` and the unsuffixed
+image.
 
 The landing page
 ----------------
@@ -432,6 +544,9 @@ here the card and its persona are the same word. Both are shared cards: the
 login page asks for a roster name and that person's password, so nobody needs
 a credential for the card itself. Clicking any card opens that session at
 ``/u/<name>/``, proxied by nginx to its own container.
+
+A deployment that would rather not publish its roster can replace the name
+cards with one sign-in button; see :ref:`multi-user-hide-names`.
 
 What your operators read first
 ------------------------------

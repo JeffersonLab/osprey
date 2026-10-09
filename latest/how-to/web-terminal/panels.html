@@ -66,7 +66,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="dev" />
-    <meta name="docbuild:last-update" content="Sep 30, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 09, 2026"/>
   </head>
   
   
@@ -432,6 +432,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/use-connectors.html">Use Connectors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/use-virtual-accelerator.html">Use the Virtual Accelerator</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/switch-control-target.html">Switch the Control Target at Run Time</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../control-systems/phoebus-bridge.html">Connect the Agent to Phoebus Displays</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../use-channel-finder.html">How to Use the Channel Finder</a></li>
@@ -446,6 +447,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../ariel/search-modes.html">Search Modes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/web-interface.html">Web Interface</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/search-sidecar.html">The Search Sidecar (<code class="docutils literal notranslate"><span class="pre">qmd</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ariel/picture-search.html">Picture Captions and Picture Search</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/standalone-deployment.html">Standalone Deployment</a></li>
 </ul>
 </details></li>
@@ -596,6 +598,24 @@ menu (or the command palette) at any time. The choice is remembered per
 browser, and each user’s own pick wins over the configured default. (Pair it
 with the retro theme for a navy-and-teal terminal — see <a class="reference internal" href="theming.html"><span class="doc">Theming</span></a>.)</p>
 </section>
+<section id="when-a-panel-stops-answering">
+<h2>When a panel stops answering<a class="headerlink" href="#when-a-panel-stops-answering" title="Link to this heading">#</a></h2>
+<p>Panels with a health check are polled every 10 seconds. One that has answered
+and then misses two polls in a row dims its rail entry, which stays clickable
+and reads “not answering since &lt;time&gt;” in its tooltip. Its open tile shows a
+warning strip with the same time across the top and greys the page below it,
+so the out-of-date view is not mistaken for a live one. The page underneath is
+left exactly as it was, stays readable, and can still be scrolled and clicked,
+because a slow backend often still serves what is loaded. Both clear on the
+next answer. A panel that has not answered since the page loaded keeps its
+greyed-out entry and does not open.</p>
+<p>This applies to panels that have a health check: Jupyter, SYSTEM, and any
+URL-backed panel whose entry names a <code class="docutils literal notranslate"><span class="pre">health_endpoint</span></code>.</p>
+<p>Clicking a dimmed entry closes its tile as usual, but the panel cannot be
+opened again until its backend answers.
+If the agent points a panel that is not answering at a new page, the page
+loads on the backend’s next answer.</p>
+</section>
 <section id="panels-backed-by-a-url">
 <h2>Panels backed by a URL<a class="headerlink" href="#panels-backed-by-a-url" title="Link to this heading">#</a></h2>
 <p>An entry under <code class="docutils literal notranslate"><span class="pre">web.panels</span></code> can also declare a <strong>URL-backed panel</strong> — a tab
@@ -685,6 +705,12 @@ whichever ones the service’s own build happened to ship. Every OSPREY color is
 a CSS variable there, and all eight themes are defined in that one file, so a
 service that restates its colors in terms of those variables gets the whole
 theme switch for free.</p>
+<p><strong>The fonts come from the terminal too.</strong> Like <code class="docutils literal notranslate"><span class="pre">/design-system/</span></code>, the
+terminal serves <code class="docutils literal notranslate"><span class="pre">/static/fonts/fonts.css</span></code> to every embedded panel, so a
+URL-backed panel links it and does not vendor the fonts:</p>
+<div class="highlight-html notranslate"><div class="highlight"><pre><span></span><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">&quot;stylesheet&quot;</span> <span class="na">href</span><span class="o">=</span><span class="s">&quot;/static/fonts/fonts.css&quot;</span><span class="p">&gt;</span>
+</pre></div>
+</div>
 <p>Two boundaries are worth saying out loud:</p>
 <ul class="simple">
 <li><p><strong>Nothing happens on its own.</strong> The terminal only <em>tells</em> the panel the
@@ -948,6 +974,7 @@ shape of it.</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#panels-that-need-a-section-as-well-as-a-tick">Panels that need a section as well as a tick</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-the-panel-rail-lives">Where the panel rail lives</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-panel-stops-answering">When a panel stops answering</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#panels-backed-by-a-url">Panels backed by a URL</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#theming-a-url-backed-panel">Theming a URL-backed panel</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-bluesky-panel">The Bluesky panel</a></li>

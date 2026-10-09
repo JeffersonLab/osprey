@@ -66,7 +66,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="dev" />
-    <meta name="docbuild:last-update" content="Sep 30, 2026"/>
+    <meta name="docbuild:last-update" content="Oct 09, 2026"/>
   </head>
   
   
@@ -432,6 +432,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/use-connectors.html">Use Connectors</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/use-virtual-accelerator.html">Use the Virtual Accelerator</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../control-systems/switch-control-target.html">Switch the Control Target at Run Time</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../control-systems/phoebus-bridge.html">Connect the Agent to Phoebus Displays</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../use-channel-finder.html">How to Use the Channel Finder</a></li>
@@ -446,6 +447,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../ariel/search-modes.html">Search Modes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/web-interface.html">Web Interface</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/search-sidecar.html">The Search Sidecar (<code class="docutils literal notranslate"><span class="pre">qmd</span></code>)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../ariel/picture-search.html">Picture Captions and Picture Search</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../ariel/standalone-deployment.html">Standalone Deployment</a></li>
 </ul>
 </details></li>
@@ -633,6 +635,24 @@ of compose service names — the dispatcher’s target for its workers, and the
 Nextcloud Talk, Google Chat and Microsoft Teams bridges’ URLs for the dispatch
 pair.</p></li>
 </ul>
+<p><code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> reads each host-mode service’s bind address from the variable it
+declares with <code class="docutils literal notranslate"><span class="pre">bind_env:</span></code>. A service that declares <code class="docutils literal notranslate"><span class="pre">listens:</span> <span class="pre">false</span></code> opens no
+socket. One that declares neither is counted as reachable, and the start applies
+the fail-closed service-token rules. OSPREY’s own services declare this
+themselves; a facility service on the host network declares it beside
+<code class="docutils literal notranslate"><span class="pre">network:</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># profile</span>
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">site_api</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">template</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">services/site_api</span>
+<span class="w">    </span><span class="nt">config</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">network</span><span class="p">:</span><span class="w"> </span><span class="nv">host</span><span class="p p-Indicator">,</span><span class="nt"> bind_env</span><span class="p">:</span><span class="w"> </span><span class="nv">SITE_BIND</span><span class="p p-Indicator">}</span>
+</pre></div>
+</div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># services/site_api/docker-compose.yml.j2</span>
+<span class="w">    </span><span class="nt">environment</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">SITE_BIND</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;127.0.0.1&quot;</span>
+</pre></div>
+</div>
 <p>Services that talk to each other have to be on the same side of that boundary,
 and <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">build</span></code> refuses to render a deployment where they are not: a
 co-deployed bridge on the compose network with a host-mode dispatch pair, the
@@ -662,10 +682,46 @@ project its own <code class="docutils literal notranslate"><span class="pre">dep
 the pair along with everything else.
 A facility service you place on the host network is covered the same way,
 read from its <code class="docutils literal notranslate"><span class="pre">services.&lt;name&gt;.port</span></code> key; one without that key cannot be
-checked, and <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> says so rather than skipping it silently. The
+checked, and <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> says so rather than skipping it silently. A service
+that listens on nothing says so with <code class="docutils literal notranslate"><span class="pre">listens:</span> <span class="pre">false</span></code> and is left out of the
+check. The
 multi-user web terminals are covered the same way: every port of every roster
 index — terminal and companion panels alike — is checked, and a conflict names
 the user whose <code class="docutils literal notranslate"><span class="pre">index</span></code> to move.</p>
+</section>
+<section id="two-checkouts-of-one-repository-on-one-host">
+<span id="deploy-two-checkouts-one-host"></span><h2>Two checkouts of one repository on one host<a class="headerlink" href="#two-checkouts-of-one-repository-on-one-host" title="Link to this heading">#</a></h2>
+<p>Ports are not the only thing two copies can share. Every name a deployment
+puts on the host — compose project, volumes, images, web containers — comes
+from the tracked <code class="docutils literal notranslate"><span class="pre">project_name:</span></code> in <code class="docutils literal notranslate"><span class="pre">profile.yml</span></code>, not from the folder the
+checkout sits in. A second clone or worktree of the same repository therefore
+reads the same name and, unless it says otherwise, <em>is</em> the same deployment.</p>
+<p>Each container records which checkout created it. Before <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code> touches
+a container it compares that record with the current checkout, and it refuses
+when containers under this name came from another one:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>osprey up will not start over containers from another copy of this repo
+2 containers are named &#39;uitf_controls_assistant&#39;, but they were created from a
+different copy of this repo:
+    /home/x/code/uitf_controls_assistant  (still on disk)
+-&gt; stop that deployment where it lives: `osprey down --repo /home/x/code/uitf_controls_assistant`
+   or give this copy its own name:
+     profiles/scratch.yml:   project_name: uitf_controls_assistant-scratch
+     .env.variant:           OSPREY_PROFILE_VARIANT=scratch
+   then `osprey build` and start again. Nothing was deployed.
+</pre></div>
+</div>
+<p>The two remedies mean different things. Stopping the other copy and starting
+this one hands the deployment, and its data, to this checkout: volumes belong
+to the project by name, so they are kept. Giving this copy its own
+<code class="docutils literal notranslate"><span class="pre">project_name</span></code> in a variant overlay makes it a separate deployment with its
+own containers, volumes and images, starting with empty data; move its ports
+in the same overlay with <code class="docutils literal notranslate"><span class="pre">deployment.port_base</span></code>. See
+<a class="reference internal" href="../build-profiles.html#profile-host-variants"><span class="std std-ref">One repository, several hosts</span></a> for how the overlay is selected.</p>
+<p>Moving a checkout with <code class="docutils literal notranslate"><span class="pre">mv</span></code> looks the same from the host: its old containers
+now record a path that no longer exists. The refusal says so and prints the one
+command that frees the name, <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">rm</span> <span class="pre">-f</span></code> with the old containers’ names.
+The volumes are untouched and keep their data, and the moved checkout picks
+them up on its next <code class="docutils literal notranslate"><span class="pre">osprey</span> <span class="pre">up</span></code>.</p>
 </section>
 </section>
 
@@ -718,6 +774,7 @@ the user whose <code class="docutils literal notranslate"><span class="pre">inde
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#network-attachment-bridge-or-host">Network attachment: <code class="docutils literal notranslate"><span class="pre">bridge</span></code> or <code class="docutils literal notranslate"><span class="pre">host</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-more-than-one-project-on-one-host">Running more than one project on one host</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#two-checkouts-of-one-repository-on-one-host">Two checkouts of one repository on one host</a></li>
 </ul>
   </nav></div>
 
