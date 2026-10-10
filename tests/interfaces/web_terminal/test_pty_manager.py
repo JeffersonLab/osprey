@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -27,6 +28,7 @@ from tests.interfaces.web_terminal._pty_child import (
     wait_for_exit,
     wait_for_pids,
     wait_for_report,
+    wait_gone,
 )
 
 needs_ps = pytest.mark.skipif(
@@ -388,6 +390,28 @@ class TestPtyChildWaits:
             assert wait_for_report(report, 1, session) == ["x"]
         finally:
             session.terminate()
+
+    async def test_wait_gone_returns_once_every_pid_has_exited(self):
+        procs = [subprocess.Popen([sys.executable, "-c", "pass"]) for _ in range(2)]
+        try:
+            # Unreaped on purpose: an exited process nobody has waited for counts as gone.
+            await wait_gone([proc.pid for proc in procs], within=CHILD_HANG_CEILING)
+        finally:
+            for proc in procs:
+                proc.kill()
+                proc.wait()
+
+    @needs_ps
+    async def test_wait_gone_fails_naming_the_pid_still_running(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            with pytest.raises(
+                AssertionError, match=rf"pid {proc.pid} \(ps state '\S+'\) is still"
+            ):
+                await wait_gone([proc.pid], within=0.1)
+        finally:
+            proc.kill()
+            proc.wait()
 
     def test_hang_ceiling_sits_below_the_per_test_timeout(self):
         assert CHILD_HANG_CEILING < 300
