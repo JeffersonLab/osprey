@@ -234,6 +234,64 @@ class TestPtySession:
             session.terminate()
             kill_quietly(pids)
 
+    @needs_ps
+    def test_terminate_ends_what_the_child_started_when_the_first_process_table_read_fails(
+        self, tmp_path, monkeypatch
+    ):
+        pid_file = tmp_path / "pids"
+        script = sleeper_script(tmp_path, "magnet_scan.py", ignore=(signal.SIGHUP,))
+        session = PtySession(
+            [sys.executable, "-c", detaching_child_script(pid_file, scripts=[script])]
+        )
+        session.start()
+        pids: list[int] = []
+        try:
+            pids = wait_for_pids(session, pid_file, 2)
+            real = process_tree.snapshot
+            reads: list[None] = []
+
+            def spy():
+                reads.append(None)
+                return real() if len(reads) > 1 else None
+
+            monkeypatch.setattr(process_tree, "snapshot", spy)
+            session.terminate()
+            assert pid_gone(pids[0]), "the command the child started is still running"
+        finally:
+            monkeypatch.undo()
+            session.terminate()
+            kill_quietly(pids)
+
+    @needs_ps
+    def test_terminate_warns_when_the_process_table_never_reads(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        pid_file = tmp_path / "pids"
+        script = sleeper_script(tmp_path, "magnet_scan.py", ignore=(signal.SIGHUP,))
+        session = PtySession(
+            [sys.executable, "-c", detaching_child_script(pid_file, scripts=[script])]
+        )
+        session.start()
+        pids: list[int] = []
+        try:
+            pids = wait_for_pids(session, pid_file, 2)
+            child = session.pid
+            monkeypatch.setattr(process_tree, "snapshot", lambda: None)
+            with caplog.at_level(logging.WARNING):
+                session.terminate()
+            assert not session.is_alive
+            warnings = [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno == logging.WARNING and "process table" in record.getMessage()
+            ]
+            assert len(warnings) == 1, warnings
+            assert f"PTY child {child} " in warnings[0]
+        finally:
+            monkeypatch.undo()
+            session.terminate()
+            kill_quietly(pids)
+
     def test_terminate_of_a_dead_child_looks_for_nothing(self, monkeypatch):
         session = PtySession(["/bin/sh", "-c", "exit 0"])
         session.start()

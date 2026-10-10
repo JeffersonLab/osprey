@@ -152,6 +152,44 @@ async def test_stop_ends_what_the_agent_started_when_the_first_process_table_rea
         kill_quietly(pids)
 
 
+async def test_stop_warns_and_reports_an_unread_tree_when_the_process_table_never_reads(
+    tmp_path, monkeypatch, caplog
+):
+    factory = child_factory(tmp_path, scripts=("magnet_scan.py",))
+    session = await start_chat(factory)
+    pids: list[int] = []
+    try:
+        pids = wait_for_chat_pids(session, factory.pid_files[0], 2)
+        child = session.pid
+        reads: list[None] = []
+
+        def unreadable():
+            reads.append(None)
+            return None
+
+        monkeypatch.setattr(process_tree, "snapshot", unreadable)
+
+        with caplog.at_level(logging.WARNING, logger=operator_session.__name__):
+            await session.stop()
+
+        assert session.process_exited is True
+        assert len(reads) == process_tree.TREE_READ_ATTEMPTS
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING and "process table" in record.getMessage()
+        ]
+        assert len(warnings) == 1, warnings
+        assert f"chat child {child} " in warnings[0]
+        assert session.tree_ending == operator_session.TreeEnding(read=False)
+        # Nothing was looked for, so nothing was ended: the report does not claim otherwise.
+        assert not pid_gone(pids[0], within=0.0)
+    finally:
+        monkeypatch.undo()
+        await session.stop()
+        kill_quietly(pids)
+
+
 async def test_stop_of_a_child_that_already_exited_looks_for_nothing(monkeypatch):
     def factory(**_kwargs):
         return ChildClient([sys.executable, "-c", "pass"])
