@@ -113,6 +113,45 @@ async def test_stop_logs_what_it_ended(tmp_path, caplog):
         kill_quietly(pids)
 
 
+def _fail_first_reads(monkeypatch, failures: int) -> list[bool]:
+    """Make the first *failures* process-table reads fail; return the log of reads.
+
+    Each entry says whether that read reached the real ``ps``.
+    """
+    real = process_tree.snapshot
+    reads: list[bool] = []
+
+    def flaky():
+        reads.append(len(reads) >= failures)
+        return real() if reads[-1] else None
+
+    monkeypatch.setattr(process_tree, "snapshot", flaky)
+    return reads
+
+
+async def test_stop_ends_what_the_agent_started_when_the_first_process_table_read_fails(
+    tmp_path, monkeypatch
+):
+    factory = child_factory(tmp_path, scripts=("magnet_scan.py",))
+    session = await start_chat(factory)
+    pids: list[int] = []
+    try:
+        pids = wait_for_chat_pids(session, factory.pid_files[0], 2)
+        grandchild = pids[0]
+        reads = _fail_first_reads(monkeypatch, 1)
+
+        await session.stop()
+
+        assert reads[0] is False
+        assert pid_gone(grandchild), (
+            f"the command the agent started (pid {grandchild}) outlived the stop"
+        )
+    finally:
+        monkeypatch.undo()
+        await session.stop()
+        kill_quietly(pids)
+
+
 async def test_stop_of_a_child_that_already_exited_looks_for_nothing(monkeypatch):
     def factory(**_kwargs):
         return ChildClient([sys.executable, "-c", "pass"])
