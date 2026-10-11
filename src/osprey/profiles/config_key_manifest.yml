@@ -2109,6 +2109,14 @@ keys:
       Default false, the opposite of its acronym sibling: expanding prose into
       operator shorthand adds noise far more often than recall.
     default: false
+  ariel.vocabulary.expand_entries:
+    evidence: '_vocab_bool\(data, "expand_entries"'
+    note: >-
+      Default false: an entry is embedded as written. Turning it on changes the
+      text every existing embedding row was built from, so pair the switch with
+      `osprey ariel reembed --force`; the measured-best setup is on plus a
+      re-embed.
+    default: false
   ariel.vocabulary.expand_modes:
     rendered: false
     evidence: '_VOCABULARY_PREFIX\}\.expand_modes names no enabled search'
@@ -3500,7 +3508,7 @@ render_contexts:
     panels_on: web.panels.channel-finder.enabled
     default_panel_set: web.default_panel
     panel_presets_set: web.presets
-  expected_union_size: 357
+  expected_union_size: 358
   note_union_size: >-
     An assertion: the guard derives the union on every run and fails when this
     figure disagrees with it, or when it is missing. It moves whenever the

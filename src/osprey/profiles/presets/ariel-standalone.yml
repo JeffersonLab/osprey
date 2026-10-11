@@ -294,6 +294,10 @@ config:
   ariel.vocabulary.canonical_to_shorthand: false
   # `kind: synonym` concepts ignore both switches: every member reaches every
   # other member --- phrasings of one event have no noisy direction to gate.
+  # Entry-side expansion: embed each entry with the vocabulary's canonical
+  # phrases inserted beside the forms it wrote. Off ships entries as written;
+  # turning it on needs `osprey ariel reembed --force` so existing rows match.
+  ariel.vocabulary.expand_entries: false
   # Search modules. Knobs MUST sit under `settings`: the loader keeps only
   # `enabled`, `provider`, `model` and `settings` and drops any other key
   # silently.
