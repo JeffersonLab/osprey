@@ -129,6 +129,7 @@ from tests.fixtures.bench_ioc import (
     bench_ioc,
     ca_op,
     caget,
+    caput,
     docker,
     free_port,
     require_bench_image,
@@ -640,6 +641,9 @@ class SwitchDeployment:
     bench: BenchIOC
     va_port: int
     va_container: str
+    #: The live corrector's setpoint as the bench booted with it — the value
+    #: both machines are put back to before every scenario.
+    corrector_start: float
 
     @property
     def render(self) -> Path:
@@ -684,6 +688,7 @@ def switch_deployment(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Swit
     va_port = free_port()
 
     with bench_ioc(prefix="osprey-target-switch-agentic-bench") as bench:
+        corrector_start = caget(bench.port, CORRECTOR_SP)
         repo = _init_and_build(workspace, bench_port=bench.port, va_port=va_port)
         with _virtual_accelerator(va_port, repo) as va_name:
             yield SwitchDeployment(
@@ -691,6 +696,7 @@ def switch_deployment(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Swit
                 bench=bench,
                 va_port=va_port,
                 va_container=va_name,
+                corrector_start=corrector_start,
             )
 
 
@@ -771,7 +777,27 @@ def deployment_starts_at_baseline(request: pytest.FixtureRequest) -> None:
     """
     if "switch_deployment" not in request.fixturenames:
         return
-    clear_control_state(request.getfixturevalue("switch_deployment").repo)
+    deployment = request.getfixturevalue("switch_deployment")
+    clear_control_state(deployment.repo)
+    put_both_correctors_at_the_start(deployment)
+
+
+def put_both_correctors_at_the_start(deployment: SwitchDeployment) -> None:
+    """Set the corrector to the same starting value on both machines.
+
+    The two machines are module-scoped, so a value one scenario — or one
+    attempt of a rerun — writes is still there for the next. And a rehearsal
+    only rehearses something when the simulator starts where the live machine
+    does: from different starting values, the same requested setpoint is a
+    different move on each, and an agent that notices is right not to call the
+    simulator's move a rehearsal of the live one.
+    """
+    for port in (deployment.bench_port, deployment.va_port):
+        outcome = caput(port, CORRECTOR_SP, deployment.corrector_start)
+        assert abs(float(outcome["read_value"]) - deployment.corrector_start) < 1e-6, (
+            f"could not put {CORRECTOR_SP} back to {deployment.corrector_start} on port "
+            f"{port} before the scenario: {outcome}"
+        )
 
 
 # ---------------------------------------------------------------------------
