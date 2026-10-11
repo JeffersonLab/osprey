@@ -511,6 +511,33 @@ def _embedding_input_limit_deltas(*documents: str) -> tuple[Delta, ...]:
     )
 
 
+def _expand_entries_deltas(*documents: str) -> tuple[Delta, ...]:
+    """The entry-side vocabulary expansion switch the presets now state.
+
+    ``ariel.vocabulary.expand_entries`` decides whether an entry's embedding
+    input is expanded with the vocabulary's canonical phrases. Both root presets
+    that carry a vocabulary block now state it, off, beside its
+    ``canonical_to_shorthand`` sibling, so every document they render gains the
+    key. The fixtures were frozen before the key existed.
+
+    Args:
+        documents: The rendered documents the cell emits, ``root`` plus one per
+            persona.
+
+    Returns:
+        One delta per document.
+    """
+    return tuple(
+        Delta(
+            document=document,
+            path="ariel.vocabulary.expand_entries",
+            fixture=ABSENT,
+            live=False,
+        )
+        for document in documents
+    )
+
+
 #: The leaves the ARIEL picture modules add to a preset's render, and their
 #: shipped values.
 _PICTURE_MODULE_LEAVES: tuple[tuple[str, Any], ...] = (
@@ -1056,6 +1083,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _retired_upstream_link_deltas("root")
     + _fuzzy_threshold_deltas("root")
     + _embedding_input_limit_deltas("root")
+    + _expand_entries_deltas("root")
     + _picture_module_deltas("root")
     + _standalone_picker_deltas(),
     "channel-finder-standalone/in_context": _standalone_catalog_delta()
@@ -1087,6 +1115,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _tool_call_record_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _fuzzy_threshold_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _embedding_input_limit_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _standalone_persona_reach_deltas()
@@ -1109,6 +1138,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _tool_call_record_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _fuzzy_threshold_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _embedding_input_limit_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _standalone_persona_reach_deltas()
@@ -1131,6 +1161,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _tool_call_record_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _fuzzy_threshold_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _embedding_input_limit_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _standalone_persona_reach_deltas()
@@ -1153,6 +1184,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _tool_call_record_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _fuzzy_threshold_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _embedding_input_limit_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _standalone_persona_reach_deltas()

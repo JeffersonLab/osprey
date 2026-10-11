@@ -81,6 +81,18 @@ its file to the exclusion config with a reason. The lane gate
 test in `tests/benchmark/test_matrix_lanes.py` and at matrix-cell startup)
 fails on unmarked in-scope tests.
 
+## Tier 2: model benchmarks (`tier2/`)
+
+Tests under `tests/e2e/tier2/` measure what a model can do in OSPREY rather than
+gate a change: each task is fair, but a capable model may still miss it, so a miss
+says something about the model, not the PR. The PR `e2e-tests` lane ignores the
+directory; the tests run on demand in the `tier2-model-benchmark` job
+(`gh workflow run ci.yml -f run_benchmarks=true`) and in the model matrix. They
+carry no rerun marker: a benchmark scores every attempt. Tier 2 sits between the
+build-and-boot checks (Tier 1) and the per-preset agentic lanes (Tier 3) in the CI
+pyramid; the benchmark dashboard's own "Tier 0/1" labels for the two matrix lanes
+are a separate numbering.
+
 ## Test Categories
 
 ### Tutorial Workflows (`test_tutorials.py`)
