@@ -667,7 +667,7 @@ class TestBuildAgentOptions:
             permission_mode="bypassPermissions",
             max_turns=25,
             max_budget_usd=2.0,
-            env=dict(self._ROUTED_ENV),
+            env={**self._ROUTED_ENV, "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"},
             setting_sources=["project"],
             disallowed_tools=["Write"],
             mcp_servers=str(tmp_path / ".mcp.json"),
@@ -801,15 +801,15 @@ class TestBuildAgentOptions:
 
         assert options.hooks is None
 
-    def test_a_caller_env_is_used_verbatim_and_nothing_is_resolved(
+    def test_a_caller_env_is_kept_and_nothing_is_resolved(
         self, tmp_path: Path, routing: dict[str, Any]
     ) -> None:
         env = {"ANTHROPIC_BASE_URL": "https://caller.example", "ANTHROPIC_MODEL": "m-x"}
 
         options = primitives.build_agent_options(tmp_path, disallowed_tools=[], env=env)
 
-        assert options.env == env
-        assert options.env is not env
+        assert options.env == {**env, "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
+        assert env == {"ANTHROPIC_BASE_URL": "https://caller.example", "ANTHROPIC_MODEL": "m-x"}
         assert options.model is None
         for name in (
             "sdk_env",

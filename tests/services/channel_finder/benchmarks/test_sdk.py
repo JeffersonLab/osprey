@@ -324,7 +324,7 @@ class TestRunSdkQueryOnTheRunner:
             permission_mode="bypassPermissions",
             max_turns=7,
             max_budget_usd=0.5,
-            env=_ENV,
+            env={**_ENV, "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"},
             system_prompt=_AGENT_BODY,
             mcp_servers={"channel-finder": _CF_ENTRY},
             allowed_tools=["mcp__channel-finder__*"],

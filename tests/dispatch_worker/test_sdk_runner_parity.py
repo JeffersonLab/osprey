@@ -38,6 +38,7 @@ _TOOL = "mcp__controls__channel_read"
 
 _ENV_KEYS = [
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS",
     "CLAUDE_CONFIG_DIR",
     "CONFIG_FILE",
     "MCP_TIMEOUT",

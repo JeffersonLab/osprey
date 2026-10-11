@@ -33,6 +33,7 @@ from osprey.agent_runner import (
     ToolUseEvent,
     mcp_snapshot_summary,
 )
+from osprey.agent_runner.clean_env import build_clean_env as _REAL_BUILD_CLEAN_ENV
 from osprey.audit.posture import OSPREY_AGENT_DATA_ROOT
 from osprey.mcp_server.dispatch_worker import sdk_runner
 from osprey_connectors.posture_store import CONTROL_OWNER_ENV_VAR, NO_OWNER
@@ -417,6 +418,29 @@ async def test_subagent_delegation_runs_in_the_foreground(monkeypatch):
     await sdk_runner.run_dispatch("do it", ["Read"], event_queue=asyncio.Queue())
 
     assert captured["kw"]["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_run_is_offered_the_task_list_tools(monkeypatch):
+    """The run's env turns the task-list tools on, whatever the worker inherited.
+
+    The dispatch allow-list passes the task-list tools through, and the CLI
+    offers them by default only to the models it recognises by name.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "0")
+    # The real environment builder, in place of this module's stub.
+    monkeypatch.setattr("osprey.agent_runner.clean_env.build_clean_env", _REAL_BUILD_CLEAN_ENV)
+    captured: dict = {}
+
+    async def fake_stream(project_dir, prompt, **kw):  # noqa: ARG001 - matches the stream_query signature
+        captured["kw"] = kw
+        yield _text("ok")
+        yield _result(total_cost_usd=0.1, num_turns=1)
+
+    monkeypatch.setattr(sdk_runner, "stream_query", fake_stream)
+    await sdk_runner.run_dispatch("do it", ["Read"], event_queue=asyncio.Queue())
+
+    assert captured["kw"]["env"]["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1"
 
 
 @pytest.mark.asyncio

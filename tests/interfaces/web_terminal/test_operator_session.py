@@ -1626,7 +1626,7 @@ class TestOperatorChatLaunchParity:
             await session.start()
 
         (options,) = captured
-        assert options.env == {}
+        assert options.env == {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
         sdk_env.assert_not_called()
         await session.stop()
 

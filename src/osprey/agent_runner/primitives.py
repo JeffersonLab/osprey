@@ -50,6 +50,7 @@ try:
 except ImportError:
     HAS_SDK = False
 
+from osprey.agent_runner.clean_env import TASK_TOOLS_ENV
 from osprey.agent_runner.errors import McpNotReadyError
 from osprey.agent_runner.events import (
     AgentEvent,
@@ -721,6 +722,10 @@ def build_agent_options(
                 )
             port = start_proxy_for(spec, run_env)
             run_env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+
+    # Over the caller's environment as well as the routed one: the SDK overlays
+    # this dict on the parent's, so the switch has to be in it to hold.
+    run_env.update(TASK_TOOLS_ENV)
 
     sources: list[SettingSource] = ["project"] if setting_sources is None else list(setting_sources)
     run_mcp_servers: dict[str, McpServerConfig] | str
