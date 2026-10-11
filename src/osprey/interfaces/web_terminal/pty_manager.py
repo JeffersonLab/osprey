@@ -297,15 +297,27 @@ class PtySession:
         expire, which is logged and then let go. Returning is therefore not
         proof of death: :attr:`is_alive` is, and it is the probe anything that
         needs to *know* the child is gone must poll. What became of the started
-        processes is in the log line this method writes.
+        processes is in the log line this method writes. When the process table
+        cannot be read while the child is alive, the started groups cannot be
+        looked for: only the child's own group is reached, and a warning says so.
+        Each read is bounded, so a process table that never answers adds about
+        six seconds and no more.
         """
         # Taken before the hang-up: a process the agent started in a session
-        # of its own keeps its parent link only until the agent exits.
-        groups = (
-            process_tree.tree_groups(self._process.pid)
-            if self._process is not None and self._process.poll() is None
-            else []
-        )
+        # of its own keeps its parent link only until the agent exits. A failed
+        # read is retried while the child lives, since no later one can find them.
+        groups: list[process_tree.ProcessGroup] = []
+        process = self._process
+        if process is not None and process.poll() is None:
+            rows = process_tree.read_while_alive(lambda: process.poll() is None)
+            if rows is None:
+                logger.warning(
+                    "Could not read the process table while the PTY child %d was alive; "
+                    "what it started is left running",
+                    process.pid,
+                )
+            else:
+                groups = process_tree.tree_groups(process.pid, rows)
 
         # Close master fd FIRST — the kernel sends SIGHUP to the entire
         # session (all process groups under this session leader), which is the

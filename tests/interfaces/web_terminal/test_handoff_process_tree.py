@@ -43,6 +43,7 @@ from tests.interfaces.web_terminal._pty_child import (
     pid_gone,
     sleeper_script,
     wait_for_pids,
+    wait_gone,
 )
 
 pytestmark = [
@@ -111,7 +112,7 @@ async def test_stop_both_ends_the_agent_and_its_commands(tmp_path):
 
         assert input_file.read_bytes() == b"\x1b"
         assert not session.is_alive
-        assert all(pid_gone(pid) for pid in pids)
+        await wait_gone(pids)
         assert KEY in chats(app).sessions
         assert registry(app).get_session(KEY) is None
         assert_released(app)
@@ -152,7 +153,7 @@ async def test_with_nothing_started_the_stop_goes_straight_through(tmp_path):
         await acquire(app, KEY, "simple", object(), interrupt=True, spawn=chat_spawner(app))
 
         assert not session.is_alive
-        assert pid_gone(pids[0])
+        await wait_gone([pids[0]])
         assert KEY in chats(app).sessions
         assert_released(app)
     finally:
