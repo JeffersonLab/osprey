@@ -45,6 +45,16 @@ except ImportError:  # pragma: no cover - exercised only without the SDK
 
 logger = logging.getLogger(__name__)
 
+# The CLI's task-list tools. The CLI lets an agent use them without an allow
+# rule, and a strict deny-only hook would otherwise starve a job's progress
+# tracking. Every name is a tool the pinned CLI build lists under the
+# environment OSPREY starts it with (clean_env.TASK_TOOLS_ENV), which
+# tests/agent_runner/test_tool_name_conformance.py checks. Deliberately NOT
+# included: TaskOutput/TaskStop (background commands),
+# Task (delegation), and Read/Glob/Grep, because main-thread file access would
+# expose e.g. config.yml provider settings. Denylist entries still beat this set.
+PASSTHROUGH_TOOLS = frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"})
+
 # Both names the CLI has used for the subagent-delegation tool.
 DELEGATION_TOOLS = ("Task", "Agent")
 
@@ -119,6 +129,9 @@ def make_pretooluse_hook(
             if matches_denylist(tool_name, denied_tuple):
                 return _deny(f"Tool {tool_name!r} is blocked by the dispatch server denylist")
 
+            if tool_name in PASSTHROUGH_TOOLS:
+                return {}
+
             if tool_name in DELEGATION_TOOLS:
                 tool_input = input_data.get("tool_input") or {}
                 target = tool_input.get("subagent_type")
@@ -188,6 +201,8 @@ def make_backstop(
             return PermissionResultDeny(
                 message=f"Tool {tool_name!r} is blocked by the dispatch server denylist",
             )
+        if tool_name in PASSTHROUGH_TOOLS:
+            return PermissionResultAllow()
         allowed = trigger_set if getattr(context, "agent_id", None) is None else subagent_union
         if tool_name in allowed:
             return PermissionResultAllow()

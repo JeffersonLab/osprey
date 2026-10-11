@@ -46,9 +46,11 @@ from osprey.agent_runner import (
     SDKWorkflowResult,
     evaluate_verdict,
     expected_mcp_servers,
+    launcher,
     read_only_disallowed_tools,
     run_query,
 )
+from osprey.agent_runner.errors import AgentCliUnavailableError
 from osprey.cli import output
 
 from .repo_resolver import find_repo_root, repo_option
@@ -202,6 +204,20 @@ def query(ctx: click.Context, prompt: str, as_json: bool, repo: Path | None) -> 
             # and a caller distinguishing 1 from 2 must not read it as a failed
             # verdict.
             output.fail(exc.format_message(), _NOTHING_RENDERED, "run `osprey build` first")
+            ctx.exit(EXIT_USAGE)
+            return
+
+        # Which Claude Code the run executes is settled first, so a project
+        # whose pinned version is not installed is refused before anything
+        # else is read or started.
+        try:
+            launcher.project_agent_cli_path(build_dir)
+        except AgentCliUnavailableError as exc:
+            output.fail("The query could not run", str(exc))
+            ctx.exit(EXIT_USAGE)
+            return
+        except (OSError, yaml.YAMLError, ValueError) as exc:
+            output.fail("Could not load the project configuration", str(exc))
             ctx.exit(EXIT_USAGE)
             return
 

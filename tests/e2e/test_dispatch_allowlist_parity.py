@@ -2,7 +2,7 @@
 
 Pins the three defects behind the dispatch-allowlist-parity fix and proves
 the fix end-to-end against a real deployment repo, a real dispatch worker
-subprocess, and the bundled Claude CLI:
+subprocess, and the pinned Claude CLI:
 
 * **Repro A (settings-allow bypass):** the probe tool is in the provisioned
   ``settings.json`` ``permissions.allow``; per SDK semantics such calls never
@@ -52,6 +52,7 @@ from pathlib import Path
 
 import pytest
 
+from osprey.agent_runner.tool_policy import PASSTHROUGH_TOOLS
 from tests.e2e.provider import E2E_MODEL, e2e_provider
 from tests.e2e.test_dispatch_tutorial import (
     HEALTH_TIMEOUT_SEC,
@@ -340,6 +341,11 @@ def test_subagent_tools_work_in_settings_stripped_repo(worker):
     )
     denied = [tc for tc in sub_calls if _denied_by_policy(tc["result"])]
     assert not denied, f"subagent tool calls denied (starvation persists): {denied}"
+
+    # harness pass-through: a task-list call the agent makes is never denied by the policy
+    for tc in run.get("tool_calls", []):
+        if tc["name"] in PASSTHROUGH_TOOLS:
+            assert not _denied_by_policy(tc["result"])
 
 
 # ---------------------------------------------------------------------------

@@ -79,9 +79,8 @@ from tests.e2e.sdk_helpers import (
 )
 from tests.e2e.test_preset_agentic import _to_workflow_result
 
-# We gate on HAS_SDK only — the bundled Claude binary ships inside the
-# claude_agent_sdk package, so a system-PATH check would spuriously skip
-# this on CI runners where the SDK is installed but no system ``claude`` is.
+# We gate on HAS_SDK only — the run executes the installed pinned ``claude``,
+# and a runner without it must fail this test loudly, not skip it.
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.agentic_benchmark,

@@ -85,7 +85,9 @@ launches a queue.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from osprey.build.claude_code_telemetry import TELEMETRY_ENV_VARS
 from osprey.utils.sensitive_env import strip_sensitive
@@ -101,6 +103,18 @@ _STRIP_PREFIXES = ("CLAUDECODE", "CLAUDE_CODE_")
 _TELEMETRY_SWITCHES: frozenset[str] = frozenset(
     k for k in TELEMETRY_ENV_VARS if k.startswith(_STRIP_PREFIXES)
 )
+
+
+#: Set in the environment of every Claude Code process OSPREY starts. The CLI
+#: offers its task-list tools (``TaskCreate``, ``TaskGet``, ``TaskList``,
+#: ``TaskUpdate``) by default only to the models it recognises by name, so a
+#: newer model or a gateway's own model name is offered none of them without
+#: this switch. With it the terminal, the chat and a dispatched job list the
+#: same tools on every model and every provider. The two seams that apply it
+#: are :func:`build_base_child_env`, under every child whose environment OSPREY
+#: composes, and :func:`osprey.agent_runner.primitives.build_agent_options`,
+#: over every environment an SDK run is handed.
+TASK_TOOLS_ENV: Mapping[str, str] = MappingProxyType({"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"})
 
 
 def strip_claude_code_env(env: dict[str, str]) -> dict[str, str]:
@@ -132,7 +146,7 @@ def build_base_child_env() -> dict[str, str]:
 
     The interactive PTY path (:func:`pty_manager.build_pty_env`), the SDK
     operator subprocess (:func:`build_clean_env`), and the dispatch worker all
-    need the same three preparation steps, in the same order, before each
+    need the same preparation steps, in the same order, before each
     overlays its own path-specific keys:
 
     1. Strip Claude Code internal session variables via
@@ -146,15 +160,17 @@ def build_base_child_env() -> dict[str, str]:
        it genuinely closes those names on the real child-process paths, but on
        the SDK overlay path an absent key is inherited from ``os.environ``
        anyway, which makes it defence-in-depth there rather than a boundary.
-    3. Resolve the auth-token conflict: when token-based auth is configured
+    3. Turn the CLI's task-list tools on (:data:`TASK_TOOLS_ENV`), so every
+       child lists them whatever model it runs.
+    4. Resolve the auth-token conflict: when token-based auth is configured
        (a token-auth proxy provider), drop a stale ``ANTHROPIC_API_KEY`` that
        Claude Code would otherwise auto-load from the project ``.env`` and warn
        about.
-    4. Augment ``PATH`` with user-local bin dirs (e.g. ``~/.local/bin``) so child
+    5. Augment ``PATH`` with user-local bin dirs (e.g. ``~/.local/bin``) so child
        processes resolve their dependencies even from a non-login context
        (lifecycle hooks, ``nohup``, etc.).
 
-    Centralising all four here — not just the strip step — is what keeps the
+    Centralising all five here — not just the strip step — is what keeps the
     launch paths from drifting apart, the reason this helper exists.
 
     Returns:
@@ -162,6 +178,8 @@ def build_base_child_env() -> dict[str, str]:
         caller's own ``os.environ`` is never mutated.
     """
     env = strip_sensitive(strip_claude_code_env(dict(os.environ)))
+    # After the strip, which removes whatever value the parent carried.
+    env.update(TASK_TOOLS_ENV)
 
     if env.get("ANTHROPIC_AUTH_TOKEN"):
         env.pop("ANTHROPIC_API_KEY", None)

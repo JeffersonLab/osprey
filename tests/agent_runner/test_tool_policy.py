@@ -19,6 +19,7 @@ import pytest
 
 from osprey.agent_runner.tool_policy import (
     DELEGATION_TOOLS,
+    PASSTHROUGH_TOOLS,
     make_backstop,
     make_pretooluse_hook,
     narrow_allowed_tools,
@@ -164,14 +165,60 @@ class TestPretooluseHookDenylist:
         # Assert
         assert _decision(result) == "deny"
 
+    async def test_hook_denylist_beats_passthrough(self):
+        # Arrange — a passthrough name placed on the denylist stays denied
+        hook = make_pretooluse_hook(TRIGGER_TOOLS, SURFACES, ["TaskCreate"])
 
-class TestPretooluseHookHasNoFreePass:
-    @pytest.mark.parametrize(
-        "tool",
-        ["TodoWrite", "WaitForMcpServers", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate"],
-    )
-    async def test_hook_denies_harness_tools_without_an_allow_rule(self, tool):
-        # Arrange — no name passes without a trigger allow rule or a declared surface
+        # Act
+        result = await hook(_main_input("TaskCreate"), "t1", None)
+
+        # Assert
+        assert _decision(result) == "deny"
+
+
+class TestPretooluseHookPassthrough:
+    async def test_hook_passthrough_set_is_exactly_pinned(self):
+        # Assert — permission-free task-list tools only; Read/Glob/Grep excluded
+        assert PASSTHROUGH_TOOLS == frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"})
+
+    @pytest.mark.parametrize("tool", ["TodoWrite", "WaitForMcpServers"])
+    async def test_hook_denies_names_outside_the_passthrough_set(self, tool):
+        # Arrange — neither name passes without a trigger allow rule
+        hook = _hook()
+
+        # Act
+        result = await hook(_main_input(tool), "t1", None)
+
+        # Assert
+        assert _decision(result) == "deny"
+
+    def test_passthrough_set_never_names_a_floor_or_delegation_tool(self):
+        # Arrange
+        from osprey.agent_runner.tool_names import DISPATCH_DENIED_TOOLS
+
+        # Assert — the Task-prefixed background-command tools never pass through
+        assert not PASSTHROUGH_TOOLS & (DISPATCH_DENIED_TOOLS | set(DELEGATION_TOOLS))
+        assert {"TaskOutput", "TaskStop"}.isdisjoint(PASSTHROUGH_TOOLS)
+
+    async def test_hook_floor_beats_passthrough_under_the_server_denylist(self):
+        # Arrange — built the way a real dispatch run is wired
+        from osprey.agent_runner import tool_names
+
+        hook = make_pretooluse_hook(
+            ["TaskOutput"], SURFACES, sorted(tool_names.DISPATCH_DENIED_TOOLS)
+        )
+
+        # Act
+        floored = await hook(_main_input("TaskOutput"), "t1", None)
+        passed = await hook(_main_input("TaskCreate"), "t2", None)
+
+        # Assert
+        assert _decision(floored) == "deny"
+        assert passed == {}
+
+    @pytest.mark.parametrize("tool", sorted(PASSTHROUGH_TOOLS))
+    async def test_hook_allows_passthrough_in_both_contexts(self, tool):
+        # Arrange
         hook = _hook()
 
         # Act
@@ -179,21 +226,11 @@ class TestPretooluseHookHasNoFreePass:
         sub = await hook(_subagent_input(tool), "t2", None)
 
         # Assert
-        assert _decision(main) == "deny"
-        assert _decision(sub) == "deny"
-
-    async def test_hook_allows_a_harness_tool_the_trigger_names(self):
-        # Arrange — the trigger allowlist is the only way such a tool is reached
-        hook = _hook(trigger=[*TRIGGER_TOOLS, "TaskList"])
-
-        # Act
-        result = await hook(_main_input("TaskList"), "t1", None)
-
-        # Assert
-        assert result == {}
+        assert main == {}
+        assert sub == {}
 
     @pytest.mark.parametrize("tool", ["Read", "Glob", "Grep"])
-    async def test_hook_denies_file_tools_without_an_allow_rule(self, tool):
+    async def test_hook_does_not_passthrough_file_tools(self, tool):
         # Arrange — main-thread Read would expose config.yml provider config
         hook = _hook()
 
@@ -346,7 +383,7 @@ class TestBackstop:
         # Assert
         assert _is_deny(result)
 
-    async def test_backstop_denies_harness_tools_without_an_allow_rule(self):
+    async def test_backstop_allows_passthrough_tools(self):
         # Arrange
         backstop = make_backstop(TRIGGER_TOOLS, SURFACES, DENIED)
 
@@ -355,8 +392,8 @@ class TestBackstop:
         sub = await backstop("TaskUpdate", {}, _ctx(agent_id="a"))
 
         # Assert
-        assert _is_deny(main)
-        assert _is_deny(sub)
+        assert _is_allow(main)
+        assert _is_allow(sub)
 
     async def test_backstop_none_surfaces_contribute_nothing_to_union(self):
         # Arrange — only 'wild': None declared: union is empty

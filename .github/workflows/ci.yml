@@ -260,6 +260,13 @@ jobs:
       # [project] dependencies for that reason.
       run: uv sync --extra dev --extra virtual-accelerator
 
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. The suite's real-binary checks run that install
+      # and fail, never skip, without it; every other test is pointed at a
+      # stand-in and needs no binary.
+      uses: ./.github/actions/install-pinned-claude-code
+
     - name: Run unit tests
       # timeout-minutes is deliberately below the job's cap. A JOB timeout is a
       # hard cancel: the runner stops the job outright, and the collection steps
@@ -886,9 +893,9 @@ jobs:
       with:
         node-version: '22'
 
-    # The unit test checks the deny lists against the recorded inventories;
-    # this step proves every recorded name against the real binaries.
-    - name: Check the recorded CLI tool inventories against the pinned builds
+    # The unit test checks the deny lists against the recorded inventory;
+    # this step proves every recorded name against the real binary.
+    - name: Check the recorded CLI tool inventory against the pinned build
       timeout-minutes: 5
       run: uv run python scripts/cli_tool_inventory.py --check
 
@@ -1239,16 +1246,12 @@ jobs:
     - name: Install dependencies
       run: uv sync
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # Same reasoning as the agentic lane above: `claude-agent-sdk` ships a
-      # working `claude` binary but installs no console script, so a fresh
-      # runner has none on PATH. Verify before exporting, so a missing binary
-      # fails the lane loudly instead of turning the smoke below into a
-      # "command not found" that reads like a plugin failure.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Install the osprey plugin from the in-repo marketplace
       # The checkout itself is the marketplace source, so this proves the
@@ -1265,7 +1268,7 @@ jobs:
       run: |
         claude plugin details osprey@osprey | tee /tmp/details.txt
         grep -q 'Skills (10)' /tmp/details.txt
-        for s in contribute design-philosophy doc-sync housekeeping install panel pre-commit release test-audit upstream-scout; do grep -q "$s" /tmp/details.txt; done
+        for s in contribute design-philosophy doc-sync housekeeping panel pre-commit release setup test-audit upstream-scout; do grep -q "$s" /tmp/details.txt; done
 
   build-boot-smoke:
     name: Tier 1 — Build + MCP boot (${{ matrix.preset }})
@@ -1386,20 +1389,12 @@ jobs:
         fi
         echo "✅ ALS-APG endpoint reachable (HTTP 200)"
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # `claude-agent-sdk` ships a working `claude` binary but installs no
-      # console script, so a fresh runner has none on PATH. The SDK finds its
-      # own bundled copy, but osprey's launcher and health check shell
-      # `claude` off PATH, and every agent test skips when `claude --version`
-      # fails -- a lane that reports green having executed nothing. Exposing
-      # the bundled binary makes the SDK, the product, and the skip guards
-      # agree on one CLI, with no npm install and no SDK/CLI version drift.
-      # Verify before exporting: a missing binary must fail the lane loudly
-      # rather than silently restore the skips this step exists to remove.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run Tier 3 agentic test for preset
       timeout-minutes: 55
@@ -1497,15 +1492,12 @@ jobs:
         fi
         echo "✅ ALS-APG endpoint reachable (HTTP 200)"
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # See the identical step in agentic-per-preset: the SDK bundles a
-      # `claude` binary but installs no console script, so without this the
-      # CLI-gated tests in this lane skip and the lane greens having run only
-      # the tests that need no agent.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run E2E tests
       # Step cap under the job cap so a hang fails THIS step, leaving the
@@ -1710,14 +1702,12 @@ jobs:
         set -euo pipefail
         docker info > /dev/null
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # See the identical step in e2e-tests: the SDK bundles a `claude` binary
-      # but installs no console script, so without this the CLI-gated tests
-      # in the skills-overlay module skip — and a skip fails this lane.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run the model-free E2E files
       timeout-minutes: 25
@@ -1860,13 +1850,12 @@ jobs:
         fi
         echo "✅ ALS-APG endpoint reachable (HTTP 200)"
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # See the identical step in agentic-per-preset: without it the
-      # benchmark module's CLI-gated tests skip and the lane greens empty.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Fetch the pinned neosemantics (n10s) jar for the graph benchmark lane
       # The fourth paradigm, `graph`, is scored against a real Neo4j +
@@ -2688,14 +2677,12 @@ jobs:
         fi
         echo "✅ ALS-APG endpoint reachable (HTTP 200)"
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # See the identical step in agentic-per-preset. This lane's zero-skip
-      # gate below is what first surfaced the missing CLI: pytest passed
-      # while both live tests skipped on `claude --version`.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run scan stack agentic E2E
       # Step cap under the job cap so a hang fails THIS step, leaving the
@@ -3065,6 +3052,12 @@ jobs:
     - name: Install osprey
       run: uv sync --extra dev
 
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
+
     - name: Pull the pinned Nextcloud Talk fixture image
       run: |
         # The e2e module deliberately never pulls or builds: it SKIPS when the
@@ -3185,6 +3178,12 @@ jobs:
       # executed tests. The zero-skip gate at the bottom of this job is the
       # backstop; this is the fix.
       run: uv sync --extra dev --extra gchat
+
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Pull the Pub/Sub emulator image
       run: |
@@ -3334,6 +3333,12 @@ jobs:
       # job that syncs only `dev` collects nothing here. The zero-skip gate at
       # the bottom of this job is the backstop; this is the fix.
       run: uv sync --extra dev --extra teams
+
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run Microsoft Teams bridge E2E
       # Well inside the job cap, so the diagnostics step below still runs.
@@ -5315,16 +5320,12 @@ jobs:
         rm -rf /tmp/bench-ioc-buildx-cache
         mv /tmp/bench-ioc-buildx-cache-new /tmp/bench-ioc-buildx-cache
 
-    - name: Put the SDK's bundled Claude CLI on PATH
-      # See the identical step in scan-agentic-e2e. Every test in this module
-      # is gated on `is_claude_code_available()`, which shells `claude
-      # --version` off PATH — and claude-agent-sdk installs no `claude` console
-      # script, so without this step the whole module skips on a runner where
-      # the SDK would in fact work.
-      run: |
-        bundled="$(uv run python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / '_bundled')")"
-        "$bundled/claude" --version
-        echo "$bundled" >> "$GITHUB_PATH"
+    - name: Install the pinned Claude Code CLI
+      # One Claude Code runs in this lane: the version OSPREY pins, installed
+      # where PATH finds it. Every agent run here is pointed at that install
+      # and refuses to start without it, so a lane that lacks it fails loudly
+      # rather than skipping its agent tests or running some other build.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run the control-target switch agentic E2E
       # Step cap under the job cap so a hang fails THIS step, leaving the
@@ -5364,11 +5365,11 @@ jobs:
         # deployed nothing and measured nothing. pytest's exit code cannot
         # express the difference.
         #
-        # The `claude` CLI case is the live one, not a hypothetical:
-        # claude-agent-sdk bundles its own CLI and installs no `claude` console
-        # script, so this module's `is_claude_code_available()` skipif can fire
-        # on a runner where the SDK would in fact work — and because that
-        # skipif is module-wide here, it takes all ten tests with it.
+        # The `claude` CLI case is the live one, not a hypothetical: a fresh
+        # runner has no `claude` on PATH until the lane installs the pinned
+        # one, so this module's `is_claude_code_available()` skipif can fire —
+        # and because that skipif is module-wide here, it takes all ten tests
+        # with it.
         #
         # Safe alongside two scenarios' `flaky(reruns=2)`: pytest-rerunfailures
         # does not record rerun attempts as testcases, so an absorbed sampling
