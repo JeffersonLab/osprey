@@ -266,12 +266,16 @@ Channels:
 
 Output exactly 2 PascalCase names, one per line:"""
 
+        # The cap is the production namer's (LLMChannelNamer's default), not a
+        # token-saving minimum: a model that reasons before it answers spends
+        # that reasoning inside max_tokens, and a cap sized for the two names
+        # alone can be consumed entirely by it, leaving an empty answer.
         response = get_chat_completion(
             message=prompt,
             provider=provider_name,
             model_id=provider_config["default_model"],
             provider_config=provider_config,
-            max_tokens=200,
+            max_tokens=1000,
         )
 
         assert response is not None
