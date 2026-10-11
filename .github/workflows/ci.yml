@@ -3048,6 +3048,12 @@ jobs:
     - name: Install osprey
       run: uv sync --extra dev
 
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
+
     - name: Pull the pinned Nextcloud Talk fixture image
       run: |
         # The e2e module deliberately never pulls or builds: it SKIPS when the
@@ -3168,6 +3174,12 @@ jobs:
       # executed tests. The zero-skip gate at the bottom of this job is the
       # backstop; this is the fix.
       run: uv sync --extra dev --extra gchat
+
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Pull the Pub/Sub emulator image
       run: |
@@ -3317,6 +3329,12 @@ jobs:
       # job that syncs only `dev` collects nothing here. The zero-skip gate at
       # the bottom of this job is the backstop; this is the fix.
       run: uv sync --extra dev --extra teams
+
+    - name: Install the pinned Claude Code CLI
+      # The dispatch worker this lane starts refuses to run without an
+      # installed `claude` reporting the pinned version, so the pin goes on
+      # PATH before any test brings the dispatcher/worker pair up.
+      uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run Microsoft Teams bridge E2E
       # Well inside the job cap, so the diagnostics step below still runs.

@@ -4007,7 +4007,9 @@ def test_all_checks_passed_needs_scan_agentic__mutation_drops_check_pr_lane_line
 #: installed ``claude`` that reports the pinned version and refuses to start
 #: otherwise, so each lane installs that version before running pytest — on a
 #: bare runner the gated tests would skip and the lane green having executed
-#: nothing, and the ungated ones would fail.
+#: nothing, and the ungated ones would fail. The chat-bridge lanes belong here
+#: too: each starts a real dispatch worker on the runner, and the worker refuses
+#: to start without that install.
 CLI_DEPENDENT_JOBS = (
     "test",
     "plugin-smoke",
@@ -4017,6 +4019,9 @@ CLI_DEPENDENT_JOBS = (
     NO_MODEL_JOB,
     SCAN_AGENTIC_JOB,
     TARGET_SWITCH_AGENTIC_JOB,
+    NEXTCLOUD_JOB,
+    GCHAT_JOB,
+    TEAMS_JOB,
 )
 
 PINNED_CLI_STEP = "Install the pinned Claude Code CLI"
