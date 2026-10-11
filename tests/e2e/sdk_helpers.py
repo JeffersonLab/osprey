@@ -90,6 +90,7 @@ from osprey.agent_runner import (
 from osprey.agent_runner import (
     combined_text as combined_text,  # re-exported for other e2e test modules
 )
+from osprey.agent_runner.launcher import project_agent_cli_path
 from osprey.agent_runner.primitives import (
     MCP_READY_TIMEOUT_S,
     _ingest_tool_result,
@@ -1069,6 +1070,7 @@ async def run_sdk_query(
     options = ClaudeAgentOptions(
         model=model if model is not None else resolve_default_model(render),
         cwd=str(render),
+        cli_path=project_agent_cli_path(render),
         permission_mode="bypassPermissions",
         max_turns=max_turns,
         max_budget_usd=e2e_budget_cap(max_budget_usd),
@@ -1299,6 +1301,7 @@ async def run_sdk_query_with_hooks(
     options = ClaudeAgentOptions(
         model=model if model is not None else resolve_default_model(render),
         cwd=str(render),
+        cli_path=project_agent_cli_path(render),
         permission_mode="default",
         max_turns=max_turns,
         max_budget_usd=e2e_budget_cap(max_budget_usd),

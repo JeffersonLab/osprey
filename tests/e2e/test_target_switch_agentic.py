@@ -82,6 +82,7 @@ import pytest
 import yaml
 
 from osprey.agent_runner import await_mcp_ready, expected_mcp_servers, sdk_env
+from osprey.agent_runner.launcher import project_agent_cli_path
 from osprey.agent_runner.primitives import _ingest_tool_result
 from osprey.mcp_server.control_system.connector_host_manager import baseline_target
 from osprey.mcp_server.control_system.target_state import (
@@ -1335,6 +1336,7 @@ async def run_switch_conversation(
     options = ClaudeAgentOptions(
         model=_default_opus_model(deployment.repo),
         cwd=str(render),
+        cli_path=project_agent_cli_path(render),
         permission_mode="default",
         max_turns=max_turns,
         max_budget_usd=e2e_budget_cap(max_budget_usd),
