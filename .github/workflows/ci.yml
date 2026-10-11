@@ -28,8 +28,8 @@ on:
         default: ''
       run_benchmarks:
         description: >-
-          Run the on-demand benchmark lanes (channel-finder MCP benchmarks)
-          instead of the E2E lane. The home for e2e suites that are useful
+          Run the on-demand benchmark lanes (channel-finder MCP benchmarks
+          and the Tier 2 model benchmark) instead of the E2E lane. The home for e2e suites that are useful
           but too expensive to run on every PR — trigger before a release or
           after touching the code they exercise.
         required: false
@@ -1624,7 +1624,8 @@ jobs:
             --ignore=tests/e2e/web_terminals/test_skills_overlay_discovery.py \
             --ignore=tests/e2e/web_terminals/test_loopback_chokepoint.py \
             --ignore=tests/e2e/web_terminals/test_session_restart_e2e.py \
-            --ignore=tests/e2e/web_terminals/test_terminal_auth_e2e.py
+            --ignore=tests/e2e/web_terminals/test_terminal_auth_e2e.py \
+            --ignore=tests/e2e/tier2
         fi
     # On failure only: container logs, exit codes, `OOMKilled`, and runner
     # disk/memory state, uploaded as the `ci-diag-<lane>` artifact.
@@ -1879,6 +1880,73 @@ jobs:
         ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
       run: |
         uv run pytest tests/e2e/claude_code/test_channel_finder_mcp_benchmarks.py -v --tb=short
+
+  tier2-model-benchmark:
+    name: Tier 2 — Model benchmark (on demand)
+    runs-on: ubuntu-latest
+    # Tier 2 tests measure what a model can do in OSPREY rather than gate a
+    # change: each task is fair, but a capable model may still miss it, so a
+    # miss says something about the model, not about the PR. They live in
+    # tests/e2e/tier2/, which the e2e-tests lane ignores, and run only here,
+    # behind the same `run_benchmarks` dispatch input as the channel-finder
+    # benchmarks (`gh workflow run ci.yml -f run_benchmarks=true`). No rerun
+    # marker: every attempt is scored. Deliberately NOT in
+    # all-checks-passed's needs — a dispatch-gated job has no result on PR
+    # runs.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_benchmarks
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.11
+
+    - name: Install dependencies
+      run: uv sync --extra dev
+
+    - name: Pre-flight LLM endpoint reachability check
+      env:
+        ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
+      run: |
+        # Same probe as e2e-tests: fail fast if the proxy is unreachable.
+        if [ -z "${ALS_APG_API_KEY:-}" ]; then
+          echo "❌ ALS_APG_API_KEY secret is not set on this runner"
+          exit 1
+        fi
+        ALS_APG_PROBE_BASE="${ALS_APG_BASE_URL}"
+        ALS_APG_PROBE_BASE="${ALS_APG_PROBE_BASE%/}"; ALS_APG_PROBE_BASE="${ALS_APG_PROBE_BASE%/v1}"
+        HTTP_CODE=$(curl -sS -o /tmp/probe.txt -w "%{http_code}" --max-time 15 \
+          -X POST "$ALS_APG_PROBE_BASE/v1/messages" \
+          -H "Content-Type: application/json" \
+          -H "anthropic-version: 2023-06-01" \
+          -H "Authorization: Bearer $ALS_APG_API_KEY" \
+          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
+          head -c 500 /tmp/probe.txt; echo
+          exit 1
+        fi
+        echo "✅ ALS-APG endpoint reachable (HTTP 200)"
+
+    - name: Install the pinned Claude Code CLI
+      # The agent runs refuse to start without the pinned Claude Code, so a
+      # lane that lacks it fails loudly rather than skipping its tests.
+      uses: ./.github/actions/install-pinned-claude-code
+
+    - name: Run Tier 2 model benchmarks
+      env:
+        ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
+      run: |
+        uv run pytest tests/e2e/tier2/ -v --tb=short
 
   deploy-e2e:
     name: Deploy E2E Test (build + deploy pipeline)
