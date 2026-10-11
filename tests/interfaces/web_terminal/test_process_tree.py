@@ -383,7 +383,9 @@ async def test_started_groups_leave_out_the_roots_own_group(tmp_path):
             pids = _read_pids(factory.pid_files[0], 2)
             grandchild = pids[0]
 
-            groups = process_tree.started_groups(root)
+            process = client._transport._process
+            groups = process_tree.started_groups(root, lambda: process.returncode is None)
+            assert groups is not None
 
             assert [g.pgid for g in groups] == [grandchild]
             assert groups[0].label == "magnet_scan.py"
@@ -400,7 +402,9 @@ async def test_started_groups_leave_out_the_roots_own_group(tmp_path):
         child = session.pid
         assert child is not None
 
-        pgids = {g.pgid for g in process_tree.started_groups(child)}
+        groups = process_tree.started_groups(child, lambda: session.is_alive)
+        assert groups is not None
+        pgids = {g.pgid for g in groups}
 
         assert pgids == {pty_pids[0]}
         assert os.getpgid(child) not in pgids
@@ -479,6 +483,20 @@ def test_read_while_alive_stops_retrying_once_the_root_has_exited(monkeypatch):
     reads = _count_reads(monkeypatch, [None] * process_tree.TREE_READ_ATTEMPTS)
 
     assert process_tree.read_while_alive(lambda: not reads) is None
+    assert len(reads) == 1
+
+
+def test_started_groups_is_unknown_when_no_read_succeeds_while_the_root_lives(monkeypatch):
+    reads = _count_reads(monkeypatch, [None] * (process_tree.TREE_READ_ATTEMPTS + 1))
+
+    assert process_tree.started_groups(os.getpid(), lambda: True) is None
+    assert len(reads) == process_tree.TREE_READ_ATTEMPTS
+
+
+def test_started_groups_is_empty_when_the_root_exits_before_a_read(monkeypatch):
+    reads = _count_reads(monkeypatch, [None] * process_tree.TREE_READ_ATTEMPTS)
+
+    assert process_tree.started_groups(os.getpid(), lambda: not reads) == []
     assert len(reads) == 1
 
 
