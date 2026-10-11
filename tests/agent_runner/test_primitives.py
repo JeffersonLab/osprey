@@ -298,9 +298,17 @@ def test_native_provider_env_block_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression: a literal-URL native config still resolves to the exact
-    same env block as the raw resolver — locks the e2e no-op guarantee."""
+    same env block as the raw resolver — locks the e2e no-op guarantee.
+
+    The guarantee is about an UNFORCED run, so the e2e force variables are
+    cleared first: a shell (or a CI workflow) that forces one model onto every
+    e2e lane would otherwise rewrite the model vars and fail this on the
+    environment rather than on the resolver.
+    """
     from osprey.agent_runner.provider_env import ClaudeCodeModelResolver
 
+    monkeypatch.delenv("OSPREY_E2E_FORCE_MODEL", raising=False)
+    monkeypatch.delenv("OSPREY_E2E_PROXY_BASE_URL", raising=False)
     _write_config(tmp_path, "cborg")
     monkeypatch.setenv("CBORG_API_KEY", "sk-cborg-secret")
 

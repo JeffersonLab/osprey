@@ -66,14 +66,16 @@ _REPO_ROOT = _TESTS_ROOT.parent
 
 @pytest.fixture(autouse=True)
 def _no_ambient_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Start every case from a shell that names no provider.
+    """Start every case from a shell that names no provider and forces no model.
 
-    A developer running the fast lane with either variable exported would
-    otherwise see cases pass or fail on their environment rather than on what
-    each case sets.
+    A developer running the fast lane with any of these variables exported —
+    or a CI workflow that forces one model onto every e2e lane and hands the
+    unit lane the same environment — would otherwise see cases pass or fail on
+    their environment rather than on what each case sets.
     """
     monkeypatch.delenv(E2E_PROVIDER_ENV, raising=False)
     monkeypatch.delenv(FORCE_PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(FORCE_MODEL_ENV, raising=False)
 
 
 # ---------------------------------------------------------------------------
