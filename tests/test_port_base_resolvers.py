@@ -190,27 +190,16 @@ def _ariel_cli_config(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple
 
 
 def _ariel_cli_vocabulary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
-    """``cli_operations.vocabulary_status`` — the one command that builds its own config.
+    """``cli_operations._status_config`` — the one status parse that builds its own config.
 
     It cannot go through ``_ariel_config`` (it needs ``config_dir=``), so it is
     the site most likely to be left behind when the base is threaded through.
-    The parsed config is captured on its way out of ``from_dict`` because the
-    command itself returns only a vocabulary verdict.
     """
-    from osprey.services.ariel_search import ARIELConfig, cli_operations
+    from osprey.services.ariel_search import cli_operations
 
     _pin_config_values(monkeypatch)
-    built: list[Any] = []
-    original = ARIELConfig.from_dict
-
-    def spy(config_dict: dict[str, Any], services: Any = None, **kwargs: Any) -> Any:
-        config = original(config_dict, services, **kwargs)
-        built.append(config)
-        return config
-
-    monkeypatch.setattr(ARIELConfig, "from_dict", spy)
-    cli_operations.vocabulary_status(dict(_ARIEL_SECTION), config_dir=tmp_path)
-    return [config.database.uri for config in built], [_derived_dsn(PORT_BASE)]
+    config, _vocabulary = cli_operations._status_config(dict(_ARIEL_SECTION), tmp_path)
+    return config.database.uri, _derived_dsn(PORT_BASE)
 
 
 def _ariel_store_config(tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
@@ -551,7 +540,7 @@ CASES: tuple[Case, ...] = (
         ("postgres",),
     ),
     Case(
-        "cli_operations.vocabulary_status",
+        "cli_operations._status_config",
         "base= keyword, from the operation's own _port_base()",
         _ariel_cli_vocabulary,
         ("postgres",),
