@@ -147,8 +147,9 @@ def _resolve_persona_claude_cli_version(project_path: str) -> str | None:
     except Exception as exc:
         logger.warning("Could not read %s for CLAUDE_CLI_VERSION: %s", config_path, exc)
         return None
-    version = persona_config.get("claude_code", {}).get("cli_version")
-    return str(version) if version else None
+    from osprey.agent_runner.launcher import pinned_cli_version
+
+    return pinned_cli_version(persona_config.get("claude_code") or {})
 
 
 def _persona_image_build_cmd(

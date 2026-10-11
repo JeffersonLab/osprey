@@ -42,6 +42,7 @@ from osprey.interfaces.web_terminal.operator_session import (
     _format_tool_name,
     validate_project_directory,
 )
+from tests._agent_cli import STUB_AGENT_CLI
 from tests.interfaces.web_terminal._fakes import (
     PRESET_SYSTEM_PROMPT,
     assistant_message,
@@ -1575,6 +1576,7 @@ class TestOperatorChatLaunchParity:
             setting_sources=["project"],
             mcp_servers="/tmp/.mcp.json",
             strict_mcp_config=True,
+            cli_path=STUB_AGENT_CLI,
             **identity,
         )
         assert options.env["PATH"] == "/usr/bin"
@@ -1626,7 +1628,7 @@ class TestOperatorChatLaunchParity:
             await session.start()
 
         (options,) = captured
-        assert options.env == {}
+        assert options.env == {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
         sdk_env.assert_not_called()
         await session.stop()
 

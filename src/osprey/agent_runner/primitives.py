@@ -50,7 +50,9 @@ try:
 except ImportError:
     HAS_SDK = False
 
-from osprey.agent_runner.errors import McpNotReadyError
+from osprey.agent_runner import launcher
+from osprey.agent_runner.clean_env import TASK_TOOLS_ENV
+from osprey.agent_runner.errors import AgentCliUnavailableError, McpNotReadyError
 from osprey.agent_runner.events import (
     AgentEvent,
     TextEvent,
@@ -204,7 +206,7 @@ def _resolve_project_spec(project_dir: Path, *, provider: str | None = None) -> 
 def provider_env_for_project(project_dir: Path, *, provider: str | None = None) -> dict[str, str]:
     """Resolve provider env vars so the SDK routes to the project's provider.
 
-    Without this, the bundled Claude CLI defaults to ``api.anthropic.com``
+    Without this, the Claude CLI defaults to ``api.anthropic.com``
     using whatever ambient ``ANTHROPIC_API_KEY`` happens to be set — which
     is the wrong endpoint for cborg/als-apg projects and 404s on model
     aliases like ``anthropic/claude-haiku``.
@@ -228,7 +230,7 @@ def provider_env_for_project(project_dir: Path, *, provider: str | None = None) 
         Two distinct auth vars are propagated because the project has two LLM
         call paths:
 
-        * The bundled Claude CLI / SDK authenticates via ``spec.auth_env_var``
+        * The Claude CLI / SDK authenticates via ``spec.auth_env_var``
           (e.g. ``ANTHROPIC_AUTH_TOKEN`` for proxy providers).
         * The in-context channel-finder benchmark spawns an MCP **stdio**
           subprocess that inherits only a tiny safe-list (HOME, PATH, …) and
@@ -477,7 +479,7 @@ def sdk_env(project_dir: Path | None = None, *, provider: str | None = None) -> 
 
     Always sets ``CLAUDECODE=""`` to bypass the nested-session guard
     (JavaScript treats "" as falsy). When ``project_dir`` is provided,
-    also injects the project's resolved provider env block so the bundled
+    also injects the project's resolved provider env block so the
     CLI talks to the configured provider (cborg, als-apg, anthropic-direct)
     instead of falling through to ``api.anthropic.com``.
 
@@ -681,6 +683,8 @@ def build_agent_options(
 
     Raises:
         ImportError: When ``claude_agent_sdk`` is not installed.
+        AgentCliUnavailableError: When no installed ``claude`` reports the
+            version the project pins; nothing has been started.
         ValueError: When *env* and *provider* are both given, or *session_id*
             and *resume* are.
     """
@@ -698,6 +702,17 @@ def build_agent_options(
         raise ValueError(
             "session_id and resume are exclusive: resume names the transcript to "
             "continue, so it already fixes the id"
+        )
+
+    # First, so a project whose Claude Code is not installed is refused before
+    # anything is resolved or started for the run. Always a path: an unset one
+    # sends the SDK to the binary bundled in its own package.
+    cli_path = launcher.project_agent_cli_path(project_dir)
+    if not isinstance(cli_path, str) or not os.path.isabs(cli_path):
+        raise AgentCliUnavailableError(
+            f"No Claude Code executable was resolved for {project_dir} (got {cli_path!r}), "
+            "so the run was refused: without an absolute path the Agent SDK would run "
+            "the copy bundled inside its own package."
         )
 
     if env is not None:
@@ -721,6 +736,10 @@ def build_agent_options(
                 )
             port = start_proxy_for(spec, run_env)
             run_env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+
+    # Over the caller's environment as well as the routed one: the SDK overlays
+    # this dict on the parent's, so the switch has to be in it to hold.
+    run_env.update(TASK_TOOLS_ENV)
 
     sources: list[SettingSource] = ["project"] if setting_sources is None else list(setting_sources)
     run_mcp_servers: dict[str, McpServerConfig] | str
@@ -751,6 +770,7 @@ def build_agent_options(
         resume=resume,
         can_use_tool=can_use_tool,
         stderr=stderr,
+        cli_path=cli_path,
     )
     if pre_tool_use_hooks:
         options.hooks = {"PreToolUse": [HookMatcher(matcher=None, hooks=list(pre_tool_use_hooks))]}

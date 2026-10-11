@@ -1819,43 +1819,41 @@ def _load_claude_code_config(config_path: str | Path | None = None) -> dict:
     return _load_config_section("claude_code", config_path)
 
 
-def _log_claude_cli_versions(argv: list[str]) -> None:
-    """Say which Claude Code binary each of the two views will run.
+def _settle_agent_cli(argv: list[str], project_cwd: str) -> None:
+    """Settle and name the Claude Code the two views run.
 
-    The expert view spawns the CLI named by ``argv`` in a PTY. The simple view
-    goes through the Agent SDK, which prefers the binary bundled inside its own
-    package over anything on ``PATH``. Those are the same program only by
-    coincidence: a project that pins ``claude_code.cli_version`` runs one build
-    in the terminal and another in the chat, and the difference surfaces much
-    later as a capability or a flag that only one view has.
+    The expert view spawns the CLI named by ``argv`` in a PTY; the simple view
+    goes through the Agent SDK, which OSPREY points at the installed ``claude``
+    of the same version. The executable the chat's runs execute is resolved
+    here, once for the life of the server, and named beside the terminal's
+    argv. Blocking: the version probe spawns the CLI.
 
-    So both are named at startup. The pin is read straight out of the argv; the
-    bundle is asked once per process and every failure to ask reads as unknown,
-    because this is diagnostic output and nothing here may hold up a boot. The
-    warning fires only when both versions are known and disagree — an unpinned
-    launch resolves ``claude`` from ``PATH``, whose version this does not probe.
+    When the project pins a version that is not installed, the chat cannot
+    run: that is one error line carrying the operator's message, and every
+    chat session is refused with the same message until the version is
+    installed. The terminal view does not depend on that install, so the
+    server still starts.
 
     Args:
         argv: The argv prefix the PTY will spawn.
+        project_cwd: The project the chat's runs execute in.
     """
-    from osprey.agent_runner.launcher import argv_cli_version, bundled_cli_version
+    from osprey.agent_runner import launcher
+    from osprey.agent_runner.errors import AgentCliUnavailableError
 
-    bundled = bundled_cli_version()
-    logger.info(
-        "Claude Code CLI — terminal spawns %s; chat uses the Agent SDK bundle (%s)",
-        shlex.join(argv),
-        bundled or "version unknown",
-    )
-    pinned = argv_cli_version(argv)
-    if pinned and bundled and pinned != bundled:
-        logger.warning(
-            "The two views run different Claude Code versions: the terminal is "
-            "pinned to %s by claude_code.cli_version, the chat runs the Agent "
-            "SDK's bundled %s. Behaviour that differs between the views is "
-            "expected until the pin matches the bundle.",
-            pinned,
-            bundled,
+    try:
+        path = launcher.project_agent_cli_path(Path(project_cwd))
+    except (AgentCliUnavailableError, ValueError) as exc:
+        logger.error(
+            "Claude Code CLI — terminal spawns %s; chat cannot run: %s", shlex.join(argv), exc
         )
+        return
+    logger.info(
+        "Claude Code CLI — terminal spawns %s; chat runs %s (%s)",
+        shlex.join(argv),
+        path,
+        launcher.cli_version_of(path) or "version unknown",
+    )
 
 
 #: Basename of the hook that reports the terminal agent's turn edges. The
@@ -1998,11 +1996,6 @@ def _create_lifespan(
             app.state.shell_command = build_claude_launch_argv(
                 _load_claude_code_config(config_path)
             )
-        # Which Claude Code build each view runs, named once at startup. Off
-        # the event loop: the probe spawns a large binary, and a boot must not
-        # stall on a diagnostic.
-        await asyncio.to_thread(_log_claude_cli_versions, app.state.shell_command)
-
         max_bg = int(config.get("max_background_sessions", 5))
         app.state.pty_registry = PtyRegistry(max_background=max_bg)
 
@@ -2052,6 +2045,9 @@ def _create_lifespan(
         app.state.project_cwd = str(
             Path(project_dir).resolve() if project_dir else Path.cwd().resolve()
         )
+        # Which Claude Code the two views run, settled and named once at
+        # startup. Off the event loop: the probe spawns a large binary.
+        await asyncio.to_thread(_settle_agent_cli, app.state.shell_command, app.state.project_cwd)
         # Read once, now that the project the terminal serves is known: the
         # answer is a property of that project's rendered settings, and nothing
         # rewrites them while the server runs.

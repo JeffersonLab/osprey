@@ -76,10 +76,9 @@ from tests.e2e.test_preset_agentic import (
     _to_workflow_result,
 )
 
-# We only gate on HAS_SDK — the Claude Agent SDK ships a bundled ``claude``
-# binary inside its package, so a system-PATH ``claude --version`` check
-# (which is_claude_code_available() runs) would spuriously skip this test
-# on CI runners where the SDK is installed but no system ``claude`` is.
+# We only gate on HAS_SDK — the run executes the installed pinned ``claude``,
+# and a runner without it must fail this test loudly, not skip it the way a
+# ``claude --version`` gate (is_claude_code_available()) would.
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.agentic_benchmark,

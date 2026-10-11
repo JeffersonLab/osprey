@@ -21,9 +21,9 @@ the command — the output buffer is empty even though exit_code=0.  The plain
 subprocess path (same mechanism ``init_project`` uses) avoids this issue and
 is more accurately "end-to-end" for the JSON assertion.
 
-Note on stdout mixing: the SDK logs "Using bundled Claude Code CLI: ..." to
-stdout (via Rich) before the JSON payload.  We extract the JSON by finding the
-first ``{`` in stdout rather than parsing the full output string.
+Note on stdout mixing: log lines (via Rich) can reach stdout before the JSON
+payload.  We extract the JSON by finding the first ``{`` in stdout rather than
+parsing the full output string.
 
 Mechanism-based verdict
 -----------------------
@@ -83,8 +83,8 @@ def test_query_cmd_json_mcp_connected(tmp_path: Path) -> None:
     CliRunner + asyncio.run() + sys.exit() does not flush output into the
     BytesIO buffer reliably for the ``--json`` code path.
 
-    The SDK logs "Using bundled Claude Code CLI: ..." to stdout (via Rich)
-    before emitting the JSON payload.  JSON is extracted by finding the first
+    Log lines (via Rich) can reach stdout before the JSON payload.  JSON is
+    extracted by finding the first
     ``{`` in stdout rather than parsing the full output string.
 
     Asserts ``mcp_servers.controls == "connected"`` — the mechanism contract
