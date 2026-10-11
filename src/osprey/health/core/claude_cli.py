@@ -151,9 +151,21 @@ def claude_cli_pinned(
         An async no-argument callable producing the category's rows.
     """
     cc_config = (config or {}).get("claude_code", {}) or {}
-    pinned = cc_config.get("cli_version")
 
     async def _run() -> list[CheckResult]:
+        from osprey.agent_runner.launcher import pinned_cli_version
+
+        try:
+            pinned = pinned_cli_version(cc_config)
+        except ValueError as exc:
+            return [
+                CheckResult(
+                    name="claude_cli_pinned",
+                    category=_CATEGORY_PINNED,
+                    status=Status.ERROR,
+                    message=str(exc),
+                )
+            ]
         return await _check_claude_cli_pinned(pinned)
 
     return _run

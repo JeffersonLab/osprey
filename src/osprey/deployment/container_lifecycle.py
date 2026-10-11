@@ -2077,9 +2077,11 @@ def _resolve_claude_cli_version(config: dict) -> str:
     single source of that fallback (``osprey.cli.templates.scaffolding``), so the
     build-time CLI pin never drifts from the value the Dockerfile documents.
     """
-    version = config.get("claude_code", {}).get("cli_version")
+    from osprey.agent_runner.launcher import pinned_cli_version
+
+    version = pinned_cli_version(config.get("claude_code") or {})
     if version:
-        return str(version)
+        return version
     # Lazy import: keep the CLI-templates package off the deploy import path
     # unless the fallback is actually needed.
     from osprey.cli.templates.scaffolding import _DEFAULT_CLAUDE_CLI_VERSION

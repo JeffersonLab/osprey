@@ -22,9 +22,10 @@ import logging
 import platform
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ _VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?)\b")
 #: The npm package a pinned launch runs through ``npx``. Spelled once so the
 #: argv builder and the argv reader below cannot drift apart.
 _CLI_PACKAGE = "@anthropic-ai/claude-code"
+
+#: What a ``claude_code.cli_version`` pin may be: one exact version,
+#: ``MAJOR.MINOR.PATCH`` with an optional ``-prerelease``, matched in full.
+#: The pin is written after ``<package>@`` in an ``npx`` or ``npm`` command
+#: line, where npm also accepts an alias, a URL, a git address, a folder, a
+#: file in the working directory, a range and a dist-tag. None of those names
+#: one build, and a tag is nothing an installed build reports as its version,
+#: so the pattern admits a version and nothing else.
+_CLI_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?")
 
 #: The MCP server config the build renders at the project root, and the only
 #: one an agent launch loads.
@@ -106,20 +116,58 @@ def build_claude_launch_argv(cc_config: dict, *, no_pin: bool = False) -> list[s
         suffix.
 
     Raises:
-        ValueError: If ``cli_version`` is present but empty/whitespace (only
-            checked when ``no_pin`` is ``False``).
+        ValueError: From :func:`validate_cli_version`, for a ``cli_version``
+            that is present but not one exact version (only checked when
+            ``no_pin`` is ``False``).
     """
-    cli_version = None if no_pin else cc_config.get("cli_version")
+    cli_version = None if no_pin else pinned_cli_version(cc_config)
     if cli_version is None:
         base = [CLI_NAME]
-    elif not isinstance(cli_version, str) or not cli_version.strip():
-        raise ValueError(
-            "claude_code.cli_version must be a non-empty string "
-            '(e.g. "2.1.146"); got an empty value.'
-        )
     else:
-        base = ["npx", "-y", f"{_CLI_PACKAGE}@{cli_version.strip()}"]
+        base = ["npx", "-y", f"{_CLI_PACKAGE}@{cli_version}"]
     return base + _SETTING_SOURCES_ARGS + _MCP_ISOLATION_ARGS
+
+
+def validate_cli_version(value: object) -> str:
+    """Return a ``claude_code.cli_version`` value as the pin it states.
+
+    This is the one check of the pin. Every reader of the config value goes
+    through it (directly, or through :func:`pinned_cli_version`) before the
+    value reaches a command line, an image build argument or a file.
+
+    Args:
+        value: The configured value.
+
+    Returns:
+        The value itself, unchanged: nothing is stripped or normalised.
+
+    Raises:
+        ValueError: If the value is anything other than one exact version.
+    """
+    if not isinstance(value, str) or not _CLI_VERSION_RE.fullmatch(value):
+        raise ValueError(
+            f"claude_code.cli_version must be one exact version of {_CLI_PACKAGE}, "
+            f'such as "2.1.146" — not a range, a tag, an alias, a URL, a git address, '
+            f"a file or a path; got {value!r}."
+        )
+    return value
+
+
+def pinned_cli_version(cc_config: Mapping[str, Any]) -> str | None:
+    """Return the validated ``cli_version`` pin of a ``claude_code`` block.
+
+    Args:
+        cc_config: The ``claude_code`` block from ``config.yml`` (may be empty).
+
+    Returns:
+        The pin, or ``None`` when the block states none.
+
+    Raises:
+        ValueError: From :func:`validate_cli_version`, for a pin that is
+            present but not one exact version.
+    """
+    value = cc_config.get("cli_version")
+    return None if value is None else validate_cli_version(value)
 
 
 def resolve_cli_name(argv: Sequence[str]) -> list[str]:
