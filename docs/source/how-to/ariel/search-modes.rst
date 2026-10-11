@@ -411,8 +411,9 @@ reaches a search module. What it looks at depends on the mode:
    sidecar.
 
 The same query can therefore report different expansions in different modes.
-``expand_modes`` limits which modes expand at all; unset --- the default ---
-means every enabled search module.
+``expand_modes`` limits which modes expand at all. Unset --- the default ---
+means every enabled search module once the entries are expanded too, and only
+the modes other than ``semantic`` and ``hybrid`` until then (see below).
 
 With ``ariel.vocabulary.expand_entries: true`` the **entries** are expanded too,
 once, when they are embedded and when they are written to the qmd mirror: every
@@ -426,11 +427,13 @@ changed.
 Both sides matter for the dense lanes. JLAB-TN-26-024 measured that expanding
 only the query makes ``semantic`` retrieval worse than not expanding at all
 (17--22 % lower), while expanding both the query and the entries raised P@10
-by 29 % and MRR@10 by 19 %. Query expansion is on by default and entry
-expansion is off, so a deployment with a vocabulary should turn
-``expand_entries`` on and re-embed (see :ref:`turning on entry expansion
-<ariel-entry-expansion-rollout>` in :doc:`data-ingestion`), or drop
-``semantic`` and ``hybrid`` from ``expand_modes`` until it does.
+by 29 % and MRR@10 by 19 %. The default therefore never expands one side
+alone: while ``expand_entries`` is off, ``semantic`` and ``hybrid`` search the
+query as typed and only ``keyword`` expands it. Turning ``expand_entries`` on and
+re-embedding (see :ref:`turning on entry expansion
+<ariel-entry-expansion-rollout>` in :doc:`data-ingestion`) brings query
+expansion to the dense modes as well. A deployment that wants query-only
+expansion on a dense mode anyway names that mode in ``expand_modes``.
 
 .. admonition:: Hybrid feeds the expanded query to a reranker
    :class: note
@@ -561,6 +564,7 @@ Configuration
        canonical_to_acronym: true          # default: true
        canonical_to_shorthand: false       # default: false
        # expand_modes: [keyword, semantic] # default: every enabled module
+                                           # (semantic/hybrid only with expand_entries)
 
      search_modules:
        keyword:

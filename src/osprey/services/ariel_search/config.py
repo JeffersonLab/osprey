@@ -46,6 +46,10 @@ NO_EMBEDDING_FALLBACK_MODULES = frozenset(
     {"semantic_processor", "image_caption", "image_embedding"}
 )
 
+#: Search modules that rank by an embedding of the query. Query expansion reaches
+#: them by default only when the entries are expanded too.
+DENSE_SEARCH_MODES = frozenset({"semantic", "hybrid"})
+
 #: Defaults for the derived DSN, matching what the postgresql compose service
 #: is rendered with when ``services.postgresql`` leaves a field unset. The port
 #: is not among them: it is the deployment's ``postgres`` layout slot, derived
@@ -680,7 +684,9 @@ class VocabularyConfig:
             changes what existing rows were built from, so pair it with
             ``osprey ariel reembed --force``.
         expand_modes: Search modules expansion applies to. ``None`` — the
-            default — means every enabled search module. An explicit list is
+            default — means every enabled search module when ``expand_entries``
+            is on, and every enabled module but ``semantic`` and ``hybrid`` when
+            it is off (see :meth:`ARIELConfig.resolve_expand_modes`). An explicit list is
             normalized at parse; :meth:`ARIELConfig.validate` refuses an entry
             naming a module that is unknown or not enabled.
     """
@@ -1288,15 +1294,24 @@ class ARIELConfig:
     def resolve_expand_modes(self) -> tuple[str, ...]:
         """Name the search modules query expansion applies to.
 
+        Dense retrieval is expanded on both sides or not at all: expanding only
+        the query makes ``semantic`` and ``hybrid`` worse than not expanding
+        (JLAB-TN-26-024), so the default leaves them on the typed query until
+        ``expand_entries`` expands the entries too.
+
         Returns:
-            The configured ``expand_modes`` when the deployment set one, else
-            every enabled search module — the documented default of "all enabled
-            modes". :meth:`validate` has already refused a configured entry that
-            names no enabled module.
+            The configured ``expand_modes`` when the deployment set one. Else
+            every enabled search module when entries are expanded, and every
+            enabled module but the dense ones when they are not.
+            :meth:`validate` has already refused a configured entry that names
+            no enabled module.
         """
         if self.vocabulary.expand_modes is not None:
             return self.vocabulary.expand_modes
-        return tuple(self.get_enabled_search_modules())
+        enabled = self.get_enabled_search_modules()
+        if self.vocabulary.expand_entries:
+            return tuple(enabled)
+        return tuple(m for m in enabled if m not in DENSE_SEARCH_MODES)
 
     def resolve_default_search_mode(self) -> str:
         """Name the search module a search runs in when the caller names none.

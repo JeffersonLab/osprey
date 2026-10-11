@@ -15,8 +15,10 @@ into the entry text before it is embedded; those insertions are not reported
 per search, so a semantic or hybrid hit can come from a term added to the
 entry.
 
-Query expansion applies to all three search modes: keyword, semantic and
-hybrid. Entry expansion applies to semantic and hybrid only.
+Query expansion always applies to keyword search. Semantic and hybrid search
+expand the query only once the entries are expanded too (`expand_entries`):
+expanding the query alone makes them worse than not expanding at all. Entry
+expansion applies to semantic and hybrid only.
 
 The file shipped here is an **example**, not your vocabulary. Its twenty
 concepts are the ones most storage-ring facilities share, so it is useful on

@@ -238,13 +238,13 @@ The built-in enhancement modules:
       ``osprey ariel status`` names the tables whose vectors were built with
       other settings (see :doc:`search-modes`).
 
-      .. warning::
+      .. note::
 
-         Query expansion is on by default. Expanding only the query makes
-         ``semantic`` search **worse** than no expansion (JLAB-TN-26-024: 17--22 %
-         lower); expanding both sides is what improves it. A deployment with a
-         vocabulary should turn ``expand_entries`` on and re-embed, or remove
-         ``semantic`` and ``hybrid`` from ``ariel.vocabulary.expand_modes``.
+         Until the entries are expanded, ``semantic`` and ``hybrid`` search the
+         query as typed: expanding only the query makes dense search **worse**
+         than no expansion (JLAB-TN-26-024: 17--22 % lower). Turning
+         ``expand_entries`` on and re-embedding brings query expansion to them as
+         well, and expanding both sides is what improves dense search.
 
       **Turning it on, or editing the vocabulary while it is on.** The
       vocabulary file ships inside the image, so do these steps in order:

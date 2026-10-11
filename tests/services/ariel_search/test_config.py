@@ -808,8 +808,8 @@ class TestResolveExpandModes:
         )
         assert config.resolve_expand_modes() == ("keyword",)
 
-    def test_unset_means_every_enabled_module(self) -> None:
-        """Unset resolves to all enabled search modules."""
+    def test_unset_with_entries_expanded_means_every_enabled_module(self) -> None:
+        """With entries expanded, unset resolves to all enabled search modules."""
         config = ARIELConfig.from_dict(
             {
                 "database": {"uri": "postgresql://localhost:5432/ariel"},
@@ -818,6 +818,37 @@ class TestResolveExpandModes:
                     "semantic": {"enabled": True, "model": "m"},
                     "hybrid": {"enabled": False},
                 },
+                "vocabulary": {"expand_entries": True},
+            }
+        )
+        assert config.resolve_expand_modes() == ("keyword", "semantic")
+
+    def test_unset_without_entries_expanded_leaves_the_dense_modes_out(self) -> None:
+        """Expanding the query alone makes dense retrieval worse than not expanding
+        (JLAB-TN-26-024), so unset keeps semantic and hybrid on the typed query
+        until the entries are expanded too."""
+        config = ARIELConfig.from_dict(
+            {
+                "database": {"uri": "postgresql://localhost:5432/ariel"},
+                "search_modules": {
+                    "keyword": {"enabled": True},
+                    "semantic": {"enabled": True, "model": "m"},
+                    "hybrid": {"enabled": True},
+                },
+            }
+        )
+        assert config.resolve_expand_modes() == ("keyword",)
+
+    def test_explicit_list_wins_without_entries_expanded(self) -> None:
+        """A configured list names the dense modes on purpose; it is kept."""
+        config = ARIELConfig.from_dict(
+            {
+                "database": {"uri": "postgresql://localhost:5432/ariel"},
+                "search_modules": {
+                    "keyword": {"enabled": True},
+                    "semantic": {"enabled": True, "model": "m"},
+                },
+                "vocabulary": {"expand_modes": ["keyword", "semantic"]},
             }
         )
         assert config.resolve_expand_modes() == ("keyword", "semantic")
