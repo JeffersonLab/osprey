@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 # tracking. Every name is a tool the pinned CLI build lists under the
 # environment OSPREY starts it with (clean_env.TASK_TOOLS_ENV), which
 # tests/agent_runner/test_tool_name_conformance.py checks. Deliberately NOT
-# included: TaskOutput/TaskStop (background commands),
-# Task (delegation), and Read/Glob/Grep, because main-thread file access would
-# expose e.g. config.yml provider settings. Denylist entries still beat this set.
+# included: TaskStop (background commands), Task (delegation), and
+# Read/Glob/Grep, because main-thread file access would expose e.g. config.yml
+# provider settings. Denylist entries still beat this set.
 PASSTHROUGH_TOOLS = frozenset({"TaskCreate", "TaskGet", "TaskList", "TaskUpdate"})
 
 # Both names the CLI has used for the subagent-delegation tool.

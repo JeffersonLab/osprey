@@ -1,5 +1,5 @@
 {
-  "cli_version": "2.1.267",
+  "cli_version": "2.1.294",
   "tools": [
     "Bash",
     "CronCreate",
@@ -19,7 +19,6 @@
     "TaskCreate",
     "TaskGet",
     "TaskList",
-    "TaskOutput",
     "TaskStop",
     "TaskUpdate",
     "WebFetch",
@@ -49,7 +48,6 @@
     "TaskCreate",
     "TaskGet",
     "TaskList",
-    "TaskOutput",
     "TaskStop",
     "TaskUpdate",
     "WebFetch",
