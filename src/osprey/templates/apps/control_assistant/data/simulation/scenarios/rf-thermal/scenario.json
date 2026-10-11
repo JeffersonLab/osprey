@@ -1,5 +1,5 @@
 {
-  "description": "Recurring cavity-1 thermal excursions from a partly blocked cooling manifold: three in the week before the investigation, each a body-temperature rise, a reflected-power spike and a forward-power trip from thermal detuning; the last is the beam dump four days ago. Nothing after the manifold repair two days ago, when cavity 1 settles at 26.5 degC. Cavity 2 shows one minor excursion for contrast.",
+  "description": "Recurring cavity-1 thermal excursions from a partly blocked cooling manifold: three in the week before the investigation, each a body-temperature rise, a reflected-power spike and a forward-power trip from thermal detuning; the last trips at 03:15 four days ago and dumps the stored beam, which stays at zero until the 04:30 refill. The two earlier excursions do not lose the beam. Nothing after the manifold repair two days ago, when cavity 1 settles at 26.5 degC. Cavity 2 shows one minor excursion for contrast.",
   "_comment": [
     "Events are placed with `at_when`, the logbook's own {days_ago, time}, so each",
     "excursion lands at the clock time the logbook entries narrate.",
@@ -8,7 +8,9 @@
     "forward-power trips are deep dips (sigma 1900 s) centred 47.5 min after each",
     "temperature peak, floored at 0 kW for about 75 min (03:15 to 04:30 on the trip",
     "day). The step at the repair time is the cooling restored; the override keeps",
-    "the live reading there."
+    "the live reading there. The beam current steps to 0 mA at the 03:15 trip and",
+    "back to 500 mA at the 04:30 refill on the trip day only; the two earlier",
+    "excursions leave it untouched."
   ],
   "overrides": {
     "SR:RF:CAVITY:01:TEMPERATURE:RB": 26.5
@@ -285,6 +287,27 @@
           },
           "amplitude": -80.0,
           "width": 1900
+        }
+      ]
+    },
+    {
+      "channel": "SR:DIAG:DCCT:01:CURRENT:RB",
+      "events": [
+        {
+          "shape": "step",
+          "at_when": {
+            "days_ago": 4,
+            "time": "03:15:00"
+          },
+          "to": 0.0
+        },
+        {
+          "shape": "step",
+          "at_when": {
+            "days_ago": 4,
+            "time": "04:30:00"
+          },
+          "to": 500.0
         }
       ]
     }

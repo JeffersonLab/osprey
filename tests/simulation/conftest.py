@@ -223,8 +223,8 @@ def engine_factory(tmp_path, state_dir):
     a temp dir, and seeds the ``active_scenarios`` state file in the separate
     state directory; the engine re-reads the state file on mtime change, so the
     returned engine is already pinned to the requested set (``nominal`` is
-    always implicitly active). Variadic, so composition can be exercised:
-    ``make('vacuum-burst', 'rf-thermal')``.
+    always implicitly active). Variadic, so a composed set can be requested:
+    ``make('nominal', 'rf-thermal')``; the set must touch disjoint channels.
     """
     from osprey.simulation import SimulationEngine
 
