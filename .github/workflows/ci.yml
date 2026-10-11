@@ -1933,7 +1933,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
