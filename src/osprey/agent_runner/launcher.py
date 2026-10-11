@@ -8,23 +8,20 @@ from upstream CC releases that break compatibility.
 This module is the harness adapter's single home for the agent CLI's command
 line: the program, the pin, the isolation flag and the conversation flags.
 
-That pin governs the CLI OSPREY *spawns*. It does not govern the CLI the
-Agent SDK runs, which prefers a binary bundled inside its own package, so a
-pinned project runs two different Claude Code builds side by side. The
-:func:`argv_cli_version` / :func:`bundled_cli_version` pair reads both, which
-is what lets a caller say so out loud instead of leaving the difference to be
-discovered as a behaviour one surface has and the other does not.
+The launch argv (:func:`build_claude_launch_argv`) and the executable an
+Agent SDK run is pointed at (:func:`agent_cli_path`) name the same build: the
+version ``claude_code.cli_version`` pins, else the installed ``claude``. The
+SDK is never left to pick a binary of its own.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import platform
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
-from functools import cache, lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +34,8 @@ CLI_NAME = "claude"
 
 _VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?)\b")
 
-#: The npm package a pinned launch runs through ``npx``. Spelled once so the
-#: argv builder and the argv reader below cannot drift apart.
+#: The npm package a pinned launch runs through ``npx``, and the one an
+#: operator is told to install.
 _CLI_PACKAGE = "@anthropic-ai/claude-code"
 
 #: What a ``claude_code.cli_version`` pin may be: one exact version,
@@ -53,9 +50,6 @@ _CLI_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?")
 #: The MCP server config the build renders at the project root, and the only
 #: one an agent launch loads.
 RENDERED_MCP_CONFIG = ".mcp.json"
-
-#: Directory inside the Agent SDK package that holds its own CLI binary.
-_BUNDLED_DIRNAME = "_bundled"
 
 #: How long a CLI binary gets to answer ``--version``. It is a large
 #: single-file executable and the probe runs at server startup and ahead of a
@@ -452,59 +446,3 @@ def parse_claude_version(version_output: str) -> str | None:
         return None
     match = _VERSION_RE.search(version_output)
     return match.group(1) if match else None
-
-
-def argv_cli_version(argv: Sequence[str]) -> str | None:
-    """Extract the pinned CLI version from a launch argv.
-
-    Args:
-        argv: An argv prefix, normally one :func:`build_claude_launch_argv`
-            returned.
-
-    Returns:
-        The pinned version, or ``None`` when the argv names no pin — an
-        unpinned launch runs whatever ``claude`` PATH resolves to, whose
-        version is not knowable from the argv alone.
-    """
-    prefix = f"{_CLI_PACKAGE}@"
-    for arg in argv:
-        if arg.startswith(prefix):
-            return parse_claude_version(arg[len(prefix) :])
-    return None
-
-
-def bundled_cli_path() -> Path | None:
-    """Return the Claude Code binary bundled inside the Agent SDK, if any.
-
-    The SDK prefers this binary over anything on PATH, so it — not ``claude``
-    — is what the chat surface actually runs. Resolved the same way the SDK
-    resolves it, from the installed package's own location.
-
-    Returns:
-        The binary's path, or ``None`` when the SDK is not installed or ships
-        without a bundle.
-    """
-    try:
-        import claude_agent_sdk
-    except ImportError:
-        return None
-    package_file = getattr(claude_agent_sdk, "__file__", None)
-    if not package_file:
-        return None
-    name = "claude.exe" if platform.system() == "Windows" else "claude"
-    candidate = Path(package_file).resolve().parent / _BUNDLED_DIRNAME / name
-    return candidate if candidate.is_file() else None
-
-
-@lru_cache(maxsize=1)
-def bundled_cli_version() -> str | None:
-    """Return the version of the SDK's bundled CLI, or ``None``.
-
-    Cached for the life of the process: the answer cannot change under a
-    running server, and the probe spawns a large executable. Every failure —
-    no bundle, a binary that will not run, a non-zero exit, a timeout, output
-    with no recognisable version — answers ``None``, because this is
-    diagnostic information and no caller should be denied a start over it.
-    """
-    path = bundled_cli_path()
-    return None if path is None else cli_version_of(str(path))

@@ -73,7 +73,7 @@ _API_KEY_DIGEST_CHARS = 20
 #: Claude Code's stderr notice that it left the project's ``permissions.allow``
 #: rules off because the state file does not mark the working directory
 #: trusted. Observed in the pinned CLI, not documented;
-#: ``tests/agent_runner/test_claude_state.py`` runs the bundled CLI to prove it
+#: ``tests/agent_runner/test_claude_state.py`` runs the pinned CLI to prove it
 #: still matches. Only ``settings.json`` is named because the agent launches
 #: load the project layer alone, so ``settings.local.json`` never reaches it.
 _UNTRUSTED_ALLOW_RULES_NOTICE = re.compile(

@@ -5343,11 +5343,11 @@ jobs:
         # deployed nothing and measured nothing. pytest's exit code cannot
         # express the difference.
         #
-        # The `claude` CLI case is the live one, not a hypothetical:
-        # claude-agent-sdk bundles its own CLI and installs no `claude` console
-        # script, so this module's `is_claude_code_available()` skipif can fire
-        # on a runner where the SDK would in fact work — and because that
-        # skipif is module-wide here, it takes all ten tests with it.
+        # The `claude` CLI case is the live one, not a hypothetical: a fresh
+        # runner has no `claude` on PATH until the lane installs the pinned
+        # one, so this module's `is_claude_code_available()` skipif can fire —
+        # and because that skipif is module-wide here, it takes all ten tests
+        # with it.
         #
         # Safe alongside two scenarios' `flaky(reruns=2)`: pytest-rerunfailures
         # does not record rerun attempts as testcases, so an absorbed sampling

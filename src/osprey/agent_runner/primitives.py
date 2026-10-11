@@ -206,7 +206,7 @@ def _resolve_project_spec(project_dir: Path, *, provider: str | None = None) -> 
 def provider_env_for_project(project_dir: Path, *, provider: str | None = None) -> dict[str, str]:
     """Resolve provider env vars so the SDK routes to the project's provider.
 
-    Without this, the bundled Claude CLI defaults to ``api.anthropic.com``
+    Without this, the Claude CLI defaults to ``api.anthropic.com``
     using whatever ambient ``ANTHROPIC_API_KEY`` happens to be set — which
     is the wrong endpoint for cborg/als-apg projects and 404s on model
     aliases like ``anthropic/claude-haiku``.
@@ -230,7 +230,7 @@ def provider_env_for_project(project_dir: Path, *, provider: str | None = None) 
         Two distinct auth vars are propagated because the project has two LLM
         call paths:
 
-        * The bundled Claude CLI / SDK authenticates via ``spec.auth_env_var``
+        * The Claude CLI / SDK authenticates via ``spec.auth_env_var``
           (e.g. ``ANTHROPIC_AUTH_TOKEN`` for proxy providers).
         * The in-context channel-finder benchmark spawns an MCP **stdio**
           subprocess that inherits only a tiny safe-list (HOME, PATH, …) and
@@ -479,7 +479,7 @@ def sdk_env(project_dir: Path | None = None, *, provider: str | None = None) -> 
 
     Always sets ``CLAUDECODE=""`` to bypass the nested-session guard
     (JavaScript treats "" as falsy). When ``project_dir`` is provided,
-    also injects the project's resolved provider env block so the bundled
+    also injects the project's resolved provider env block so the
     CLI talks to the configured provider (cborg, als-apg, anthropic-direct)
     instead of falling through to ``api.anthropic.com``.
 

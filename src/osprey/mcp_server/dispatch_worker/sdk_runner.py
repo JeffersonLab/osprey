@@ -95,7 +95,7 @@ _MIN_SECRET_LEN = 12
 # within seconds of CLI startup and then streams text/tool events continuously,
 # so each record resets this clock — only a true stall trips it. The classic
 # trigger is a bad/expired provider credential or an unreachable base URL: the
-# bundled CLI does not fast-fail on those, it simply produces no output. Without
+# CLI does not fast-fail on those, it simply produces no output. Without
 # this guard such a run stalls all the way to the dispatch worker's outer
 # DISPATCH_TIMEOUT_SEC (default 300s) and surfaces only a generic "timed out"
 # error that masks the auth cause. Generous default so legitimately slow single
