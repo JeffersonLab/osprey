@@ -19,6 +19,7 @@ from rich.logging import RichHandler
 from osprey.services.bluesky_bridge import session_dir as _session_plan_dir
 from osprey.utils.logger import QUIET_THIRD_PARTY_LOGGERS
 from tests import _env_scope_guard, _live_threads, _repo_cleanliness, ci_diagnostics
+from tests._agent_cli import STUB_AGENT_CLI
 from tests._env_scope_guard import restore_module_environment
 
 #: Repo root — the fallback when a test leaves the process in a deleted cwd.
@@ -179,6 +180,44 @@ def restore_environ_per_module():
     """
     with restore_module_environment():
         yield
+
+
+@pytest.fixture(autouse=True, scope="function")
+def agent_cli_resolved_per_test():
+    """Forget which Claude Code a project's headless runs execute, around every test.
+
+    The executable is resolved once per process and kept, keyed by project
+    directory. Tests share directories such as ``/tmp`` and replace the lookup
+    in different ways, so a kept answer would make one test's result depend on
+    which test ran before it in the same worker.
+    """
+    from osprey.agent_runner import launcher
+
+    launcher._project_agent_cli_path.cache_clear()
+    yield
+    launcher._project_agent_cli_path.cache_clear()
+
+
+@pytest.fixture
+def real_agent_cli():
+    """Opt a test out of :func:`stub_agent_cli`: it resolves the real Claude Code."""
+
+
+@pytest.fixture(autouse=True, scope="function")
+def stub_agent_cli(request, monkeypatch):
+    """Point every project's headless runs at ``STUB_AGENT_CLI``.
+
+    A headless run refuses to start unless an installed ``claude`` reports the
+    version the project pins. Most tests only build the options of a run, or
+    drive a faked one, and must pass on a host with no Claude Code at all. A
+    test that needs the real lookup requests ``real_agent_cli``; the end-to-end
+    tree always gets it.
+    """
+    if "real_agent_cli" in request.fixturenames or "e2e" in request.node.path.parts:
+        return
+    from osprey.agent_runner import launcher
+
+    monkeypatch.setattr(launcher, "project_agent_cli_path", lambda _project_dir: STUB_AGENT_CLI)
 
 
 @pytest.fixture(autouse=True, scope="function")

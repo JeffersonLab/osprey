@@ -1127,3 +1127,37 @@ def test_the_worker_module_imports_without_the_agent_sdk():
         for alias in node.names
     ] + [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     assert not [name for name in imported if name.split(".")[0] == "claude_agent_sdk"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_whose_pinned_claude_code_is_not_installed_is_refused_with_the_message(
+    monkeypatch, caplog
+):
+    """The operator's message is the run's error; no traceback is logged for it."""
+    from osprey.agent_runner.errors import AgentCliUnavailableError
+
+    message = (
+        "This project pins Claude Code 2.1.146 (claude_code.cli_version), but no `claude` "
+        "was found on PATH. Either install that version:\n"
+        "  npm install -g @anthropic-ai/claude-code@2.1.146\n"
+        "or change claude_code.cli_version."
+    )
+
+    async def fake_stream(project_dir, prompt, **kw):  # noqa: ARG001 - matches the stream_query signature
+        raise AgentCliUnavailableError(message)
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(sdk_runner, "stream_query", fake_stream)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    with caplog.at_level("ERROR", logger=sdk_runner.logger.name):
+        result = await sdk_runner.run_dispatch("do it", ["Read"], event_queue=queue)
+
+    assert result["status"] == "error"
+    assert result["failure_class"] == "infrastructure"
+    assert result["error"] == message
+    assert result["tool_calls"] == []
+    events = await _drain(queue)
+    assert any(e["type"] == "error" and "npm install -g" in e["message"] for e in events)
+    refusals = [r for r in caplog.records if "2.1.146" in r.getMessage()]
+    assert refusals and all(r.exc_info is None for r in refusals)

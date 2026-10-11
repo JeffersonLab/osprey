@@ -50,8 +50,9 @@ try:
 except ImportError:
     HAS_SDK = False
 
+from osprey.agent_runner import launcher
 from osprey.agent_runner.clean_env import TASK_TOOLS_ENV
-from osprey.agent_runner.errors import McpNotReadyError
+from osprey.agent_runner.errors import AgentCliUnavailableError, McpNotReadyError
 from osprey.agent_runner.events import (
     AgentEvent,
     TextEvent,
@@ -682,6 +683,8 @@ def build_agent_options(
 
     Raises:
         ImportError: When ``claude_agent_sdk`` is not installed.
+        AgentCliUnavailableError: When no installed ``claude`` reports the
+            version the project pins; nothing has been started.
         ValueError: When *env* and *provider* are both given, or *session_id*
             and *resume* are.
     """
@@ -699,6 +702,17 @@ def build_agent_options(
         raise ValueError(
             "session_id and resume are exclusive: resume names the transcript to "
             "continue, so it already fixes the id"
+        )
+
+    # First, so a project whose Claude Code is not installed is refused before
+    # anything is resolved or started for the run. Always a path: an unset one
+    # sends the SDK to the binary bundled in its own package.
+    cli_path = launcher.project_agent_cli_path(project_dir)
+    if not isinstance(cli_path, str) or not os.path.isabs(cli_path):
+        raise AgentCliUnavailableError(
+            f"No Claude Code executable was resolved for {project_dir} (got {cli_path!r}), "
+            "so the run was refused: without an absolute path the Agent SDK would run "
+            "the copy bundled inside its own package."
         )
 
     if env is not None:
@@ -756,6 +770,7 @@ def build_agent_options(
         resume=resume,
         can_use_tool=can_use_tool,
         stderr=stderr,
+        cli_path=cli_path,
     )
     if pre_tool_use_hooks:
         options.hooks = {"PreToolUse": [HookMatcher(matcher=None, hooks=list(pre_tool_use_hooks))]}

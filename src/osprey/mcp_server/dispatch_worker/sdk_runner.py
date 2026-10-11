@@ -39,6 +39,7 @@ from osprey.agent_runner.artifact_resolve import (
     dispatch_claude_config_dir,
 )
 from osprey.agent_runner.claude_state import is_untrusted_allow_rules_notice
+from osprey.agent_runner.errors import AgentCliUnavailableError
 from osprey.audit.posture import OSPREY_AGENT_DATA_ROOT
 from osprey.mcp_server.dispatch_worker import failure_class, run_stats
 from osprey.mcp_server.dispatch_worker.prior_answers import (
@@ -840,11 +841,14 @@ async def run_dispatch(
         except Exception:
             logger.debug("agen.aclose() raised during cancellation", exc_info=True)
         raise
-    except McpNotReadyError as exc:
-        # The worker's own machinery — the CLI's MCP servers — was not ready
-        # before the run: a known-cause infrastructure fault (retryable once the
-        # host catches up), stamped here rather than routed through the generic
-        # classifier, which reserves that class for call sites that know it.
+    except (McpNotReadyError, AgentCliUnavailableError) as exc:
+        # The worker's own machinery was not ready before the run — the CLI's
+        # MCP servers, or the Claude Code the project pins, which is not
+        # installed: a known-cause infrastructure fault (retryable once the
+        # host catches up or the version is installed), stamped here rather
+        # than routed through the generic classifier, which reserves that
+        # class for call sites that know it. The message is the whole story,
+        # so no traceback is logged.
         duration_sec = time.monotonic() - t0
         logger.error("Dispatch refused after %.1fs: %s", duration_sec, exc)
         await _push({"type": "error", "message": _scrub(str(exc), secret_values)})

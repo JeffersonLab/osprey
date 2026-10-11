@@ -19,13 +19,16 @@ discovered as a behaviour one surface has and the other does not.
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
+
+from osprey.agent_runner.errors import AgentCliUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +57,10 @@ RENDERED_MCP_CONFIG = ".mcp.json"
 #: Directory inside the Agent SDK package that holds its own CLI binary.
 _BUNDLED_DIRNAME = "_bundled"
 
-#: How long the bundled binary gets to answer ``--version``. It is a large
-#: single-file executable and this runs at server startup, so the probe is
-#: bounded rather than allowed to hold a boot open; a timeout reads the same
-#: as a missing bundle.
-_VERSION_PROBE_TIMEOUT_S = 5.0
+#: How long a CLI binary gets to answer ``--version``. It is a large
+#: single-file executable and the probe runs at server startup and ahead of a
+#: run, so it is bounded rather than allowed to hold either open.
+_VERSION_PROBE_TIMEOUT_S = 15.0
 
 
 # Restrict Claude Code to project-scope settings files. A user's global
@@ -168,6 +170,175 @@ def pinned_cli_version(cc_config: Mapping[str, Any]) -> str | None:
     """
     value = cc_config.get("cli_version")
     return None if value is None else validate_cli_version(value)
+
+
+def project_claude_code_config(project_dir: Path) -> dict[str, Any]:
+    """Return the ``claude_code`` block of a project's ``config.yml``.
+
+    Args:
+        project_dir: The directory holding ``config.yml`` — a rendered project.
+
+    Returns:
+        The block, or ``{}`` when the file is absent or states no such mapping.
+    """
+    config_path = Path(project_dir) / "config.yml"
+    if not config_path.is_file():
+        return {}
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    block = config.get("claude_code") if isinstance(config, dict) else None
+    return block if isinstance(block, dict) else {}
+
+
+def _probe_cli_version(executable: str) -> str | None:
+    """Run ``executable --version`` and return the version it reports.
+
+    Returns:
+        The version, or ``None`` when the executable cannot be run, exits
+        non-zero or prints no recognisable version.
+
+    Raises:
+        subprocess.TimeoutExpired: When it does not answer within
+            :data:`_VERSION_PROBE_TIMEOUT_S`. Kept apart from ``None``: a slow
+            host says nothing about which version is installed.
+    """
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("Could not read the Claude Code version of %s: %s", executable, exc)
+        return None
+    if completed.returncode != 0:
+        return None
+    return parse_claude_version(completed.stdout)
+
+
+def cli_version_of(executable: str) -> str | None:
+    """Return the version *executable* reports, or ``None`` for any failure.
+
+    For a line in a log. A caller that decides anything by the version uses
+    :func:`agent_cli_path`, which does not read a slow answer as a missing one.
+    """
+    try:
+        return _probe_cli_version(executable)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _locate_claude() -> str | None:
+    """Return the absolute path of the installed ``claude``, or ``None``.
+
+    The lookup the interactive launch uses: ``PATH`` as it stands at the call,
+    then the user-local bin directories a non-login process leaves off it.
+    """
+    from osprey.utils.shell_resolver import resolve_shell_command
+
+    try:
+        return os.path.abspath(resolve_shell_command(CLI_NAME))
+    except FileNotFoundError:
+        return None
+
+
+def agent_cli_path(cc_config: Mapping[str, Any]) -> str:
+    """Return the absolute path of the Claude Code a headless run executes.
+
+    The Agent SDK is always handed this path. Left to itself it runs a binary
+    bundled inside its own package, which no configuration names. A headless
+    run executes an installed ``claude`` and nothing else: nothing is
+    downloaded, and no other executable is substituted for it.
+
+    The binary is whichever ``claude`` the process's ``PATH`` yields when it
+    is resolved. Nothing here vouches for that file, so the trust boundary for
+    it is the container image or the operating-system user that owns that
+    ``PATH`` and the project directory: whoever can change the ``PATH`` the
+    process sees, write a directory on it, or replace the file chooses what
+    runs.
+
+    Args:
+        cc_config: The ``claude_code`` block from ``config.yml`` (may be empty).
+
+    Returns:
+        With a ``cli_version`` pin: the ``claude`` on ``PATH``, once it has
+        reported exactly that version. Without a pin: the installed
+        ``claude``, whatever its version.
+
+    Raises:
+        ValueError: From :func:`validate_cli_version`, for a pin that is not
+            one exact version.
+        AgentCliUnavailableError: When no installed ``claude`` reports the
+            pinned version, when its version cannot be read in time, or when
+            an unpinned project has no ``claude`` at all. The message is
+            written for the operator and names the ways out.
+    """
+    pin = pinned_cli_version(cc_config)
+    installed = _locate_claude()
+    if pin is None:
+        if installed is None:
+            raise AgentCliUnavailableError(
+                f"No `{CLI_NAME}` was found on PATH, so this run has no Claude Code to execute. "
+                f"Either install it:\n  npm install -g {_CLI_PACKAGE}\n"
+                f"or pin a version by setting claude_code.cli_version under `config:` in "
+                f"profile.yml, running `osprey build`, and installing that version."
+            )
+        return installed
+
+    if installed is None:
+        found = f"no `{CLI_NAME}` was found on PATH"
+    else:
+        try:
+            reported = _probe_cli_version(installed)
+        except subprocess.TimeoutExpired:
+            raise AgentCliUnavailableError(
+                f"`{installed} --version` did not answer within "
+                f"{_VERSION_PROBE_TIMEOUT_S:.0f} s, so it could not be checked against the "
+                f"Claude Code version this project pins ({pin}, claude_code.cli_version). "
+                f"Nothing was started. Run that command by hand to see why it is slow, "
+                f"then try again."
+            ) from None
+        if reported == pin:
+            return installed
+        found = (
+            f"the installed `{CLI_NAME}` ({installed}) reports {reported}"
+            if reported
+            else f"the installed `{CLI_NAME}` ({installed}) did not report a version"
+        )
+    raise AgentCliUnavailableError(
+        f"This project pins Claude Code {pin} (claude_code.cli_version), but {found}. "
+        f"A headless run executes only an installed `{CLI_NAME}` that reports the pinned "
+        f"version, so nothing was started. Either install that version:\n"
+        f"  npm install -g {_CLI_PACKAGE}@{pin}\n"
+        f"or change claude_code.cli_version under `config:` in profile.yml and run "
+        f"`osprey build`."
+    )
+
+
+def project_agent_cli_path(project_dir: Path) -> str:
+    """Return the Claude Code every headless run of *project_dir* executes.
+
+    Resolved once per process and reused: the project's pin is read, the
+    executable located and its version checked the first time a run needs it,
+    and a later edit of ``config.yml`` or of the installed binary's location
+    changes nothing until the process restarts. A refusal is not remembered, so a run started after the
+    pinned version is installed goes ahead.
+
+    Raises:
+        ValueError: As :func:`agent_cli_path`.
+        AgentCliUnavailableError: As :func:`agent_cli_path`.
+    """
+    return _project_agent_cli_path(os.path.abspath(project_dir))
+
+
+@cache
+def _project_agent_cli_path(project_dir: str) -> str:
+    return agent_cli_path(project_claude_code_config(Path(project_dir)))
 
 
 def resolve_cli_name(argv: Sequence[str]) -> list[str]:
@@ -336,19 +507,4 @@ def bundled_cli_version() -> str | None:
     diagnostic information and no caller should be denied a start over it.
     """
     path = bundled_cli_path()
-    if path is None:
-        return None
-    try:
-        completed = subprocess.run(
-            [str(path), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=_VERSION_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug("Could not read the bundled Claude Code version: %s", exc)
-        return None
-    if completed.returncode != 0:
-        return None
-    return parse_claude_version(completed.stdout)
+    return None if path is None else cli_version_of(str(path))

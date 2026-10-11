@@ -26,6 +26,7 @@ from osprey.services.channel_finder.benchmarks.sdk import (
     combined_text,
     run_sdk_query,
 )
+from tests._agent_cli import STUB_AGENT_CLI
 
 
 class TestToolTrace:
@@ -331,6 +332,7 @@ class TestRunSdkQueryOnTheRunner:
             setting_sources=[],
             disallowed_tools=[],
             strict_mcp_config=True,
+            cli_path=STUB_AGENT_CLI,
         )
         harness.sdk_env.assert_called_once_with(project, provider="p")
 
