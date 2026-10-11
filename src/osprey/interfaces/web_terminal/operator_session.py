@@ -920,15 +920,19 @@ class OperatorSession:
         self._started = False
         logger.info("OperatorSession stopped")
 
-    def started_commands(self) -> list[ProcessGroup]:
+    def started_commands(self) -> list[ProcessGroup] | None:
         """The commands the agent started in groups of their own and still running.
 
         What ending this session would also end, beyond the agent itself and
-        its helpers in the server's group. Empty once the child has exited.
-        Blocking (it runs ``ps``): call it off the loop.
+        its helpers in the server's group. Empty once the child has exited;
+        ``None`` when the process table could not be read while it was alive,
+        so what it started is unknown. Blocking (it runs ``ps``): call it off
+        the loop.
         """
         pid = self.pid
-        return process_tree.started_groups(pid) if pid is not None else []
+        if pid is None:
+            return []
+        return process_tree.started_groups(pid, lambda: self.process_exited is False)
 
     @property
     def _connected_agent(self) -> AgentSession | None:

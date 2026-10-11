@@ -439,6 +439,7 @@ async def test_started_commands_lists_only_groups_of_their_own(tmp_path):
 
         commands = await asyncio.to_thread(session.started_commands)
 
+        assert commands is not None
         assert [c.label for c in commands] == ["magnet_scan.py"]
         assert commands[0].pgid == grandchild
         assert helper not in {pid for c in commands for pid, _ in c.members}

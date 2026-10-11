@@ -30,8 +30,8 @@ def _has_running_commands(key: str, session: OperatorSession) -> bool:
     """Whether the agent of chat *key* still has a command it started running.
 
     Blocking (it runs ``ps``); the reaper runs it in a worker thread. A failed
-    look counts as nothing running: it has the reach the reaper had without
-    one.
+    look, whether it raises or cannot read the process table (``None``),
+    counts as nothing running: it has the reach the reaper had without one.
     """
     try:
         return bool(session.started_commands())

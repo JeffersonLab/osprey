@@ -316,18 +316,27 @@ def tree_groups(root: int, rows: dict[int, ProcessRow] | None = None) -> list[Pr
     return sorted(groups, key=lambda g: (min(started for _, started in g.members), g.pgid))
 
 
-def started_groups(root: int) -> list[ProcessGroup]:
+def started_groups(root: int, alive: Callable[[], bool]) -> list[ProcessGroup] | None:
     """Return the process groups *root*'s descendants split off for their commands.
 
     That is :func:`tree_groups` without *root*'s own group: the groups an
-    agent runs its shell commands in. Blocking (it runs ``ps``), and like
-    :func:`tree_groups` it must run while *root* is alive.
+    agent runs its shell commands in. The table is read through
+    :func:`read_while_alive`, with *alive* saying whether *root* still runs,
+    so a failed read is retried. Blocking (it runs ``ps``).
+
+    Returns:
+        The groups, empty when *root* has exited or started nothing; or
+        ``None`` when the table could not be read while *root* was alive:
+        what it started is then unknown, never empty.
     """
     try:
         own = os.getpgid(root)
     except OSError:
         return []
-    return [group for group in tree_groups(root) if group.pgid != own]
+    rows = read_while_alive(alive)
+    if rows is None:
+        return None if alive() else []
+    return [group for group in tree_groups(root, rows) if group.pgid != own]
 
 
 def server_group_members(root: int, rows: dict[int, ProcessRow] | None = None) -> list[ProcessRow]:

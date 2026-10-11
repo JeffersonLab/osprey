@@ -845,18 +845,18 @@ class FakeChatSession:
         self.start_error: Exception | None = None
         # What ``started_commands`` answers, the threads it was asked on, and
         # what it does when asked.
-        self.running_commands: list = []
+        self.running_commands: list | None = []
         self.look_threads: list[int] = []
         self.look_error: Exception | None = None
         self.on_look: Callable[[], None] | None = None
 
-    def started_commands(self) -> list:
+    def started_commands(self) -> list | None:
         self.look_threads.append(threading.get_ident())
         if self.on_look is not None:
             self.on_look()
         if self.look_error is not None:
             raise self.look_error
-        return list(self.running_commands)
+        return None if self.running_commands is None else list(self.running_commands)
 
     async def start(self, *, resume_id=None):
         self.resume_id = resume_id
@@ -1354,6 +1354,18 @@ class TestOperatorRegistryChatPool:
         assert a.look_threads
         assert all(thread != loop_thread for thread in a.look_threads)
         assert held == [False] * len(a.look_threads)
+
+    @pytest.mark.asyncio
+    async def test_reap_idle_counts_an_unread_process_table_as_nothing_running(self):
+        registry = OperatorRegistry(chat_idle_seconds=10.0)
+        factory = _session_factory()
+        with _patch_session(factory):
+            a, _ = await registry.get_or_create_chat_session("stale-chat", cwd="/tmp")
+        a.last_activity = time.monotonic() - 100
+        a.running_commands = None
+
+        assert await registry.reap_idle_chat_sessions() == 1
+        assert registry.get_chat_session("stale-chat") is None
 
     @pytest.mark.asyncio
     async def test_reap_idle_counts_a_failed_look_as_nothing_running(self, caplog):

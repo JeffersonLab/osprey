@@ -158,7 +158,8 @@ async def test_an_expert_acquire_of_an_idle_chat_with_started_commands_is_refuse
     assert refused.error == ERROR_HANDOFF_STARTED_COMMANDS
     assert refused.ws_close_code == WS_CLOSE_STARTED_COMMANDS
     assert refused.extra == {
-        "commands": [{"label": "magnet_scan.py", "command": "python magnet_scan.py"}]
+        "commands": [{"label": "magnet_scan.py", "command": "python magnet_scan.py"}],
+        "unread": False,
     }
     assert chat.teardowns == 0
     assert_released(app)
