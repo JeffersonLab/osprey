@@ -119,6 +119,8 @@ CATALOG_JOB = "bluesky-catalog-e2e"
 SANDBOX_JOB = "bluesky-sandbox-escape-e2e"
 BENCHMARKS_JOB = "channel-finder-benchmarks"
 BENCHMARKS_TEST_FILE = "tests/e2e/claude_code/test_channel_finder_mcp_benchmarks.py"
+TIER2_JOB = "tier2-model-benchmark"
+TIER2_DIR = "tests/e2e/tier2"
 FLOOR_JOB = "dependency-floor"
 NEXTCLOUD_JOB = "nextcloud-talk-bridge-e2e"
 NEXTCLOUD_TEST_FILE = "tests/e2e/test_nextcloud_talk_bridge_e2e.py"
@@ -1941,6 +1943,43 @@ def test_benchmarks_job_is_dispatch_gated__mutation_drops_ignore() -> None:
     step = _find_named_step(mutated, E2E_TESTS_JOB, "Run E2E tests")
     step["run"] = _drop_ignore_line(step["run"], BENCHMARKS_TEST_FILE)
     assert _run_step_ignores_all(mutated, [BENCHMARKS_TEST_FILE]) == [BENCHMARKS_TEST_FILE]
+
+
+def test_tier2_job_is_dispatch_gated_and_lane_ignores_it(workflow: dict[str, Any]) -> None:
+    """Tier 2 tests score a model, not a change: a fair task a capable model may
+    still miss. The shared e2e-tests lane must ignore their directory, or a
+    model's miss reds a PR, AND the on-demand job must exist behind the
+    ``run_benchmarks`` input and run that directory, or the --ignore silently
+    deletes the only place Tier 2 runs."""
+    assert _run_step_ignores_all(workflow, [TIER2_DIR]) == []
+    job = _jobs(workflow)[TIER2_JOB]
+    assert "workflow_dispatch" in job["if"] and "run_benchmarks" in job["if"], (
+        f"'{TIER2_JOB}' must gate on the run_benchmarks dispatch input; got: {job['if']!r}"
+    )
+    run_text = "\n".join(step.get("run", "") for step in job["steps"])
+    assert f"pytest {TIER2_DIR}" in run_text, f"'{TIER2_JOB}' must run {TIER2_DIR}"
+
+
+def test_tier2_job_is_dispatch_gated__mutation_drops_ignore() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, E2E_TESTS_JOB, "Run E2E tests")
+    step["run"] = _drop_ignore_line(step["run"], TIER2_DIR)
+    with pytest.raises(AssertionError):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
+
+
+def test_tier2_job_is_dispatch_gated__mutation_drops_job() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    del _jobs(mutated)[TIER2_JOB]
+    with pytest.raises((AssertionError, KeyError)):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
+
+
+def test_tier2_job_is_dispatch_gated__mutation_runs_on_every_pr() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    _jobs(mutated)[TIER2_JOB]["if"] = "always()"
+    with pytest.raises(AssertionError):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
 
 
 def _gate_run_text(wf: dict[str, Any]) -> str:
@@ -5945,10 +5984,12 @@ PRIVSPLIT_JOB = "privilege-split-e2e"
 #: Jobs deliberately OUTSIDE ``all-checks-passed.needs``. Every entry needs a
 #: reason: ``channel-finder-benchmarks`` is a manually dispatched quality score
 #: (pinned by ``test_benchmarks_job_is_dispatch_gated_and_lane_ignores_it``),
-#: and the gate cannot depend on itself. Anything else that is not in
+#: ``tier2-model-benchmark`` is a manually dispatched model benchmark (pinned
+#: by ``test_tier2_job_is_dispatch_gated_and_lane_ignores_it``), and the gate
+#: cannot depend on itself. Anything else that is not in
 #: ``needs`` can go red forever inside a green check — the 17 privilege-split
 #: Docker tests did exactly that for a phase.
-JOBS_OUTSIDE_THE_GATE = frozenset({BENCHMARKS_JOB, GATE_JOB})
+JOBS_OUTSIDE_THE_GATE = frozenset({BENCHMARKS_JOB, TIER2_JOB, GATE_JOB})
 
 
 def test_all_checks_passed_needs_privilege_split(workflow: dict[str, Any]) -> None:
@@ -7435,10 +7476,11 @@ SPENDING_LANES = frozenset(
 )
 # Lanes that carry the secret but spend nothing worth gating: deploy-e2e needs
 # the key only for `osprey up`'s .env preflight and never calls a model;
-# dockerfile-e2e drives a single haiku turn. Gating them by label would drop
+# dockerfile-e2e drives a single haiku turn; the two benchmark jobs run only on
+# a deliberate run_benchmarks dispatch, never on a PR. Gating them by label would drop
 # per-PR deploy coverage for no saving, so they keep the per-PR shape — and a
 # NEW secret-bearing lane must be listed in one set or the other, on purpose.
-SECRET_FREE_LANES = frozenset({"deploy-e2e", "dockerfile-e2e", BENCHMARKS_JOB})
+SECRET_FREE_LANES = frozenset({"deploy-e2e", "dockerfile-e2e", BENCHMARKS_JOB, TIER2_JOB})
 FULL_CI_LABEL_CLAUSE = "contains(github.event.pull_request.labels.*.name, 'full-ci')"
 SCHEDULE_ARM = "github.event_name == 'schedule'"
 # The pre-gating shape: the PR conjunction closed right after the actor guard.
