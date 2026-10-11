@@ -1356,31 +1356,46 @@ class TestOperatorRegistryChatPool:
         assert held == [False] * len(a.look_threads)
 
     @pytest.mark.asyncio
-    async def test_reap_idle_counts_an_unread_process_table_as_nothing_running(self):
+    async def test_reap_idle_keeps_a_chat_whose_process_table_could_not_be_read(self, caplog):
         registry = OperatorRegistry(chat_idle_seconds=10.0)
         factory = _session_factory()
         with _patch_session(factory):
             a, _ = await registry.get_or_create_chat_session("stale-chat", cwd="/tmp")
-        a.last_activity = time.monotonic() - 100
+        stale = time.monotonic() - 100
+        a.last_activity = stale
         a.running_commands = None
 
-        assert await registry.reap_idle_chat_sessions() == 1
-        assert registry.get_chat_session("stale-chat") is None
+        with caplog.at_level(logging.WARNING):
+            reaped = await registry.reap_idle_chat_sessions()
+
+        assert reaped == 0
+        assert registry.get_chat_session("stale-chat") is a
+        assert a.stop_calls == 0
+        assert a.last_activity > stale
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "stale-chat" in r.getMessage()
+        ]
+        assert len(warnings) == 1
 
     @pytest.mark.asyncio
-    async def test_reap_idle_counts_a_failed_look_as_nothing_running(self, caplog):
+    async def test_reap_idle_keeps_a_chat_whose_look_failed(self, caplog):
         registry = OperatorRegistry(chat_idle_seconds=10.0)
         factory = _session_factory()
         with _patch_session(factory):
             a, _ = await registry.get_or_create_chat_session("stale-chat", cwd="/tmp")
-        a.last_activity = time.monotonic() - 100
+        stale = time.monotonic() - 100
+        a.last_activity = stale
         a.look_error = OSError("ps")
 
         with caplog.at_level(logging.WARNING):
             reaped = await registry.reap_idle_chat_sessions()
 
-        assert reaped == 1
-        assert registry.get_chat_session("stale-chat") is None
+        assert reaped == 0
+        assert registry.get_chat_session("stale-chat") is a
+        assert a.stop_calls == 0
+        assert a.last_activity > stale
         warnings = [
             r
             for r in caplog.records
