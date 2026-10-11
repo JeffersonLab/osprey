@@ -60,6 +60,7 @@ from osprey.agent_runner.events import (
 )
 from osprey.agent_runner.launcher import RENDERED_MCP_CONFIG
 from osprey.infrastructure.proxy.lifecycle import start_proxy_for
+from osprey.utils.facility import DEFAULT_FACILITY_ZONE, is_zone_name
 
 logger = logging.getLogger(__name__)
 
@@ -497,6 +498,12 @@ def sdk_env(project_dir: Path | None = None, *, provider: str | None = None) -> 
     delegations run sequentially rather than concurrently — a wall-clock cost we
     accept for deterministic, complete single-drain runs.
 
+    When ``project_dir`` is provided, also sets ``TZ`` to the project's
+    facility timezone (``system.timezone``, else UTC). The SDK subprocess then
+    runs on the facility clock, as the deployed containers do, so the date the
+    CLI tells the agent is "today" matches the calendar the deployment's data —
+    archiver events, logbook entries — is anchored in.
+
     Args:
         project_dir: Optional path to an initialized OSPREY project.  When
             omitted only the ``CLAUDECODE`` bypass is returned.
@@ -514,7 +521,36 @@ def sdk_env(project_dir: Path | None = None, *, provider: str | None = None) -> 
     }
     if project_dir is not None:
         env.update(provider_env_for_project(project_dir, provider=provider))
+        env["TZ"] = _project_facility_zone(project_dir)
     return env
+
+
+def _project_facility_zone(project_dir: Path) -> str:
+    """The project's ``system.timezone``, or UTC when absent, unreadable or invalid.
+
+    A plain YAML read rather than the config loader: resolving the zone must
+    never fail a run whose provider block already resolved. An unknown zone
+    name degrades to UTC with a warning, the facility-timezone resolver's
+    contract.
+    """
+    import yaml
+
+    try:
+        config = yaml.safe_load((project_dir / "config.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return DEFAULT_FACILITY_ZONE
+    system = config.get("system") if isinstance(config, dict) else None
+    zone = system.get("timezone") if isinstance(system, dict) else None
+    if zone is None:
+        return DEFAULT_FACILITY_ZONE
+    if not isinstance(zone, str) or not is_zone_name(zone):
+        logger.warning(
+            "system.timezone %r in %s is not an IANA zone name; running the agent on UTC",
+            zone,
+            project_dir / "config.yml",
+        )
+        return DEFAULT_FACILITY_ZONE
+    return zone
 
 
 def combined_text(result: SDKWorkflowResult) -> str:
