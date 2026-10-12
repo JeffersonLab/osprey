@@ -74,6 +74,15 @@ guides are the better starting point.
       far, the message being replied to, the attached and replayed files, and
       the notes that account for what did not fit.
 
+   .. grid-item-card:: Guarded Run Contract
+      :link: guarded-run
+      :link-type: doc
+      :shadow: md
+
+      Which tool runs as a guarded run, where its lock and journal live, what the journal holds,
+      when a restore writes a setpoint back and when it refuses, and the
+      report line every run prints.
+
    .. grid-item-card:: Audit Trail Contract
       :link: audit-trail
       :link-type: doc
@@ -92,5 +101,6 @@ guides are the better starting point.
    ariel
    channel-finder
    facility-graph
+   guarded-run
    audit-trail
    bridge-dispatch

@@ -12,8 +12,8 @@ the tool interface, and **pluggable connectors** for protocol-agnostic hardware 
 
    Osprey system architecture — from operator to facility, with the safety gate and approval workflow in-line.
 
-Eight pages break that picture down — how a tool call is guarded, how a write
-travels, how reading differs from writing, how one facility description feeds
+Six pages break that picture down — how a write is guarded on its way to the
+machine, how reading differs from writing, how one facility description feeds
 every service, and the subsystems with architecture of their own:
 
 .. grid:: 1 1 2 2
@@ -24,19 +24,13 @@ every service, and the subsystems with architecture of their own:
       :link-type: doc
       :shadow: md
 
-      Four ways to write to a machine through the connector — a channel
-      write, agent-written Python, a Bluesky plan, a notebook cell — the
+      Five ways to write to a machine through the connector — a channel
+      write, agent-written Python, a pyAML tool, a Bluesky plan, a notebook
+      cell — the
       Phoebus drive that does not reach it, and what stands in the way of
       each: the PreToolUse hooks, the gates below them, the connector, and
-      the audit trail.
-
-   .. grid-item-card:: Data Flow
-      :link: data-flow
-      :link-type: doc
-      :shadow: md
-
-      A control-system write from prompt to hardware, step by step — and
-      where the three safety hooks fire along the way.
+      the audit trail. A single write step by step, and the guarded run
+      two of the paths take.
 
    .. grid-item-card:: Retrieval Paths
       :link: retrieval-paths
@@ -73,15 +67,6 @@ every service, and the subsystems with architecture of their own:
       file the build makes of it, the view each service reads, the schema
       behind it and the simulation models.
 
-   .. grid-item-card:: Guarded Run
-      :link: guarded-run
-      :link-type: doc
-      :shadow: md
-
-      How a run that moves many setpoints holds its control target to itself
-      and journals each setpoint it displaces, so a run that dies half way is
-      put back by the next.
-
    .. grid-item-card:: Virtual Accelerator
       :link: virtual-accelerator
       :link-type: doc
@@ -103,10 +88,8 @@ every service, and the subsystems with architecture of their own:
    :hidden:
 
    safety-chain
-   data-flow
    retrieval-paths
    mcp-servers
    python-executor
    facility-file
-   guarded-run
    virtual-accelerator

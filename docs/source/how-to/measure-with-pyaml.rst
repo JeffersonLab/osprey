@@ -89,7 +89,8 @@ target:
 With approval off, the next guarded run restores a killed run's journal without
 asking. A headless dispatch run that meets a pending journal is refused: only
 a call a person approved restores one. A pyAML write from ``execute`` is
-refused; measurements go through ``pyaml_measure``.
+refused; measurements go through ``pyaml_measure``. :ref:`reference-guarded-run` has the
+restore rules in full.
 
 The result
 ==========
