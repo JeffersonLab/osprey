@@ -32,6 +32,7 @@ from click.testing import CliRunner
 from osprey.cli.main import cli
 from osprey.deployment.members import WORKSPACE_MEMBERS
 from osprey.port_layout import DEFAULT_PORT_BASE, default_port, layout_ports
+from tests.deployment._cache_mounts import assert_build_caches_mounted
 from tests.deployment._pip_probe import primer_pip_argv
 from tests.deployment._proxy_idiom import assert_apt_runs_carry_proxy_idiom
 
@@ -131,7 +132,6 @@ class TestDockerfileContent:
             "apt-get install -y --no-install-recommends "
             "curl git procps ca-certificates gosu nodejs npm" in node
         ), node
-        assert "rm -rf /var/lib/apt/lists/*" in node
 
     def test_no_third_party_node_apt_repo(self, hello_project):
         """No third-party apt repo, and none of the machinery one needs.
@@ -175,6 +175,17 @@ class TestDockerfileContent:
         spelled once, in :mod:`tests.deployment._proxy_idiom`.
         """
         assert_apt_runs_carry_proxy_idiom(
+            (hello_project / "Dockerfile").read_text(), "rendered project template"
+        )
+
+    def test_installs_fetch_through_the_shared_build_caches(self, hello_project):
+        """Every pip and apt install in the image mounts the shared caches.
+
+        The rule is spelled once, in :mod:`tests.deployment._cache_mounts`, and
+        applied to the service recipes too, so the project, persona and service
+        images building in one deploy draw on the same downloads.
+        """
+        assert_build_caches_mounted(
             (hello_project / "Dockerfile").read_text(), "rendered project template"
         )
 
@@ -329,7 +340,7 @@ class TestDockerfileContent:
         assert '[ "$OSPREY_DEV" = "1" ]' in deps, "fallback must be gated on OSPREY_DEV=1"
         assert "WARNING: pin unreleased, priming with latest" in deps
         # Fallback installs the unpinned package; non-dev path fails loudly.
-        assert "pip install --no-cache-dir osprey-framework" in deps
+        assert "uv pip install osprey-framework" in deps
         assert "exit 1" in deps
 
     def test_deps_run_admits_prereleases_when_the_pin_is_one(self, hello_project, tmp_path):
@@ -343,7 +354,7 @@ class TestDockerfileContent:
             tmp_path,
             {"OSPREY_PIP_SPEC": "osprey-framework==2026.9.0b2", "OSPREY_PIP_PRE": "1"},
         )
-        assert "--pre" in argv, argv
+        assert "--prerelease=allow" in argv, argv
         assert "osprey-framework==2026.9.0b2" in argv
 
     def test_deps_run_stays_strict_for_a_stable_pin(self, hello_project, tmp_path):
@@ -353,7 +364,7 @@ class TestDockerfileContent:
         argv = primer_pip_argv(
             deps, tmp_path, {"OSPREY_PIP_SPEC": "osprey-framework==2026.9.0", "OSPREY_PIP_PRE": ""}
         )
-        assert "--pre" not in argv, argv
+        assert "--prerelease=allow" not in argv, argv
 
     def test_deps_run_maps_the_bypass_list_only_when_it_is_set(self, hello_project):
         """An unset ``PIP_NO_PROXY`` leaves an inherited bypass list alone.
@@ -409,7 +420,7 @@ class TestDockerfileContent:
     def _run_command_bodies(text: str) -> list[str]:
         """Every RUN instruction's shell body, with line-continuations joined."""
         joined = re.sub(r"\\\n", " ", text)
-        return re.findall(r"^RUN (.+)$", joined, flags=re.MULTILINE)
+        return re.findall(r"^RUN (?:--\S+\s+)*(.+)$", joined, flags=re.MULTILINE)
 
     def test_wheel_run_propagates_install_failure(self, hello_project, tmp_path):
         """Empirical probe: a failing `pip` inside the wheel-layer RUN must fail
@@ -445,7 +456,7 @@ class TestDockerfileContent:
         )
         assert match, "missing the manifest COPY sibling idiom"
         deps_pos = text.index(
-            'pip install --no-cache-dir ${OSPREY_PIP_PRE:+--pre} "$OSPREY_PIP_SPEC"'
+            'uv pip install ${OSPREY_PIP_PRE:+--prerelease=allow} "$OSPREY_PIP_SPEC"'
         )
         assert match.start() < deps_pos, "manifest COPY must precede the deps RUN"
 
@@ -455,7 +466,7 @@ class TestDockerfileContent:
         a native dep in the local delta still compiles; the staged context is
         removed in the same RUN's cleanup."""
         deps = self._deps_run_body((hello_project / "Dockerfile").read_text())
-        install = "pip install --no-cache-dir -r /tmp/deps-ctx/osprey-local-requirements.txt"
+        install = "pip install -r /tmp/deps-ctx/osprey-local-requirements.txt"
         assert "&& if [ -f /tmp/deps-ctx/osprey-local-requirements.txt ]; then" in deps, (
             "manifest install missing or not &&-chained in the deps RUN"
         )
@@ -466,9 +477,7 @@ class TestDockerfileContent:
         assert deps.index(install) < deps.index("apt-get purge -y build-essential"), (
             "manifest install must precede the toolchain purge"
         )
-        assert "rm -rf /var/lib/apt/lists/* /tmp/deps-ctx" in deps, (
-            "deps RUN must clean up /tmp/deps-ctx with the apt cleanup"
-        )
+        assert "rm -rf /tmp/deps-ctx" in deps, "deps RUN must clean up /tmp/deps-ctx"
 
     def test_deps_run_propagates_manifest_install_failure(self, hello_project, tmp_path):
         """Empirical probe: with a manifest staged and its `pip install -r`
@@ -499,6 +508,15 @@ class TestDockerfileContent:
         """The pip calls that pre-install a workspace member from a git spec."""
         return [c for c in calls if "#subdirectory=packages/" in c]
 
+    @staticmethod
+    def _install_calls(log) -> list[str]:
+        """The logged installer calls, less the layer's own uv bootstrap and removal."""
+        return [
+            c
+            for c in log.read_text().splitlines()
+            if not c.startswith(("install uv==", "uninstall -y uv"))
+        ]
+
     def test_git_spec_preinstalls_every_workspace_member(self, hello_project, tmp_path):
         """Empirical probe: a git+ spec points into the monorepo, so the deps RUN
         calls pip once per workspace member, each from the same URL's
@@ -509,11 +527,10 @@ class TestDockerfileContent:
             deps, tmp_path, with_manifest=False, spec=self._GIT_SPEC, pip_log=log
         )
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-        calls = log.read_text().splitlines()
+        calls = self._install_calls(log)
         members = self._member_installs(calls)
         assert members == [
-            f"install --no-cache-dir {m} @ {self._GIT_SPEC}#subdirectory=packages/{m}"
-            for m in WORKSPACE_MEMBERS
+            f"install {m} @ {self._GIT_SPEC}#subdirectory=packages/{m}" for m in WORKSPACE_MEMBERS
         ], calls
         primer = next(i for i, c in enumerate(calls) if c.endswith(f" {self._GIT_SPEC}"))
         assert primer == len(members), f"member pre-installs must precede the primer: {calls}"
@@ -527,9 +544,9 @@ class TestDockerfileContent:
             deps, tmp_path, with_manifest=False, spec="osprey-framework==2026.9.0", pip_log=log
         )
         assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-        calls = log.read_text().splitlines()
+        calls = self._install_calls(log)
         assert self._member_installs(calls) == [], calls
-        assert calls == ["install --no-cache-dir osprey-framework==2026.9.0"], calls
+        assert calls == ["install osprey-framework==2026.9.0"], calls
 
     def test_member_preinstall_failure_is_fatal_for_a_git_spec(self, hello_project, tmp_path):
         """Empirical probe: a git spec carries the ``#subdirectory`` fragment, so a
@@ -547,10 +564,10 @@ class TestDockerfileContent:
             fail_subdirectory=True,
         )
         assert result.returncode != 0, f"{result.stdout}\n{result.stderr}"
-        calls = log.read_text().splitlines()
+        calls = self._install_calls(log)
         first = WORKSPACE_MEMBERS[0]
         assert self._member_installs(calls) == [
-            f"install --no-cache-dir {first} @ {self._GIT_SPEC}#subdirectory=packages/{first}"
+            f"install {first} @ {self._GIT_SPEC}#subdirectory=packages/{first}"
         ], calls
         assert not any(c.endswith(f" {self._GIT_SPEC}") for c in calls), (
             f"the framework primer ran after a member pre-install failed: {calls}"
@@ -673,6 +690,7 @@ def _probe_deps_body(
     for name, script in (
         ("apt-get", "#!/bin/sh\nexit 0\n"),
         ("pip", pip_script),
+        ("uv", '#!/bin/sh\n[ "$1" = pip ] && shift\nexec "$(dirname "$0")/pip" "$@"\n'),
     ):
         stub = stub_bin / name
         stub.write_text(script)

@@ -5,22 +5,32 @@ Written to ``<render>/data/bluesky_devices.yml``::
     schema: osprey.facility.bluesky_devices/1
     # generated-file header
     settables:
-      - {name: <setpoint>, setpoint: <setpoint>, readback: <pair>, settle_tolerance: <band>}
+      - {name: <setpoint>, setpoint: <setpoint>, readback: <pair>, settle_tolerance: <x>}
+      - {name: <setpoint>, setpoint: <setpoint>, readback: <pair>, motion_band: <band>}
     readables:
       - {name: <readback>, pv: <readback>}
 
 One settable per setpoint channel, whose ``readback`` is the channel's ``pair``
 when the pair is another channel and is absent otherwise; one readable per
 readback channel, paired or not; a channel whose role is ``none`` is no device.
-A settable carries ``settle_tolerance`` when the channel it reads back declares
-motion in its ``simulation`` seed: the band
-:func:`osprey.facility.motion.settle_band` derives from that seed. A settable
-whose readback declares none carries no key and settles within the profile's
-floor.
+A settable carries ``settle_tolerance`` when its setpoint declares a
+``tolerance``: the number of an absolute one, ``{relative: <f>}`` of a relative
+one. A settable without one carries ``motion_band`` when the channel it reads
+back declares motion in its ``simulation`` seed: the envelope
+:func:`osprey_connectors.simulation.envelope.motion_envelope` derives from that
+seed, which only a simulated lane settles within. A settable with neither
+settles within the profile's floor.
+
+Writing the view warns, once per build, of each scenario that moves a
+toleranced readback beyond its tolerance, and, per lane that does not serve
+the simulator, of the setpoints that declare no ``tolerance`` and so settle
+within the lane's floor; a render whose inputs turn the tolerance warnings off
+writes the same file and prints none.
 A device's name is its address. Entries follow the facility file's channel
 order. A render carries the view when it runs a Bluesky lane, under every
-control system: the compose generator stages it for a connector that drives
-channels and leaves it unstaged under the mock.
+control system: the compose generator stages it for a control system that
+talks to the network and leaves it unstaged for the simulator served in
+process, which speaks no Channel Access.
 """
 
 from __future__ import annotations
@@ -59,11 +69,22 @@ def _records(doc: Mapping[str, Any], facility_file: Path) -> list[Any]:
     return [channel_record(channel, source) for channel in doc.get("channels", [])]
 
 
-def _settle_bands(doc: Mapping[str, Any]) -> dict[str, float]:
-    from osprey.facility.motion import settle_band
+def _tolerances(doc: Mapping[str, Any]) -> dict[str, Mapping[str, float]]:
+    """Each setpoint's declared ``tolerance`` record, by address."""
+    return {
+        channel["id"]: channel["tolerance"]
+        for channel in doc.get("channels", [])
+        if channel.get("tolerance")
+    }
+
+
+def _motion_bands(doc: Mapping[str, Any]) -> dict[str, float]:
+    """Each channel's motion envelope, by address."""
+    from osprey_connectors.simulation.envelope import motion_envelope
 
     return {
-        channel["id"]: settle_band(channel.get("simulation")) for channel in doc.get("channels", [])
+        channel["id"]: motion_envelope(channel.get("simulation"))
+        for channel in doc.get("channels", [])
     }
 
 
@@ -78,7 +99,48 @@ def bluesky_document(doc: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """
     from osprey.services.bluesky_bridge.substrate_devices import devices_document
 
-    return devices_document(_records(doc, Path(FACILITY_FILE)), _settle_bands(doc))
+    return devices_document(
+        _records(doc, Path(FACILITY_FILE)), _tolerances(doc), _motion_bands(doc)
+    )
+
+
+def _lanes(inputs: ViewInputs) -> list[tuple[str, bool, float]]:
+    """Each rendered Bluesky lane as ``(service key, serves the simulator, floor)``.
+
+    Lane one serves the simulator when the rendered ``control_system`` selects
+    it; the VA lane always does, the live and stand-in lanes never. A lane's
+    floor is its rendered ``settle_tolerance``, else the worker's default.
+    """
+    from osprey.bluesky_bridge_connection import LANE_KEYS, LANE_ONE, SECOND_LANE_KEYS
+    from osprey.services.bluesky_bridge.devices.connector import DEFAULT_SETTLE_TOLERANCE
+    from osprey_connectors.types import is_simulated, resolve_control_system_type
+
+    services = inputs.rendered_config.get("services")
+    lanes: list[tuple[str, bool, float]] = []
+    for key in LANE_KEYS:
+        block = services.get(key) if isinstance(services, Mapping) else None
+        if not isinstance(block, Mapping):
+            continue
+        if key == LANE_ONE:
+            system = inputs.rendered_config.get("control_system")
+            simulated = is_simulated(resolve_control_system_type(system))
+        else:
+            simulated = key == SECOND_LANE_KEYS["va"]
+        floor = float(block.get("settle_tolerance", DEFAULT_SETTLE_TOLERANCE))
+        lanes.append((key, simulated, floor))
+    return lanes
+
+
+def _warn_once(inputs: ViewInputs, warning: str) -> None:
+    """Print one tolerance warning, once per build."""
+    from osprey.cli import output
+
+    if inputs.reported is not None:
+        if warning in inputs.reported:
+            return
+        inputs.reported.add(warning)
+    summary, _, detail = warning.partition("\n")
+    output.warn(summary, detail or None)
 
 
 def bluesky_configured(inputs: ViewInputs) -> bool:
@@ -109,6 +171,7 @@ def write_bluesky_view(root: Path, inputs: ViewInputs) -> list[Path]:
     Returns:
         The file written.
     """
+    from osprey.facility.validate import tolerance_warnings
     from osprey.services.bluesky_bridge.substrate_devices import write_devices_file
 
     root.mkdir(parents=True, exist_ok=True)
@@ -119,6 +182,9 @@ def write_bluesky_view(root: Path, inputs: ViewInputs) -> list[Path]:
         _records(inputs.doc, facility_file),
         source=_source(facility_file),
         schema=BLUESKY_DEVICES_SCHEMA,
-        settle_bands=_settle_bands(inputs.doc),
+        tolerances=_tolerances(inputs.doc),
+        motion_bands=_motion_bands(inputs.doc),
     )
+    for warning in tolerance_warnings(inputs.doc, _lanes(inputs)):
+        _warn_once(inputs, warning)
     return [target]

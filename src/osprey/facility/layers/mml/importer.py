@@ -18,27 +18,31 @@ What is written, relative to ``data/facility/``:
   ``CommonNames`` entry at the slot's position, or what the mapping's
   ``devices`` answer says where the export names none, slots naming one
   device being one record; typed by the mapping's family ``class`` (the nearest class
-  every such family's class descends from); its ``names`` carry the export's
-  ``CommonNames`` slot and its ``attributes`` the export's ``DeviceList`` row
-  and ``ElementList`` slot, each only when the family states one per device.
+  every such family's class descends from); its ``label`` is the export's
+  ``CommonNames`` slot, its ``s`` the export's ``Position`` slot with its
+  ``model``, where the family states a finite one per device, and it carries
+  no ``attributes``.
 * ``imported/mml/channels.yaml``: one channel per address, ``on`` the one
   device that binds it, or, bound by several, naming each in ``endpoint_of``
   and ``on`` none; its ``role`` follows the field's direction
   (:func:`~osprey.facility.layers.mml.mapping.field_roles`): an address any
-  ``write`` field names is a setpoint, whichever field named it first. A
-  setpoint that reads back through its family's ``Monitor`` names that
-  device's ``Monitor`` address as its ``pair``, unless that address reads back
-  several setpoints of the field, when it pairs none. A field the mapping
-  gives a ``signal`` role writes it on each of its channels.
-* ``imported/mml/groups.yaml``: one group per family, id the family's mapped
-  token; same-named families of several exports are one group whose members
-  are the union of theirs. Its ``signals`` holds the description of each field
-  the mapping gives a ``signal`` role, keyed by that role; a family with no
-  such field states none.
+  ``write`` field names is a setpoint, whichever field named it first. No
+  channel carries a ``pair``: the build pairs each setpoint. A field the
+  mapping gives a ``signal`` role writes it on each of its channels. A channel's
+  description is ``<device>: <field sentence>``, the device named by its
+  label, else its id, and a shared endpoint by each of its devices.
+* ``imported/mml/groups.yaml``: one group per physical family, id the family's
+  mapped token; same-named families of several exports are one group whose
+  members are the union of theirs. Families whose devices are the same set are
+  one group (plane- and field-split twins), named by their common stem; its
+  ``description`` is the family's sentence.
 * the model's ``tune`` addresses, from the mapping's ``tune`` block: each a
   readback channel, the record a family field wrote where one did; a waveform
   block's address is ``value_type: waveform`` with ``shape`` its number of
   planes.
+* ``imported/mml/rows.json``: the device each export ``DeviceList`` row
+  became, per model and family (:mod:`~osprey.facility.layers.mml.rows`),
+  which the response check reads.
 * ``imported/mml/models.yaml``: one ``pyat`` model per imported system, named
   by the mapping. A transport line (``state.is_transport`` of the export's
   ``<stem>.model.json``, else ``MachineType: Transport`` in its AD) runs
@@ -62,8 +66,8 @@ does not carry is removed.
 Nothing is written until every record and every model's wiring is derived, so
 a stop leaves the layer directory as it was.
 
-The wiring pass's lines are printed once the records are written: one per
-family wired without a stated hardware nominal. After the records,
+The wiring pass's lines are printed once the records are written
+(:mod:`~osprey.facility.layers.mml.wiring` lists them). After the records,
 :func:`import_mml` seeds the authored files that do not
 exist yet (``limits.yaml``, ``seeds.yaml``, ``measurement/<model>.yaml``,
 ``classes.yaml`` and ``identity.yaml``; :mod:`~osprey.facility.layers.mml.seed`)
@@ -76,6 +80,7 @@ each is imported inside the function that needs it.
 from __future__ import annotations
 
 import shutil
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,10 +106,12 @@ from osprey.facility.layers.mml.mapping import (
     TuneBlock,
     _text,
     check_mapping,
+    exported_number,
     field_roles,
     load_or_draft,
 )
-from osprey.facility.response_check import RESPONSE_SUFFIX
+from osprey.facility.layers.mml.response_check import RESPONSE_SUFFIX
+from osprey.facility.layers.mml.rows import write_rows
 
 if TYPE_CHECKING:  # the export services stay out of the import graph
     from osprey.facility.layers.mml.family import FamilyView, FieldView
@@ -139,13 +146,16 @@ _TWISS_KEYS: tuple[tuple[str, str], ...] = (
     ("closed_orbit", "ClosedOrbit"),
 )
 
+#: The largest exported ``Tolerance`` that states none: a machine-epsilon placeholder.
+_NO_TOLERANCE = 1e-12
+
 #: The keys of a channel record, in the order they are written.
 _CHANNEL_KEYS = (
     "id",
     "endpoint_of",
     "on",
     "role",
-    "pair",
+    "tolerance",
     "signal",
     "value_type",
     "shape",
@@ -374,7 +384,9 @@ def import_mml(paths: Sequence[Path], facility_dir: Path) -> list[Path]:
     if problems:
         raise MappingProblems(facility_dir / MAPPING_FILE, problems)
     judged, views = _carried(exports, mapping)
-    written = _write_records(exports, mapping, facility_dir, judged, views)
+    written, untoleranced = _write_records(exports, mapping, facility_dir, judged, views)
+    if untoleranced:
+        click.echo(f"{untoleranced} setpoint devices export no usable `Setpoint.Tolerance`")
     seeded = seed_once(exports, mapping, facility_dir, views)
     for line in seeded.lines:
         click.echo(line)
@@ -412,7 +424,7 @@ def write_records(exports: Exports, mapping: Mapping, facility_dir: Path) -> lis
     if unnamed:
         raise MappingProblems(facility_dir / MAPPING_FILE, unnamed)
     judged, views = _carried(exports, mapping)
-    return _write_records(exports, mapping, facility_dir, judged, views)
+    return _write_records(exports, mapping, facility_dir, judged, views)[0]
 
 
 def _unnamed(exports: Exports, mapping: Mapping) -> list[Problem]:
@@ -442,8 +454,13 @@ def _write_records(
     facility_dir: Path,
     judged: dict[str, dict[str, FamilyView]],
     views: list[FamilyView],
-) -> list[Path]:
-    """Write the layer's files from the families as :func:`_carried` judged them."""
+) -> tuple[list[Path], int]:
+    """Write the layer's files from the families as :func:`_carried` judged them.
+
+    Returns:
+        Every file written, and how many setpoints carry no ``tolerance``
+        because their export states no usable ``Tolerance``.
+    """
     roles = field_roles(mapping)
     systems = {system: _model_name(mapping, system) for system in exports.systems}
     models = [_model(exports, system, systems[system]) for system in exports.systems]
@@ -459,12 +476,27 @@ def _write_records(
     devices: dict[str, dict[str, Any]] = {}
     channels: dict[str, dict[str, Any]] = {}
     groups: dict[str, dict[str, Any]] = {}
+    untoleranced: set[str] = set()
+    export_rows: list[dict[str, Any]] = []
     for view, slot_ids in zip(views, ids, strict=True):
         family = mapping.families[view.raw_name]
-        for device_id, device in zip(slot_ids, _devices(view, family.class_), strict=True):
+        model = systems[view.system]
+        for device_id, device in zip(slot_ids, _devices(view, family.class_, model), strict=True):
             _add_device(devices, device_id, device, branches)
-        _channels(view, slot_ids, owners, mapping, roles, channels)
+    for view, slot_ids in zip(views, ids, strict=True):
+        for device_id, row in zip(slot_ids, _export_rows(view), strict=True):
+            if row is not None:
+                export_rows.append(
+                    {
+                        "model": systems[view.system],
+                        "family": view.raw_name,
+                        "device_list": row,
+                        "device": device_id,
+                    }
+                )
+        _channels(view, slot_ids, owners, mapping, roles, channels, untoleranced, devices)
         _group(groups, mapping.mapped(view.raw_name), mapping, view.raw_name, slot_ids)
+    groups = _physical_groups(groups)
 
     for system in exports.systems:
         _tune_channels(mapping.models[system].tune, channels)
@@ -484,6 +516,7 @@ def _write_records(
         _dump(layer / "channels.yaml", _sorted(channels.values(), "id")),
         _dump(layer / "groups.yaml", _sorted(groups.values(), "id")),
         _dump(layer / "models.yaml", _sorted(models, "name")),
+        write_rows(layer, export_rows),
     ]
     decks = [write_deck(deck, facility_dir, name) for name, deck in served]
     written.extend(decks)
@@ -493,7 +526,8 @@ def _write_records(
     written.extend(_copy_responses(exports, mapping, layer))
     for line in lines:
         click.echo(line)
-    return written
+    untoleranced -= {address for address, channel in channels.items() if "tolerance" in channel}
+    return written, len(untoleranced)
 
 
 def _carried(
@@ -535,34 +569,39 @@ def _integer(value: Any) -> int | None:
     return None
 
 
-def _devices(view: FamilyView, klass: str | None) -> Iterable[dict[str, Any]]:
+def _devices(view: FamilyView, klass: str | None, model: str) -> Iterable[dict[str, Any]]:
     """The fields of each device of one family, in device order.
 
-    A device's one names entry is its ``CommonNames`` entry: a device's common
-    name is its last names entry and its source name its first, so one entry
-    is both.
+    A device's ``label`` is its ``CommonNames`` entry; a device whose
+    ``Position`` slot holds a finite number carries it as ``s`` in ``model``.
     """
     names = view.aligned("CommonNames")
-    elements = view.aligned("ElementList")
-    rows = view.device_rows
+    positions = view.aligned("Position")
     for index in range(view.n_devices):
         device: dict[str, Any] = {}
         if klass is not None:
             device["class"] = klass
         name = _text(names[index]) if names is not None else None
         if name is not None:
-            device["names"] = [name]
-        attributes: dict[str, Any] = {}
-        if rows is not None:
-            row = [_integer(part) for part in rows[index]]
-            if None not in row:
-                attributes["DeviceList"] = row
-        element = _integer(elements[index]) if elements is not None else None
-        if element is not None:
-            attributes["ElementList"] = element
-        if attributes:
-            device["attributes"] = attributes
+            device["label"] = name
+        s = exported_number(positions[index]) if positions is not None else None
+        if s is not None:
+            device["model"] = model
+            device["s"] = s
         yield device
+
+
+def _export_rows(view: FamilyView) -> list[list[int] | None]:
+    """Each device slot's export ``DeviceList`` row, ``None`` where it is not all integers."""
+    rows = view.device_rows
+    out: list[list[int] | None] = []
+    for index in range(view.n_devices):
+        if rows is None:
+            out.append(None)
+            continue
+        row = [_integer(part) for part in rows[index]]
+        out.append(None if None in row else [part for part in row if part is not None])
+    return out
 
 
 def _add_device(
@@ -573,7 +612,7 @@ def _add_device(
 ) -> None:
     """Record one slot's device, or fold it into the device its id already names.
 
-    The first slot's names and attributes stand; the class is the nearest one
+    The first slot's label, model and s stand; the class is the nearest one
     every slot's family class descends from, absent when they share none.
     """
     found = devices.get(device_id)
@@ -584,7 +623,7 @@ def _add_device(
     merged: dict[str, Any] = {"id": device_id}
     if klass is not None:
         merged["class"] = klass
-    for key in ("names", "attributes"):
+    for key in ("label", "model", "s"):
         value = found.get(key, device.get(key))
         if value is not None:
             merged[key] = value
@@ -599,6 +638,28 @@ def _field_scalar(fld: FieldView, key: str, index: int, n_devices: int) -> str |
     return _text(value)
 
 
+def _field_number(fld: FieldView, key: str, index: int, n_devices: int) -> float | None:
+    """The finite number ``fld.body[key]`` gives one device: its slot of a per-device list, or itself."""
+    value = fld.body.get(key)
+    if isinstance(value, (list, tuple)):
+        value = value[index] if len(value) == n_devices else None
+    return exported_number(value)
+
+
+def _tolerance(
+    fld: FieldView, index: int, n_devices: int, unit: str | None
+) -> dict[str, float] | None:
+    """A setpoint's ``tolerance`` from its write field's ``Tolerance``, or ``None``.
+
+    Only a finite tolerance above 1e-12 in a stated unit is one: an export's
+    ``Inf`` or a machine-epsilon placeholder says the field has none.
+    """
+    value = _field_number(fld, "Tolerance", index, n_devices)
+    if unit is None or value is None or value <= _NO_TOLERANCE:
+        return None
+    return {"absolute": value}
+
+
 def _channels(
     view: FamilyView,
     ids: list[str],
@@ -606,14 +667,20 @@ def _channels(
     mapping: Mapping,
     roles: dict[str, Any],
     channels: dict[str, dict[str, Any]],
+    untoleranced: set[str],
+    devices: dict[str, dict[str, Any]],
 ) -> None:
     """Add one channel per address of one family that no earlier family wrote.
 
     An address one device binds is ``on`` it; an address several devices bind
     names each in ``endpoint_of`` and belongs to no device. An address a
     ``write`` field names is a setpoint: when an earlier field wrote its
-    channel as anything else, the channel takes the setpoint role, its pair
-    and the write field's unit and description, and keeps the rest.
+    channel as anything else, the channel takes the setpoint role and the
+    write field's signal, unit, tolerance and description, and keeps the rest.
+    A setpoint takes its ``tolerance`` from the write field's ``Tolerance``
+    in the field's unit; one whose export states no usable tolerance is added
+    to ``untoleranced``. A channel is described as ``<owner>: <field
+    sentence>`` (:func:`_described`).
     """
     family = mapping.families[view.raw_name]
     for fld in view.fields.values():
@@ -621,31 +688,28 @@ def _channels(
         described = family.fields.get(fld.name)
         description = described.description if described is not None else None
         signal = described.signal if described is not None else None
-        paired = view.fields.get(role.pair) if role is not None and role.pair else None
-        shared = _shared_pairs(fld, paired, view.n_devices)
         for key in fld.keys:
-            pairs = paired.slots(key) if paired is not None and key in paired.keys else []
             for index, slot in enumerate(fld.slots(key)[: view.n_devices]):
                 address = _text(slot)
                 if address is None:
                     continue
                 writes = role is not None and role.role == SETPOINT_ROLE
-                pair = _text(pairs[index]) if index < len(pairs) else None
-                if pair in shared:
-                    pair = None
                 found = channels.get(address)
                 if found is not None:
                     if writes and found.get("role") != SETPOINT_ROLE:
                         found["role"] = SETPOINT_ROLE
-                        if pair is not None and pair != address:
-                            found["pair"] = pair
                         if signal is not None:
                             found["signal"] = signal
                         unit = _field_scalar(fld, "HWUnits", index, view.n_devices)
                         if unit is not None:
                             found["unit"] = unit
+                        tolerance = _tolerance(fld, index, view.n_devices, unit)
+                        if tolerance is not None:
+                            found["tolerance"] = tolerance
+                        else:
+                            untoleranced.add(address)
                         if description is not None:
-                            found["description"] = description
+                            found["description"] = _described(found, description, devices)
                         channels[address] = {
                             key: found[key] for key in _CHANNEL_KEYS if key in found
                         }
@@ -658,31 +722,31 @@ def _channels(
                     channel["on"] = {"device": bound[0]}
                 if role is not None:
                     channel["role"] = role.role
-                    if writes and pair is not None and pair != address:
-                        channel["pair"] = pair
                 if signal is not None:
                     channel["signal"] = signal
                 unit = _field_scalar(fld, "HWUnits", index, view.n_devices)
                 if unit is not None:
                     channel["unit"] = unit
+                if writes:
+                    tolerance = _tolerance(fld, index, view.n_devices, unit)
+                    if tolerance is not None:
+                        channel["tolerance"] = tolerance
+                    else:
+                        untoleranced.add(address)
                 if description is not None:
-                    channel["description"] = description
-                channels[address] = channel
+                    channel["description"] = _described(channel, description, devices)
+                channels[address] = {key: channel[key] for key in _CHANNEL_KEYS if key in channel}
 
 
-def _shared_pairs(fld: FieldView, paired: FieldView | None, devices: int) -> set[str]:
-    """The addresses of ``paired`` that read back more than one address of ``fld``."""
-    if paired is None:
-        return set()
-    read: dict[str, set[str]] = {}
-    for key in fld.keys:
-        if key not in paired.keys:
-            continue
-        for slot, back in zip(fld.slots(key)[:devices], paired.slots(key), strict=False):
-            address, pair = _text(slot), _text(back)
-            if address is not None and pair is not None and pair != address:
-                read.setdefault(pair, set()).add(address)
-    return {pair for pair, addresses in read.items() if len(addresses) > 1}
+def _described(channel: dict[str, Any], sentence: str, devices: dict[str, dict[str, Any]]) -> str:
+    """``<owner>: <sentence>``, the owner the ``on`` device or each ``endpoint_of`` device.
+
+    A device is named by its ``label``, else its id.
+    """
+    on = channel.get("on") or {}
+    owned = [on["device"]] if on.get("device") else list(channel.get("endpoint_of") or [])
+    owner = ", ".join(str(devices.get(d, {}).get("label") or d) for d in owned)
+    return f"{owner}: {sentence}" if owner else sentence
 
 
 def _tune_channels(tune: TuneBlock | None, channels: dict[str, dict[str, Any]]) -> None:
@@ -714,17 +778,52 @@ def _group(
         if family.aliases:
             group["names"] = list(family.aliases)
         group["members"] = []
-        signals = dict(
-            sorted(
-                (fld.signal, fld.description)
-                for fld in family.fields.values()
-                if fld.signal is not None and fld.description is not None
-            )
-        )
-        if signals:
-            group["signals"] = signals
         groups[token] = group
     group["members"] = sorted({*group["members"], *ids})
+
+
+def _stem(tokens: Sequence[str]) -> str:
+    """The tokens' longest common prefix, less its trailing non-alphanumerics."""
+    prefix = tokens[0]
+    for token in tokens[1:]:
+        while not token.startswith(prefix):
+            prefix = prefix[:-1]
+    while prefix and not prefix[-1].isalnum():
+        prefix = prefix[:-1]
+    return prefix
+
+
+def _physical_groups(groups: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Fold the groups whose members are the same set into one group per physical family.
+
+    A fold is named by its tokens' common stem when that has two characters
+    or more, is no other group's id and is no other fold's stem, else by its
+    first token in sorted order. Its ``names`` are the union of the twins' names and tokens, sorted;
+    its ``description`` the twins' distinct descriptions in token order,
+    joined by one space.
+    """
+    folds: dict[tuple[str, ...], list[str]] = {}
+    for token in sorted(groups):
+        folds.setdefault(tuple(groups[token]["members"]), []).append(token)
+    stems = Counter(_stem(tokens) for tokens in folds.values() if len(tokens) > 1)
+    out: dict[str, dict[str, Any]] = {}
+    for members, tokens in folds.items():
+        if len(tokens) == 1:
+            out[tokens[0]] = groups[tokens[0]]
+            continue
+        stem = _stem(tokens)
+        outside = set(groups) - set(tokens)
+        unique = len(stem) >= 2 and stem not in outside and stems[stem] == 1
+        group_id = stem if unique else tokens[0]
+        group: dict[str, Any] = {"id": group_id}
+        descriptions = [groups[t]["description"] for t in tokens if groups[t].get("description")]
+        if descriptions:
+            group["description"] = " ".join(dict.fromkeys(descriptions))
+        names = {*tokens, *(name for t in tokens for name in groups[t].get("names", []))}
+        group["names"] = sorted(names)
+        group["members"] = list(members)
+        out[group_id] = group
+    return out
 
 
 # -- models -------------------------------------------------------------------

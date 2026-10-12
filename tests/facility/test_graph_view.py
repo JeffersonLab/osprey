@@ -16,6 +16,7 @@ import pytest
 from rdflib import RDF, Graph, Literal, Namespace, URIRef
 
 from osprey.facility.render import facility_bytes
+from osprey.facility.validate import FACILITY_HEADER
 from osprey.facility.views import VIEWS, ViewInputs
 from osprey.facility.views.graph import GRAPH_FILE, HEADER_PREFIX, graph_text, write_graph_view
 from osprey.facility.views.graph_iri import iri
@@ -53,7 +54,7 @@ PREDICATES = {
 
 def _doc() -> dict[str, Any]:
     return {
-        "schema": "osprey.facility.facility/1",
+        "schema": FACILITY_HEADER,
         "identity": {"code": "fx"},
         "places": [
             {"id": "M", "level": "machine", "description": "The machine."},
@@ -65,7 +66,8 @@ def _doc() -> dict[str, Any]:
                 "id": "M/BPM1",
                 "class": "BeamPositionMonitor",
                 "place": "M/S1",
-                "names": ["BPM1", "BPM 1"],
+                "names": ["BPM1"],
+                "label": "BPM 1",
                 "model": "M",
                 "s": 1.25,
                 "length": 0.0,
@@ -145,7 +147,7 @@ def test_a_device_carries_its_identity_place_and_position() -> None:
         "system": "M",
         "placePath": "M/S1",
         "sectionCode": "S1",
-        "sourceName": "BPM1",
+        "sourceName": "M/BPM1",
         "familyDescription": "Monitors.",
         "systemDescription": "The machine.",
         "sPositionM": 1.25,
@@ -164,11 +166,24 @@ def test_a_device_carries_its_top_place_and_family_descriptions() -> None:
     assert _value(graph, "device", "M/Q1", "familyDescription") == "Diagnostics."
 
 
+def test_a_device_in_no_described_group_has_no_family_description() -> None:
+    doc = _doc()
+    doc["groups"] = [
+        {"id": "M/BPM", "description": "Monitors.", "members": ["M/BPM1"]},
+        {"id": "M/QUADS", "members": ["M/Q1"]},
+    ]
+    graph = _graph(graph_text(doc))
+
+    assert _value(graph, "device", "M/BPM1", "familyDescription") == "Monitors."
+    assert _value(graph, "device", "M/Q1", "familyDescription") is None
+
+
 def test_a_device_without_s_has_no_position_or_ordinals() -> None:
     graph = _graph(graph_text(_doc()))
 
-    for name in ("sPositionM", "lengthM", "ordinalInPlace", "ordinalInModel", "sourceName"):
+    for name in ("sPositionM", "lengthM", "ordinalInPlace", "ordinalInModel"):
         assert _value(graph, "device", "M/Q1", name) is None, name
+    assert _value(graph, "device", "M/Q1", "sourceName") == "M/Q1"
 
 
 def test_a_place_carries_its_path_and_last_segment() -> None:

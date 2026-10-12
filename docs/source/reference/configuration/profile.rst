@@ -70,8 +70,8 @@ Profile YAML reference
    * - ``connector``
      - string
      - *from preset*
-     - Control-system connector (``mock``, ``virtual_accelerator``, ``epics``,
-       …). Shorthand for ``config: {control_system.type: ...}``, so it can be
+     - Control-system connector (``virtual_accelerator``, ``epics``, …).
+       Shorthand for ``config: {control_system.type: ...}``, so it can be
        set from the command line as ``--set connector=epics``. Setting both
        spellings on one command line is an error rather than a silent
        last-one-wins; a custom connector is still addressed by its dotted
@@ -272,7 +272,7 @@ build`` refuses each in turn rather than rendering it. See
    **That entry replaces the whole rendered connector section.** ``connector``
    is the last key of the dotted prefix, and a leaf is assigned verbatim — so
    the mapping has to carry every connector block the deployment needs, not only
-   the custom type's. Copy the ``mock``, ``virtual_accelerator`` and ``epics``
+   the custom type's. Copy the ``virtual_accelerator`` and ``epics``
    blocks, with their gateways, ports and probe channels, out of the
    ``control_system.connector.*`` keys this profile already spells under
    ``config:``, or from a prior render's ``config.yml``.
@@ -1027,6 +1027,33 @@ by ``osprey up`` and served from the lattice the build renders (see
        that key in ``config:``. A value that collides with ``port``,
        ``live_standin`` or another port the profile spends is refused.
 
+Where the simulator runs
+------------------------
+
+This block deploys the simulator's container. Where the deployment's own
+connector reaches the simulator is a pair of ``config:`` keys, not keys of this
+block (see :ref:`va-two-venues`):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 12 48
+
+   * - Key
+     - Default
+     - Meaning
+   * - ``control_system.connector.virtual_accelerator.serving``
+     - ``served``
+     - ``served`` reaches the container over Channel Access and PVAccess;
+       ``in_process`` runs the same simulator inside the process that asks,
+       with no network and no container. A ``control_system`` section that
+       states no ``type`` gets the simulator in process, and this key is not
+       read. ``in_process`` is refused on a deployment whose own type is not
+       ``virtual_accelerator``.
+   * - ``control_system.connector.virtual_accelerator.response_delay_ms``
+     - ``10``
+     - Milliseconds the simulator in process waits before it answers. Read in
+       process only.
+
 The live stand-in
 -----------------
 
@@ -1223,12 +1250,15 @@ store and then reads something else beside it.
 .. warning::
 
    ``osprey build`` **refuses** a profile that pairs a ``virtual_accelerator``
-   control system with the mock archiver, or with no ``archiver.type`` at all
-   (which resolves to the mock): a simulated machine whose history is
-   synthesized at read time reports a past that never happened, and nothing can
-   catch it. The error names the fix — declare this block and select
-   ``mongodb_archiver``, point the archiver at a store you run yourself, or set
-   the control system to ``mock`` for an honestly storeless project. See
+   control system served from its container with the mock archiver, or with no
+   ``archiver.type`` at all (which resolves to the mock): a simulated machine
+   whose history is synthesized at read time reports a past that never
+   happened, and nothing can catch it. The error names the fix — declare this
+   block and select ``mongodb_archiver``, or point the archiver at a store you
+   run yourself. A project meant to be honestly storeless serves the simulator
+   in process instead
+   (``control_system.connector.virtual_accelerator.serving: in_process``), which
+   has no recorder and so may keep the mock archiver. See
    :doc:`/how-to/control-systems/use-virtual-accelerator`.
 
 
@@ -1439,12 +1469,14 @@ build** and prints the valid set:
    * - ``settle_tolerance``
      - How close the readback must come to the demand to count as settled, as
        an absolute difference (default ``1e-9``). This is the floor for every
-       device. A device whose readback declares motion in the facility file
-       (``noise``, ``drift``) settles within that motion's band,
-       ``|drift.amplitude| + 6 × |noise|``, whenever the band is wider than the
-       floor; the build writes the band into the device file. The default is a
-       float-noise bound, right for a readback with no declared motion that a
-       controller echoes back exactly.
+       device on every lane, never a ceiling. A setpoint's own ``tolerance``
+       in the facility file applies on every lane whenever it is wider. A
+       setpoint without one settles, on a lane that serves the simulator,
+       within its readback's motion band, ``|drift.amplitude|`` + 6 × the
+       noise sigma (a ``relative`` sigma taken at the seed's ``nominal``), and
+       on a live or stand-in lane within this floor; the build warns once per
+       such lane with the count. The default is a float-noise bound, right for
+       a readback that a controller echoes back exactly.
    * - ``live_max_runs``
      - How many runs' live data the bridge keeps in memory, oldest dropped
        first (default 50). This is what decides how long a finished run stays

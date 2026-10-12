@@ -86,10 +86,13 @@ def test_no_channel_is_an_empty_document() -> None:
     assert bluesky_document({"channels": []}) == {"settables": [], "readables": []}
 
 
-def test_a_seeded_readback_settles_its_settable_within_its_motion() -> None:
+def test_a_seeded_readback_writes_its_motion_band_for_its_settable() -> None:
     readback = {
         **_channel("A:RB", "readback"),
-        "simulation": {"noise": 0.001, "drift": {"amplitude": 0.005, "period_s": 600.0}},
+        "simulation": {
+            "noise": {"absolute": 0.001},
+            "drift": {"amplitude": 0.005, "period_s": 600.0},
+        },
     }
     document = bluesky_document(
         {
@@ -103,8 +106,108 @@ def test_a_seeded_readback_settles_its_settable_within_its_motion() -> None:
     )
 
     first, second = document["settables"]
-    assert first["settle_tolerance"] == pytest.approx(0.005 + 6.0 * 0.001)
-    assert "settle_tolerance" not in second
+    assert first["motion_band"] == pytest.approx(0.005 + 6.0 * 0.001)
+    assert "settle_tolerance" not in first
+    assert "motion_band" not in second
+
+
+def test_a_declared_tolerance_is_written_and_the_band_is_not() -> None:
+    noisy = {"noise": {"absolute": 0.001}, "drift": {"amplitude": 0.005, "period_s": 600.0}}
+    document = bluesky_document(
+        {
+            "channels": [
+                {**_channel("A:SP", "setpoint", "A:RB"), "tolerance": {"absolute": 0.05}},
+                {**_channel("A:RB", "readback"), "simulation": noisy},
+                {**_channel("B:SP", "setpoint", "B:RB"), "tolerance": {"relative": 1e-4}},
+                {**_channel("B:RB", "readback"), "simulation": noisy},
+            ]
+        }
+    )
+
+    first, second = document["settables"]
+    assert first["settle_tolerance"] == 0.05
+    assert second["settle_tolerance"] == {"relative": 1e-4}
+    assert "motion_band" not in first and "motion_band" not in second
+
+
+def _toleranced(scenarios: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """A setpoint toleranced at 0.05 A, its readback noisy, and an untoleranced pair."""
+    return {
+        "channels": [
+            {
+                **_channel("A:SP", "setpoint", "A:RB"),
+                "unit": "A",
+                "tolerance": {"absolute": 0.05},
+            },
+            {
+                **_channel("A:RB", "readback"),
+                "unit": "A",
+                "simulation": {"nominal": 1.0, "noise": {"absolute": 0.001}},
+            },
+            _channel("B:SP", "setpoint", "B:RB"),
+            _channel("B:RB", "readback"),
+            _channel("C:SP", "setpoint"),
+        ],
+        "scenarios": scenarios or [],
+    }
+
+
+def _rendered(
+    doc: dict[str, Any], services: dict[str, Any], system: str, reported: set[str]
+) -> Any:
+    from osprey.facility.views import ViewInputs
+
+    return ViewInputs(
+        doc=doc,  # type: ignore[arg-type]
+        rendered_config={"services": services, "control_system": {"type": system}},
+        facility_dir=Path("."),
+        served=[],
+        reported=reported,
+    )
+
+
+def test_a_live_lane_warns_once_with_the_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reported: set[str] = set()
+    services = {"bluesky": {"settle_tolerance": 0.001}, "bluesky_va": {}}
+    for render in ("one", "two"):
+        root = tmp_path / render
+        write_bluesky_view(root, _rendered(_toleranced(), services, "epics", reported))
+
+    err = capsys.readouterr().err
+    line = "2 setpoints declare no `tolerance`; on lane bluesky they settle within the floor 0.001"
+    assert err.count(line) == 1
+    assert "B:SP" in err and "C:SP" in err
+    assert "bluesky_va" not in err
+
+
+def test_a_simulated_lane_does_not_warn(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_bluesky_view(
+        tmp_path, _rendered(_toleranced(), {"bluesky": {}}, "virtual_accelerator", set())
+    )
+
+    assert "tolerance" not in capsys.readouterr().err
+
+
+def test_a_scenario_beyond_tolerance_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scenarios = [
+        {"name": "loud", "noise": {"A:RB": {"absolute": 0.01}}},
+        {"name": "calm", "noise": {"A:RB": {"absolute": 0.005}}},
+    ]
+    write_bluesky_view(
+        tmp_path,
+        _rendered(_toleranced(scenarios), {"bluesky": {}}, "virtual_accelerator", set()),
+    )
+
+    err = capsys.readouterr().err
+    assert (
+        "scenario loud moves A:RB up to 0.06 A, beyond A:SP's tolerance 0.05 A; its moves time "
+        "out while it is active"
+    ) in err
+    assert "scenario calm" not in err
 
 
 # --- the file ----------------------------------------------------------------------
@@ -201,7 +304,8 @@ def test_the_demo_view_holds_every_setpoint_and_readback(
     rows = fingerprint_rows() + load_golden("demo_fingerprint_additions.json")["rows"]
     setpoints = sorted(row["address"] for row in rows if row["role"] == "setpoint")
     readbacks = sorted(row["address"] for row in rows if row["role"] == "readback")
-    assert len(setpoints) == 396
+    assert len(setpoints) == 412
+    assert sum(address.startswith("LINE:") for address in setpoints) == 16
 
     settables, readables = specs_from_file(
         built_control_assistant.build_dir / "data" / BLUESKY_DEVICES_FILE

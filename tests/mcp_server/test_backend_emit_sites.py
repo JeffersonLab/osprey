@@ -110,7 +110,9 @@ async def test_channel_write_limits_violation_no_emit(tmp_path, monkeypatch):
     from osprey.errors import ChannelLimitsViolationError
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    (tmp_path / "config.yml").write_text(
+        "control_system:\n  type: virtual_accelerator\n  connector:\n    virtual_accelerator:\n      serving: in_process\n"
+    )
 
     from osprey.connectors.control_system.limits_validator import LimitsValidator
 
@@ -147,7 +149,9 @@ async def test_channel_write_partial_success_emits_executed_only(tmp_path, monke
     from osprey.mcp_server.control_system.server_context import initialize_server_context
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    (tmp_path / "config.yml").write_text(
+        "control_system:\n  type: virtual_accelerator\n  connector:\n    virtual_accelerator:\n      serving: in_process\n"
+    )
     initialize_server_context()
 
     results = [
@@ -192,7 +196,9 @@ async def test_channel_write_all_blocked_no_emit(tmp_path, monkeypatch):
     from osprey.mcp_server.control_system.server_context import initialize_server_context
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    (tmp_path / "config.yml").write_text(
+        "control_system:\n  type: virtual_accelerator\n  connector:\n    virtual_accelerator:\n      serving: in_process\n"
+    )
     initialize_server_context()
 
     results = [
@@ -233,7 +239,9 @@ async def test_channel_write_full_success_single_emit(tmp_path, monkeypatch):
     from osprey.mcp_server.control_system.server_context import initialize_server_context
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    (tmp_path / "config.yml").write_text(
+        "control_system:\n  type: virtual_accelerator\n  connector:\n    virtual_accelerator:\n      serving: in_process\n"
+    )
     initialize_server_context()
 
     write_result = _make_write_result(channel="SR01:HCM1:SP", value=42.0)
@@ -1303,7 +1311,7 @@ async def test_lattice_read_only_tool_never_emits(tool_name, kwargs):
 # ── setup_patch / manage_window ─────────────────────────────────────────────
 #
 # setup_patch edits the two files that hold the agent's credentials, so its
-# detail names the file and the key path and NOTHING else: the ring is
+# detail names the file and the key path and NOTHING else: the activity buffer is
 # persistent and served back over HTTP, and a leaked `.mcp.json` value is an
 # API key. The leak tests use sentinel values distinctive enough that no
 # coincidental substring can let a leak through, and check every notify
@@ -1336,7 +1344,15 @@ _MANAGE_WINDOW_ACTIONS = [
 def setup_project(tmp_path):
     """Project root holding both patchable files, with config resolution pinned."""
     (tmp_path / "config.yml").write_text(
-        yaml.dump({"control_system": {"type": "mock", "writes_enabled": False}})
+        yaml.dump(
+            {
+                "control_system": {
+                    "type": "virtual_accelerator",
+                    "connector": {"virtual_accelerator": {"serving": "in_process"}},
+                    "writes_enabled": False,
+                }
+            }
+        )
     )
     (tmp_path / ".mcp.json").write_text(
         '{\n  "mcpServers": {\n    "demo": {\n'
@@ -1624,7 +1640,9 @@ async def test_channel_write_result_unchanged_when_terminal_down(tmp_path, monke
     from osprey.mcp_server.control_system.server_context import initialize_server_context
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    (tmp_path / "config.yml").write_text(
+        "control_system:\n  type: virtual_accelerator\n  connector:\n    virtual_accelerator:\n      serving: in_process\n"
+    )
     initialize_server_context()
 
     write_result = _make_write_result(channel="TEST:PV", value=42.0)

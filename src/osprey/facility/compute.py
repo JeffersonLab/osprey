@@ -3,21 +3,31 @@
 The stage runs after S5 and after the wiring slots are filled, and writes the
 computed device slots in place on the document:
 
-* ``model``, ``s``, ``length``: from the elements each device's wiring names,
-  located in its model's deck by the engine's ``locate``. A periodic model
-  takes the shortest cyclic arc over the elements (s = the arc's first
-  entrance, length = (exit of its last - s) mod the deck's length); a
-  ``single_pass`` model takes the lowest entrance and the highest exit.
+* ``model``, ``s``, ``length``: for a wired device, from the elements its
+  wiring names, located in its model's deck by the engine's ``locate``. A
+  periodic model takes the shortest cyclic arc over the elements (s = the
+  arc's first entrance, length = (exit of its last - s) mod the deck's
+  length); a ``single_pass`` model takes the lowest entrance and the highest
+  exit. A source may state them for an unwired device; a wired device's
+  stated slot must agree with the computed one (``place-conflict``), and an
+  agreeing stated value stands as stated. On a periodic deck of length L a
+  stated s is read modulo L (L + d is the same point as d), and the device is
+  placed, compared and numbered at that point, and the build warns once per
+  such device (``place-wrapped``), naming the stated s, L and the point; on a
+  single-pass deck a stated s outside [0, L] stops (``place-conflict``).
 * ``place``: when no source states one, the deepest span of the device's model
-  that contains its s; ``provenance.place_from`` says where the place came
-  from.
+  that contains its s, computed or stated; ``provenance.place_from`` says
+  where the place came from.
 * ``ordinalInPlace``, ``ordinalInModel``: per (class, place) and per
-  (class, model), in s order with ties by id.
+  (class, model), in s order with ties by id, a periodic model's s read
+  modulo its length; a device with an ``s`` and no ``model`` is numbered in
+  its place only.
 * ``groups``: the groups naming the device as a member.
 
 It also stops on what only a deck can show: a span whose markers do not
 resolve or that overlaps another at its level (``span-invalid``), an imported
-place that contradicts its span (``place-conflict``), a device or address
+place that contradicts its span, a stated position that contradicts the deck
+or lies outside a single-pass deck (``place-conflict``), a device or address
 wired by two models or a wired element repeated in its deck
 (``wiring-conflict``), a declared ``texture`` model or a channel on a status
 address (``model-conflict``), a nominal outside its limits band
@@ -42,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from osprey.facility import TEXTURE
-from osprey.facility.errors import FacilityBuildError
+from osprey.facility.errors import FacilityBuildError, FacilityBuildWarning
 from osprey.facility.provenance import add_defaults, set_place_from
 from osprey.facility.scenarios import (
     check_scenario_attachments,
@@ -109,12 +119,13 @@ class _Position:
 
 @dataclass
 class _Run:
-    """The document being computed and the stops found so far."""
+    """The document being computed and the stops and warnings found so far."""
 
     document: dict[str, Any]
     facility_dir: Path
     fixes: list[Mapping[str, Any]]
     errors: list[FacilityBuildError] = field(default_factory=list)
+    warnings: list[FacilityBuildWarning] = field(default_factory=list)
 
     def stop(
         self,
@@ -131,13 +142,29 @@ class _Run:
             )
         )
 
+    def wrapped(self, device: Mapping[str, Any], deck: _Deck, stated: float) -> None:
+        """Warn that a periodic deck places a device's stated s modulo its length."""
+        point = stated % deck.length_m
+        self.warnings.append(
+            FacilityBuildWarning(
+                "place-wrapped",
+                "device",
+                device["id"],
+                f"layer {_stating_layers(device, 's')} states s {stated:.9g} in periodic model "
+                f"{deck.name}, outside its deck of length {deck.length_m:.9g}; the device is "
+                f"placed at s {point:.9g}",
+                f"state s {point:.9g}, or drop it",
+            )
+        )
+
 
 def check_compute(validated: Validated) -> list[FacilityBuildError]:
     """Compute positions, places, ordinals and groups, and run the deck checks (S6).
 
     Every computed slot is written in place on ``validated.document``; the
     stage runs after the wiring slots are filled, so each wired record
-    carries its ``default``.
+    carries its ``default``. A stated s a periodic deck wraps is appended to
+    ``validated.warnings`` (``place-wrapped``), one per device.
 
     Args:
         validated: What the earlier stages produced.
@@ -156,13 +183,23 @@ def check_compute(validated: Validated) -> list[FacilityBuildError]:
         validated.facility_dir,
         [e for e in entries or [] if isinstance(e, dict)],
     )
+    try:
+        return _compute(run, validated)
+    finally:
+        validated.warnings.extend(run.warnings)
+
+
+def _compute(run: _Run, validated: Validated) -> list[FacilityBuildError]:
+    document = run.document
     _model_conflicts(run)
     twice = _addresses_wired_twice(run)
     decks = _prepare_decks(run)
-    positions = _positions(run, decks, twice)
+    computed = _positions(run, decks, twice)
+    positions = {**_stated_positions(run, decks, computed), **computed}
     spans = _spans(run, decks)
     if run.errors:
         return run.errors
+    _agree(run, computed, decks)
     _places(run, positions, spans)
     _nominal_band(run)
     run.errors.extend(check_scenario_engines(document))
@@ -170,8 +207,8 @@ def check_compute(validated: Validated) -> list[FacilityBuildError]:
     run.errors.extend(check_scenario_events(document))
     if run.errors:
         return run.errors
-    _write_positions(document, positions)
-    _write_ordinals(document)
+    _write_positions(document, computed)
+    _write_ordinals(document, {d.name: d.length_m for d in decks.values() if d.periodic})
     _write_groups(document)
     _list_texture(document)
     return []
@@ -353,6 +390,102 @@ def _arc(elements: Sequence[tuple[float, float]], length_m: float) -> tuple[floa
     return s, (last[0] + last[1] - s) % length_m
 
 
+#: How far a stated position may lie from the computed one: a deck and an
+#: export of the same lattice agree to float rounding.
+_POSITION_TOLERANCE_M = 1e-6
+
+
+def _outside(s: float, deck: _Deck) -> bool:
+    """Whether s lies outside [0, L] of the deck, beyond the position tolerance."""
+    return not -_POSITION_TOLERANCE_M <= s <= deck.length_m + _POSITION_TOLERANCE_M
+
+
+def _stating_layers(device: Mapping[str, Any], slot: str) -> str:
+    """The layers whose sources state ``slot`` of a device, joined."""
+    return ", ".join(
+        sorted(
+            str(source["layer"])
+            for source in device.get("provenance", {}).get("sources", [])
+            if slot in source.get("fields", ())
+        )
+    )
+
+
+def _stated_positions(
+    run: _Run, decks: Mapping[str, _Deck], computed: Mapping[str, _Position]
+) -> dict[str, _Position]:
+    """Each unwired device that states ``s`` in a deck-bearing ``model``.
+
+    A periodic deck's s is cyclic, so a stated s is placed modulo the deck's
+    length, with a ``place-wrapped`` warning when it lay outside the deck; on a
+    single-pass deck an s outside the deck stops.
+    """
+    positions: dict[str, _Position] = {}
+    for device in run.document.get("devices", []):
+        deck = decks.get(str(device.get("model")))
+        if device["id"] in computed or "s" not in device or deck is None:
+            continue
+        s = float(device["s"])
+        if deck.periodic:
+            if _outside(s, deck):
+                run.wrapped(device, deck, s)
+            s %= deck.length_m
+        elif _outside(s, deck):
+            run.stop(
+                "place-conflict",
+                "device",
+                device["id"],
+                stating_files(device, "s", _MODELS_FILE),
+                f"layer {_stating_layers(device, 's')} states s {s:g} in model {deck.name}, "
+                f"outside its deck of length {deck.length_m:g}",
+                "state an s inside the deck, or drop it",
+            )
+            continue
+        positions[device["id"]] = _Position(deck.name, s, float(device.get("length", 0.0)))
+    return positions
+
+
+def _agree(run: _Run, computed: Mapping[str, _Position], decks: Mapping[str, _Deck]) -> None:
+    """Stop on a wired device whose stated ``model``, ``s`` or ``length`` is not the deck's.
+
+    An agreeing s a periodic deck wraps warns (``place-wrapped``).
+    """
+    for device in run.document.get("devices", []):
+        position = computed.get(device["id"])
+        if position is None:
+            continue
+        deck = decks[position.model]
+        for slot in ("model", "s", "length"):
+            if slot not in device:
+                continue
+            stated = device[slot]
+            if slot == "model":
+                if str(stated) == position.model:
+                    continue
+                said = f"model {stated}"
+                found = f"wires the device in model {position.model}"
+            else:
+                value = float(getattr(position, slot))
+                delta = abs(float(stated) - value)
+                if slot == "s" and deck.periodic:
+                    delta %= deck.length_m
+                    delta = min(delta, deck.length_m - delta)
+                if delta <= _POSITION_TOLERANCE_M:
+                    if slot == "s" and deck.periodic and _outside(float(stated), deck):
+                        run.wrapped(device, deck, float(stated))
+                    continue
+                said = f"{slot} {float(stated):g} in model {position.model}"
+                found = f"puts the device at {slot} {value:g}"
+            run.stop(
+                "place-conflict",
+                "device",
+                device["id"],
+                stating_files(device, slot, _MODELS_FILE),
+                f"layer {_stating_layers(device, slot)} states {said}, but the deck {found}",
+                f"drop `{slot}` from the layer, or add a fix `set` of the deck's value",
+            )
+
+
 # --- spans ---------------------------------------------------------------------------
 
 
@@ -481,17 +614,12 @@ def _places(run: _Run, positions: Mapping[str, _Position], spans: Sequence[_Span
             _place_from(device, origin)
             continue
         if span is not None and position is not None:
-            layers = sorted(
-                str(source["layer"])
-                for source in device.get("provenance", {}).get("sources", [])
-                if "place" in source.get("fields", ())
-            )
             run.stop(
                 "place-conflict",
                 "device",
                 device["id"],
                 stating_files(device, "place", _MODELS_FILE),
-                f"layer {', '.join(layers)} states place {stated}, but the span of place "
+                f"layer {_stating_layers(device, 'place')} states place {stated}, but the span of place "
                 f"{span.place} holds the device at s {position.s:g} in model {position.model}",
                 f"drop `place` from the layer, or add a fix `set` of place {stated}",
             )
@@ -517,6 +645,14 @@ def _place_from(device: dict[str, Any], place_from: str) -> None:
 
 
 # --- nominal band --------------------------------------------------------------------
+
+
+def _exact(number: float) -> str:
+    """*number* as the shortest text that reads back as the same float.
+
+    A whole number prints bare (``5``, not ``5.0``).
+    """
+    return repr(float(number)).removesuffix(".0")
 
 
 def _nominal_band(run: _Run) -> None:
@@ -570,6 +706,7 @@ def _nominal_band(run: _Run) -> None:
                     setpoint,
                     theirs,
                     stating_files(channels[readback], "simulation", _MODELS_FILE),
+                    derived="pair" in channels[setpoint].get("provenance", {}).get("defaults", []),
                 )
             )
 
@@ -607,7 +744,7 @@ def _nominal_band(run: _Run) -> None:
             "channel",
             address,
             sorted({*files, _LIMITS_FILE}),
-            f"nominal {value:g} lies {'below' if value < low else 'above'} {side} {bound:g}",
+            f"nominal {_exact(value)} lies {'below' if value < low else 'above'} {side} {_exact(bound)}",
             "move the operating point inside [min_value, max_value], or widen the limits record",
         )
 
@@ -616,16 +753,20 @@ def _nominal_band(run: _Run) -> None:
 
 
 def _write_positions(document: dict[str, Any], positions: Mapping[str, _Position]) -> None:
+    """Write each wired device's computed slots that no source states."""
     for device in document.get("devices", []):
         position = positions.get(device["id"])
         if position is None:
             continue
-        device.update(model=position.model, s=position.s, length=position.length)
-        device["provenance"] = add_defaults(device.get("provenance", {}), ("model", "s", "length"))
+        values = {"model": position.model, "s": position.s, "length": position.length}
+        unstated = {slot: value for slot, value in values.items() if slot not in device}
+        device.update(unstated)
+        device["provenance"] = add_defaults(device.get("provenance", {}), unstated)
 
 
-def _write_ordinals(document: dict[str, Any]) -> None:
-    for device_id, ordinals in compute_ordinals(document.get("devices", [])).items():
+def _write_ordinals(document: dict[str, Any], periodic: Mapping[str, float]) -> None:
+    devices = document.get("devices", [])
+    for device_id, ordinals in compute_ordinals(devices, periodic=periodic).items():
         device = next(d for d in document["devices"] if d["id"] == device_id)
         device.update(ordinals)
         device["provenance"] = add_defaults(device.get("provenance", {}), ordinals)
@@ -649,16 +790,22 @@ def _list_texture(document: dict[str, Any]) -> None:
 # --- lookups derived from the records ------------------------------------------------
 
 
-def compute_ordinals(devices: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+def compute_ordinals(
+    devices: Iterable[Mapping[str, Any]], *, periodic: Mapping[str, float] | None = None
+) -> dict[str, dict[str, int]]:
     """Number each positioned device among its class, per place and per model.
 
     Only devices with a ``class`` and an ``s`` are numbered, from 1 in s order
     with ties broken by id. ``ordinalInPlace`` counts within (class, place)
     and is given only to a device with a place; ``ordinalInModel`` counts
-    within (class, model). No ordinal compares positions of two models.
+    within (class, model) and is given only to a device with a model. No
+    ordinal compares positions of two models. On a periodic model the s is
+    read modulo the deck's length, so a stated s past the end is numbered
+    where it is placed.
 
     Args:
-        devices: The device records, with ``model`` and ``s`` computed.
+        devices: The device records, with ``model`` and ``s`` computed or stated.
+        periodic: The deck length of each periodic model, by model name.
 
     Returns:
         ``{device id: {ordinalInPlace?, ordinalInModel}}`` for each numbered
@@ -669,8 +816,13 @@ def compute_ordinals(devices: Iterable[Mapping[str, Any]]) -> dict[str, dict[str
     for device in devices:
         if "s" not in device or "class" not in device:
             continue
-        key = (float(device["s"]), str(device["id"]))
-        by_model[(str(device["class"]), str(device["model"]))].append(key)
+        s = float(device["s"])
+        length_m = (periodic or {}).get(str(device.get("model")))
+        if length_m:
+            s %= length_m
+        key = (s, str(device["id"]))
+        if "model" in device:
+            by_model[(str(device["class"]), str(device["model"]))].append(key)
         if "place" in device:
             by_place[(str(device["class"]), str(device["place"]))].append(key)
     ordinals: dict[str, dict[str, int]] = defaultdict(dict)

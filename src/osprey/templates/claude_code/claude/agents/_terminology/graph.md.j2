@@ -39,9 +39,9 @@ nothing and returns zero rows rather than an error.
 
 Properties worth knowing:
 
-- **On a device:** `sourceName`, `sectionCode`, `placePath`, `system`,
-  `rawType`, `sPositionM`, `ordinalInPlace`, plus the free text
-  `familyDescription`, `systemDescription`
+- **On a device:** `deviceId` (the device's id), `placePath`, `sectionCode`,
+  `system`, `rawType`, `sPositionM`, `ordinalInPlace`, `sourceName`, plus the
+  free text `systemDescription`
 - **On a place:** `placePath`, `sectionCode`, and a `HASBINDING` edge to each
   channel that sits on the place itself. A query that means devices keeps
   `d.rawType IS NOT NULL`
@@ -60,8 +60,7 @@ with `ANY(l IN c.altLabel WHERE toLower(l) CONTAINS $term)`, never with `=`.
 `ChannelBinding.fullPv` is the address, whole and already formatted for the
 control system. Return it verbatim: never assemble an address out of
 `sectionCode`, `sourceName` and a signal name, and never adjust one you were
-given. Two devices can share a `sourceName` in different sections, so a device
-is identified by `sourceName` **and** `sectionCode` together.
+given. A device is identified by `deviceId`.
 
 ### Terminology Mapping
 
@@ -73,7 +72,7 @@ Operators use domain language. Map their terms to a graph query:
 | "all magnets" | `(:Class)-[:SUBCLASSOF*0..]->(:Class {uri: $parent_uri})` — name the parent class and let the hierarchy supply the kinds |
 | "readback" / "monitor" | Bindings with a `READSSIGNAL` edge and no `WRITESSIGNAL` |
 | "setpoint" / "control" | Bindings with a `WRITESSIGNAL` edge |
-| "in sector 3" / "in the storage ring" | `d.sectionCode` for the location, `d.system` for the accelerator system |
+| "in sector 3" / "in the booster" | `d.sectionCode` for the location, `d.system` for the accelerator system |
 | "in beamline order" | Order by `d.sPositionM`, then `d.ordinalInPlace` |
 | "what is this channel" | Reverse lookup: `MATCH (d:Resource)-[:HASBINDING]->(b:ChannelBinding {fullPv: $pv})` |
 

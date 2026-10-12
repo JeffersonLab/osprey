@@ -22,10 +22,7 @@ import os
 import pytest
 
 from osprey.mcp_server.control_system import target_state
-from osprey.mcp_server.control_system.connector_host_manager import (
-    _display_name,
-    target_display_metadata,
-)
+from osprey.mcp_server.control_system.connector_host_manager import target_display_metadata
 from osprey.mcp_server.control_system.target_eligibility import (
     ACK_LEAF,
     REASON_ALREADY_ACTIVE,
@@ -330,7 +327,7 @@ class TestCorrectBeforeAnySwitch:
         assert rows["va"]["real_machine"] == display["va"]["real_machine"] is False
         assert rows["live"]["real_machine"] == display["live"]["real_machine"]
         assert rows["live"]["label"] == display["live"]["label"]
-        assert rows["live"]["connector_type"].endswith("MockConnector")
+        assert rows["live"]["connector_type"].endswith("VAInProcessConnector")
 
     @pytest.mark.usefixtures("no_prober")
     async def test_writes_permitted_follows_the_deployment_posture_no_type_states(
@@ -1016,17 +1013,6 @@ class TestDisplayName:
         assert metadata["live"]["label"] == "live machine (not configured)"
         assert metadata["live"]["display_name"] == "Real machine"
 
-    def test_a_simulated_connector_is_a_demo(self):
-        """The branch mirrors the label's "live target on a simulated connector".
-
-        Asserted on the helper directly: :func:`resolve_target` never answers a
-        live-family target with a simulated type today, so the branch is
-        reachable only the way the label's own simulated branch is — kept so
-        the two names cannot diverge if that ever changes.
-        """
-        assert _display_name({}, "live", "mock") == "Demo"
-        assert _display_name({}, "live", "virtual_accelerator") == "Demo"
-
     def test_a_standin_that_fails_the_predicate_is_the_real_machine(self):
         """Same conjuncts as the parenthesis: no deployed stand-in, no Rehearsal."""
         metadata = target_display_metadata(standin_config(standin_port=None))
@@ -1245,21 +1231,19 @@ class TestLimitsPostureRows:
 
         assert [row["limits_strict"] for row in rows.values()] == [False, False]
 
-    def test_an_underivable_row_carries_the_deployment_wide_posture(self):
-        """``live`` on a mock deployment resolves to no type, so no block can answer.
+    def test_an_in_process_deployment_has_no_live_row(self):
+        """The simulator in process is its own baseline, ``va``; ``live`` names nothing.
 
-        The row is still there — the baseline always gets one — and the posture
-        it carries is the deployment-wide block, which is the only one such a
-        deployment has ever had. The simulator's own permissive block sits
-        beside it and does not answer for it.
+        So there is no ``live`` row to carry a posture, and the ``va`` row reads
+        the simulator's own block, not the deployment-wide one.
         """
         raw = {
             "control_system": {
-                "type": "mock",
+                "type": "virtual_accelerator",
                 "limits_checking": {"enabled": True, "mode": "exclusive"},
                 "connector": {
-                    "mock": {"probe_channel": LIVE_PROBE},
                     "virtual_accelerator": {
+                        "serving": "in_process",
                         "probe_channel": VA_PROBE,
                         "limits_checking": {"enabled": True, "mode": "optional"},
                     },
@@ -1268,8 +1252,8 @@ class TestLimitsPostureRows:
             "archiver": {"type": REAL_ARCHIVER},
         }
 
-        rows = control_target.target_rows(raw, control_target="live", baseline="live")
+        rows = control_target.target_rows(raw, control_target="va", baseline="va")
 
-        assert rows["live"]["endpoints"] == {}
-        assert rows["live"]["limits_strict"] is True
+        assert list(rows) == ["va"]
+        assert rows["va"]["endpoints"] == {}
         assert rows["va"]["limits_strict"] is False

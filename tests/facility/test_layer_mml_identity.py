@@ -97,7 +97,8 @@ def test_each_device_is_its_common_name_at_its_slot(spear3: Path) -> None:
         ao["BPMx"]["CommonNames"], ao["BPMx"]["Monitor"]["ChannelNames"], strict=True
     ):
         device = f"StorageRing/{name}"
-        assert devices[device]["names"] == [name]
+        assert devices[device]["label"] == name
+        assert "names" not in devices[device]
         assert channels[address.strip()]["on"] == {"device": device}
 
 
@@ -172,8 +173,8 @@ def test_a_family_folded_into_another_binds_that_family_s_devices(nsls2: Path) -
             assert [channels[address]["on"]["device"] for address, _ in bound] == [
                 device for _, device in bound
             ]
-    assert groups["BPMy"]["members"] == groups["BPMx"]["members"]
-    assert len(groups["BPMx"]["members"]) == 187
+    assert {"BPMx", "BPMy"} <= set(groups["BPM"]["names"])
+    assert len(groups["BPM"]["members"]) == 187
 
 
 def test_an_address_both_axes_of_one_device_bind_is_on_that_device(nsls2: Path) -> None:
@@ -447,17 +448,41 @@ def test_same_as_a_coordinate_the_named_family_lacks_is_invalid() -> None:
     )
 
 
-@pytest.mark.parametrize("answer", ["address", ("A", "B", "C")])
-def test_same_as_a_row_the_named_family_states_for_two_devices_is_invalid(answer: Any) -> None:
+@pytest.mark.parametrize(
+    ("answer", "names"),
+    [
+        ("address", []),
+        (("A", "B", "C"), []),
+        ("names", ["A", "B", "C"]),
+        (None, ["A", "B", "C"]),
+    ],
+)
+def test_same_as_a_row_the_named_family_states_for_two_devices_is_invalid(
+    answer: Any, names: list[str]
+) -> None:
     views = [
-        _listed("Up", "P", [], ["Up:A:X", "Up:B:X", "Up:C:X"], [[1, 1], [1, 1], [2, 1]]),
+        _listed("Up", "P", names, ["Up:A:X", "Up:B:X", "Up:C:X"], [[1, 1], [1, 1], [2, 1]]),
         _listed("Up", "Q", [], ["Up:A:Y"], [[1, 1]]),
     ]
-    stop = _stop(views, {"P": answer, "Q": SameAs("P")})
+    devices: dict[str, Any] = {"Q": SameAs("P")}
+    if answer is not None:
+        devices["P"] = answer
+    stop = _stop(views, devices)
     assert stop.format_message() == (
         "import mml: mapping-invalid: families.Q.devices: "
         "P states [1, 1] at slots that are different devices"
     )
+
+
+def test_same_as_a_row_the_named_family_states_twice_under_one_name_is_matched() -> None:
+    views = [
+        _listed(
+            "Up", "P", ["A", "A", "C"], ["Up:A:X", "Up:B:X", "Up:C:X"], [[1, 1], [1, 1], [2, 1]]
+        ),
+        _listed("Up", "Q", [], ["Up:A:Y"], [[1, 1]]),
+    ]
+    ids = device_ids(views, {"Up": "First"}, {"P": "names", "Q": SameAs("P")})
+    assert ids[1] == ["First/A"]
 
 
 def test_families_binding_the_two_axes_of_one_address_are_twins() -> None:

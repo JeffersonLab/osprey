@@ -8,7 +8,8 @@ A stage runs only when every earlier stage is clean::
     S3 schema      the combined file against the generated model
     S4 references  every id a record names exists; device classes and
                    signal roles are known
-    S5 records     pair, value, limits and seed rules
+    S5 records     pair (stated, or derived by the build), value, limits
+                   and seed rules
     S6 compute     spans, places, wiring, engines          (later stages)
     S7 views       the views the profile asks for          (later stages)
 
@@ -40,7 +41,7 @@ import click
 
 from osprey.facility import fold_code
 from osprey.facility.combine import FIXES_FILE, CombineResult, combine
-from osprey.facility.errors import FacilityBuildError, quoted_slots
+from osprey.facility.errors import FacilityBuildError, FacilityBuildWarning, quoted_slots
 from osprey.facility.scenarios import FaultRoster, fault_roster, map_fault_errors
 from osprey.facility.sources import Sources, load_sources
 
@@ -60,12 +61,15 @@ __all__ = [
     "ordered_slots",
     "paired_nominal_error",
     "report",
+    "report_warnings",
     "run_stages",
     "schema_document",
     "signal_roles",
     "sort_errors",
     "stale_scenarios",
     "stating_files",
+    "tolerance_bound",
+    "tolerance_warnings",
     "validate",
     "vocabulary",
 ]
@@ -82,14 +86,18 @@ STAGES: tuple[str, ...] = (
 )
 
 #: The header of the combined facility file.
-FACILITY_HEADER = "osprey.facility.facility/1"
+FACILITY_HEADER = "osprey.facility.facility/3"
 
 #: The multivalued slots that are sets: compared and written sorted by string form.
 SET_VALUED_SLOTS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("Place", "names"),
+        ("Device", "names"),
+        ("Channel", "names"),
         ("Channel", "tags"),
         ("Channel", "former_addresses"),
         ("Channel", "endpoint_of"),
+        ("Group", "names"),
         ("Group", "members"),
         ("Device", "groups"),
         ("Measurement", "kinds"),
@@ -131,7 +139,14 @@ _MAX_PRECISION = 17
 _NUMERIC_TYPES = ("float", "int")
 _LIMIT_BOUNDS = ("min_value", "max_value", "max_step")
 _MOTION = ("noise", "drift")
-_STUCK = "stuck"
+#: The two terms a ``noise`` record states exactly one of.
+_NOISE_TERMS = ("absolute", "relative")
+_RELATIVE = "relative"
+_RELATIVE_NOMINAL = (
+    "a relative `noise` is taken of the seed's `nominal`, which this seed does not state"
+)
+#: The ``still`` value that stills every reading.
+_STILL_ALL = "all"
 
 
 # --- stage results ---------------------------------------------------------------
@@ -148,6 +163,8 @@ class Validated:
         combined: What S2 combined.
         document: The combined file with its header and identity, the shape
             S3 validated; set once S2 is clean.
+        warnings: The warnings the stages found, in the order found; a stage
+            appends, none removes.
     """
 
     facility_dir: Path
@@ -155,6 +172,7 @@ class Validated:
     sources: Sources | None = None
     combined: CombineResult | None = None
     document: dict[str, Any] | None = None
+    warnings: list[FacilityBuildWarning] = field(default_factory=list)
 
 
 #: A later stage: reads what the earlier stages produced, returns its errors.
@@ -283,8 +301,24 @@ def report(errors: Iterable[FacilityBuildError], file: IO[Any] | None = None) ->
             click.echo(error.format_message(), file=file)
 
 
+def report_warnings(warnings: Iterable[FacilityBuildWarning], file: IO[Any] | None = None) -> None:
+    """Print each warning's line, to stderr unless a stream is given.
+
+    Args:
+        warnings: The warnings, in print order.
+        file: The stream to write to.
+    """
+    for warning in warnings:
+        if file is None:
+            click.echo(warning.line, err=True)
+        else:
+            click.echo(warning.line, file=file)
+
+
 def validate(facility_dir: Path, *, project_name: str, file: IO[Any] | None = None) -> int:
     """Check a facility directory and print every error of the first failing stage.
+
+    A clean directory prints the warnings of its build instead.
 
     Args:
         facility_dir: The ``data/facility`` directory.
@@ -298,6 +332,8 @@ def validate(facility_dir: Path, *, project_name: str, file: IO[Any] | None = No
 
     result = run_stages(facility_dir, project_name=project_name, later=LATER_STAGES)
     report(result.errors, file)
+    if result.ok:
+        report_warnings(result.validated.warnings, file)
     return 0 if result.ok else 1
 
 
@@ -449,7 +485,7 @@ def _mapping_of_depth(value: Any, depth: int) -> bool:
 
 
 #: The tags pydantic appends to a location for each member of a union.
-_UNION_TAGS = frozenset({"str", "float", "int", "bool", "SignalSentence", "LinearTerm"})
+_UNION_TAGS = frozenset({"str", "float", "int", "bool", "LinearTerm"})
 
 
 def _path(loc: Sequence[Any]) -> tuple[Any, ...]:
@@ -725,6 +761,9 @@ class _References:
             if "place" in device:
                 files = stating_files(device, "place")
                 yield from self._missing("device", did, files, "place", "place", device["place"])
+            if "model" in device:
+                files = stating_files(device, "model")
+                yield from self._missing("device", did, files, "model", "model", device["model"])
             cls = device.get("class")
             if cls is not None and cls not in known:
                 yield FacilityBuildError(
@@ -837,6 +876,17 @@ class _References:
                 block = scenario.get(slot)
                 for address in sorted(block if isinstance(block, dict) else (), key=str):
                     yield from self._missing("scenario", name, files, slot, "channel", address)
+            still = scenario.get("still")
+            listed = still if isinstance(still, list) else ()
+            for address in sorted({entry for entry in listed if isinstance(entry, str)}):
+                yield from self._missing("scenario", name, files, "still", "channel", address)
+            channel_faults = scenario.get("channel_faults")
+            for address in sorted(
+                channel_faults if isinstance(channel_faults, dict) else (), key=str
+            ):
+                yield from self._missing(
+                    "scenario", name, files, "channel_faults", "channel", address
+                )
             faults = scenario.get("faults")
             if not isinstance(faults, dict):
                 continue
@@ -938,6 +988,8 @@ def _provenance_defaults(record: Mapping[str, Any]) -> list[str]:
 def check_records(document: Mapping[str, Any]) -> list[FacilityBuildError]:
     """Check the pair, value, limits and seed rules (stage S5).
 
+    The pair is the one a source states, or the one the build derived.
+
     Runs only on a file whose references resolve. The stops are
     ``pair-invalid``, ``value-invalid``, ``limit-invalid`` and ``seed-invalid``
     (all but the nominal band, which needs the computed operating point).
@@ -970,6 +1022,9 @@ class _Records:
             yield from self._seed(address, channel)
         yield from self._linear_cycles()
         yield from self._pairs()
+        for address, channel in sorted(self.index.channels.items()):
+            if "tolerance" in channel and address not in self.broken:
+                yield from self._tolerance(address, channel)
         yield from self._wiring()
         yield from self._limits()
         yield from self._scenarios()
@@ -1103,6 +1158,8 @@ class _Records:
                     )
             if "linear" in seed:
                 yield from self._linear(address, seed, files)
+            if isinstance(seed.get("noise"), dict):
+                yield from self._noise_record(address, seed, files)
             motion = [key for key in _MOTION if key in seed]
             if role == "setpoint" and motion:
                 yield self._error(
@@ -1115,6 +1172,31 @@ class _Records:
                 )
         if "nominal" in seed and "linear" not in seed:
             yield from self._nominal(address, seed["nominal"], files)
+
+    def _noise_record(
+        self, address: str, seed: Mapping[str, Any], files: list[str]
+    ) -> Iterator[FacilityBuildError]:
+        """A seed's ``noise`` states one term; a relative one needs the seed's ``nominal``."""
+        stated = [term for term in _NOISE_TERMS if term in seed["noise"]]
+        if len(stated) != 1:
+            yield self._error(
+                "value-invalid",
+                "channel",
+                address,
+                files,
+                f"`noise` states {_terms_stated(list(seed['noise']))}",
+                "write `noise: {absolute: <sigma>}` or `noise: {relative: <fraction>}`",
+            )
+            return
+        if stated == [_RELATIVE] and not _numeric(seed.get("nominal")):
+            yield self._error(
+                "seed-invalid",
+                "channel",
+                address,
+                files,
+                _RELATIVE_NOMINAL,
+                "state `absolute`, or give the seed a `nominal`",
+            )
 
     def _nominal(
         self, address: str, nominal: Any, files: list[str]
@@ -1262,7 +1344,11 @@ class _Records:
                 address,
                 files,
                 f"`pair` names {target_role} channel {pair}",
-                "name a readback, or remove `pair` to pair the setpoint with itself",
+                _pair_remedy(
+                    address,
+                    channel,
+                    "name a readback, or remove `pair` to pair the setpoint with itself",
+                ),
             )
             return
         differing = [
@@ -1277,7 +1363,11 @@ class _Records:
                 address,
                 files,
                 f"setpoint and pair {pair} differ in {quoted_slots(differing)}",
-                f"give {address} and {pair} the same {quoted_slots(differing)}",
+                _pair_remedy(
+                    address,
+                    channel,
+                    f"give {address} and {pair} the same {quoted_slots(differing)}",
+                ),
             )
             return
         own = self.index.wired.get(address, set())
@@ -1290,7 +1380,7 @@ class _Records:
                 files,
                 f"model {', '.join(sorted(own))} wires the setpoint and model "
                 f"{', '.join(sorted(theirs))} its pair {pair}",
-                "wire the setpoint and its pair in the same model",
+                _pair_remedy(address, channel, "wire the setpoint and its pair in the same model"),
             )
             return
         yield from self._paired_seed(address, pair)
@@ -1324,7 +1414,80 @@ class _Records:
                 setpoint,
                 theirs,
                 self._seed_files(self.index.channels[readback]),
+                derived=_derived_pair(self.index.channels[setpoint]),
             )
+
+    # --- tolerance -----------------------------------------------------------------
+
+    def _tolerance(self, address: str, channel: Mapping[str, Any]) -> Iterator[FacilityBuildError]:
+        """A setpoint's ``tolerance``: its slot, its record, and its readback's motion inside it."""
+        files = stating_files(channel, "tolerance")
+        role = channel.get("role", "readback")
+        value_type = self._type(address)
+        problem: str | None = None
+        remedy = ""
+        pair = str(channel.get("pair", address))
+        unit = channel.get("unit")
+        record = channel["tolerance"]
+        stated = [term for term in _NOISE_TERMS if term in record]
+        if role != "setpoint" or value_type != "float":
+            problem = f"a `tolerance` on a {value_type if role == 'setpoint' else role} channel"
+            remedy = "remove `tolerance`; only a float setpoint carries one"
+        elif not unit:
+            problem = "a `tolerance` on a channel that states no `unit`"
+            remedy = "state the channel's `unit`; the tolerance is in it"
+        elif pair != address and self.index.channels[pair].get("unit") != unit:
+            theirs = self.index.channels[pair].get("unit")
+            problem = f"`unit` {unit} differs from its pair {pair}'s {theirs}"
+            remedy = f"give {address} and {pair} the same `unit`; the tolerance is in it"
+        elif len(stated) != 1:
+            problem = f"`tolerance` states {_terms_stated(list(record))}"
+            remedy = "write `tolerance: {absolute: <x>}` or `tolerance: {relative: <fraction>}`"
+        elif not _finite(record[stated[0]]):
+            problem = f"`tolerance.{stated[0]}` is {record[stated[0]]!r}, not a finite number"
+            remedy = "write `tolerance: {absolute: <x>}` or `tolerance: {relative: <fraction>}`"
+        if problem is not None:
+            yield self._error("value-invalid", "channel", address, files, problem, remedy)
+            return
+        seed = channel.get("simulation")
+        nominal = seed.get("nominal") if isinstance(seed, dict) else None
+        if stated == [_RELATIVE] and not _numeric(nominal):
+            yield self._error(
+                "value-invalid",
+                "channel",
+                address,
+                files,
+                "a relative `tolerance` is taken of the setpoint's seed `nominal`, which it does "
+                "not state",
+                "state `absolute`, or give the setpoint a seed `nominal`",
+            )
+            return
+        yield from self._seed_inside_tolerance(address, pair, str(unit), files)
+
+    def _seed_inside_tolerance(
+        self, setpoint: str, readback: str, unit: str, files: list[str]
+    ) -> Iterator[FacilityBuildError]:
+        """The readback's declared motion stays inside its setpoint's tolerance."""
+        from osprey_connectors.simulation.envelope import motion_envelope
+
+        channel = self.index.channels[setpoint]
+        bound = tolerance_bound(channel)
+        readback_channel = self.index.channels[readback]
+        try:
+            envelope = motion_envelope(readback_channel.get("simulation"))
+        except ValueError:
+            return
+        if bound is None or envelope <= bound:
+            return
+        yield self._error(
+            "seed-invalid",
+            "channel",
+            setpoint,
+            sorted({*files, *self._seed_files(readback_channel)}),
+            f"the simulated readback {readback} moves up to {envelope:g} {unit}, more than "
+            f"{setpoint} settles within ({bound:g} {unit})",
+            "lower the seed's `noise`/`drift`, or widen `tolerance`",
+        )
 
     # --- wiring --------------------------------------------------------------------
 
@@ -1451,12 +1614,156 @@ class _Records:
             overrides = scenario.get("overrides") or {}
             for address, value in sorted(overrides.items(), key=lambda kv: str(kv[0])):
                 yield from self._override(name, files, str(address), value, records)
+            noise = scenario.get("noise")
+            for address, entry in sorted(
+                noise.items() if isinstance(noise, dict) else (), key=lambda kv: str(kv[0])
+            ):
+                yield from self._scenario_noise(name, files, str(address), entry)
+            yield from self._still(name, files, scenario)
+            yield from self._channel_faults(name, files, scenario.get("channel_faults"))
             faults = scenario.get("faults") or {}
             for model, targets in sorted(faults.items(), key=lambda kv: str(kv[0])):
                 for address, value in sorted(targets.items(), key=lambda kv: str(kv[0])):
                     if str(address) not in self.index.channels:
                         continue
                     yield from self._fault(name, files, str(model), str(address), value, records)
+
+    def _still(
+        self, name: str, files: list[str], scenario: Mapping[str, Any]
+    ) -> Iterator[FacilityBuildError]:
+        """A scenario's ``still``: ``all`` or float readings, none of whose motion it sets."""
+        still = scenario.get("still")
+        if still is None:
+            return
+        if still != _STILL_ALL and (
+            not isinstance(still, list)
+            or not still
+            or not all(isinstance(address, str) for address in still)
+        ):
+            yield self._error(
+                "value-invalid",
+                "scenario",
+                name,
+                files,
+                f"`still` is {still!r}, neither `{_STILL_ALL}` nor a list of addresses",
+                f"write `still: {_STILL_ALL}` or a list of addresses",
+            )
+            return
+        stilled = set() if still == _STILL_ALL else set(still)
+        for address in sorted(stilled):
+            if address in self.index.channels and self._type(address) != "float":
+                yield self._error(
+                    "value-invalid",
+                    "scenario",
+                    name,
+                    files,
+                    f"`still` lists {address}, a {self._type(address)} channel",
+                    f"remove {address} from `still`; only a float reading moves",
+                )
+        for slot in ("noise", "couple"):
+            block = scenario.get(slot)
+            for address in sorted(block if isinstance(block, dict) else (), key=str):
+                if still == _STILL_ALL or str(address) in stilled:
+                    yield self._error(
+                        "value-invalid",
+                        "scenario",
+                        name,
+                        files,
+                        f"`{slot}.{address}` sets the motion of a reading `still` stills",
+                        "a scenario either stills a reading or sets its motion",
+                    )
+
+    def _channel_faults(
+        self, name: str, files: list[str], block: Any
+    ) -> Iterator[FacilityBuildError]:
+        """A scenario's ``channel_faults``: each a fault word on a channel of its roles."""
+        from osprey_connectors.simulation.channel_faults import CHANNEL_FAULTS
+
+        if block is None:
+            return
+        if not isinstance(block, dict) or not all(
+            isinstance(address, str) and isinstance(word, str) for address, word in block.items()
+        ):
+            yield self._error(
+                "value-invalid",
+                "scenario",
+                name,
+                files,
+                f"`channel_faults` is {block!r}, not a mapping of address to fault",
+                "write `channel_faults: {<address>: stuck | frozen | disconnected}`",
+            )
+            return
+        for address, word in sorted(block.items()):
+            slot = f"channel_faults.{address}"
+            fault = CHANNEL_FAULTS.get(word)
+            if fault is None:
+                yield self._error(
+                    "value-invalid",
+                    "scenario",
+                    name,
+                    files,
+                    f"`{slot}` is `{word}`",
+                    "write one of " + ", ".join(f"`{known}`" for known in CHANNEL_FAULTS),
+                )
+                continue
+            if address not in self.index.channels:
+                continue
+            role = self.index.channels[address].get("role", "readback")
+            if role not in fault.roles:
+                yield self._error(
+                    "value-invalid",
+                    "scenario",
+                    name,
+                    files,
+                    f"`{slot}` is `{word}` on a {role} channel",
+                    "`stuck` faults a setpoint, `frozen` a reading, `disconnected` any channel",
+                )
+
+    def _scenario_noise(
+        self, name: str, files: list[str], address: str, entry: Any
+    ) -> Iterator[FacilityBuildError]:
+        """A scenario's noise record for one channel, in the seed's grammar."""
+        slot = f"noise.{address}"
+        legacy = [key for key in ("noise", "noise_abs") if isinstance(entry, dict) and key in entry]
+        if not isinstance(entry, dict) or legacy:
+            yield self._error(
+                "value-invalid",
+                "scenario",
+                name,
+                files,
+                f"`{slot}` states {quoted_slots(legacy)}"
+                if legacy
+                else f"`{slot}` is {entry!r}, not a noise record",
+                f"write `{address}: {{absolute: <sigma>}}`",
+            )
+            return
+        stated = [term for term in _NOISE_TERMS if term in entry]
+        problem = None
+        if len(stated) != 1 or len(entry) != 1:
+            problem = f"`{slot}` states {_terms_stated(list(entry))}"
+        elif not _finite(entry[stated[0]]) or entry[stated[0]] < 0:
+            problem = f"`{slot}.{stated[0]}` is {entry[stated[0]]!r}, not a finite number >= 0"
+        if problem is not None:
+            yield self._error(
+                "value-invalid",
+                "scenario",
+                name,
+                files,
+                problem,
+                f"write `{address}: {{absolute: <sigma>}}` or `{address}: {{relative: <fraction>}}`",
+            )
+            return
+        seed = self.index.channels[address].get("simulation")
+        nominal = seed.get("nominal") if isinstance(seed, dict) else None
+        if stated == [_RELATIVE] and not _numeric(nominal):
+            yield self._error(
+                "seed-invalid",
+                "scenario",
+                name,
+                files,
+                f"`{slot}`: {_RELATIVE_NOMINAL}",
+                "state `absolute`, or give the seed a `nominal`",
+            )
 
     def _override(
         self,
@@ -1540,18 +1847,18 @@ class _Records:
         value: Any,
         records: Mapping[str, Mapping[str, Any]],
     ) -> Iterator[FacilityBuildError]:
+        from osprey_connectors.simulation.channel_faults import STUCK
+
         slot = f"faults.{model}.{address}"
-        if value == _STUCK:
-            role = self.index.channels[address].get("role", "readback")
-            if role != "setpoint":
-                yield self._error(
-                    "value-invalid",
-                    "scenario",
-                    name,
-                    files,
-                    f"`{slot}` is `stuck` on a {role} channel",
-                    "fault a setpoint with `stuck`, or write a value",
-                )
+        if value == STUCK:
+            yield self._error(
+                "value-invalid",
+                "scenario",
+                name,
+                files,
+                f"`{slot}` is `{STUCK}`",
+                f"move it to `channel_faults: {{{address}: {STUCK}}}`",
+            )
             return
         if isinstance(value, dict):
             roster = self._roster(model)
@@ -1703,7 +2010,13 @@ def _locked(record: Mapping[str, Any]) -> bool:
 
 
 def paired_nominal_error(
-    readback: str, nominal: Any, setpoint: str, theirs: Any, files: Sequence[str]
+    readback: str,
+    nominal: Any,
+    setpoint: str,
+    theirs: Any,
+    files: Sequence[str],
+    *,
+    derived: bool = False,
 ) -> FacilityBuildError:
     """The stop for a paired readback whose ``nominal`` is not its setpoint's value.
 
@@ -1713,18 +2026,39 @@ def paired_nominal_error(
         setpoint: The address of the setpoint it pairs with.
         theirs: The setpoint's start value.
         files: The files that state the readback's seed.
+        derived: True when the build derived the pair, so the remedy also names
+            the explicit way out.
 
     Returns:
         A ``seed-invalid`` line naming the readback.
     """
+    remedy = f"remove `nominal` from {readback}; a paired readback starts at its setpoint's value"
+    if derived:
+        remedy += _UNPAIR.format(address=setpoint)
     return FacilityBuildError(
         "seed-invalid",
         readback,
         files,
-        f"remove `nominal` from {readback}; a paired readback starts at its setpoint's value",
+        remedy,
         record_kind="channel",
         detail=f"`nominal` {nominal} differs from its setpoint {setpoint}'s {theirs}",
     )
+
+
+#: The remedy's tail for a pair the build derived: the explicit way out.
+_UNPAIR = "; or state `pair: {address}` on {address} to leave it unpaired"
+
+
+def _derived_pair(channel: Mapping[str, Any]) -> bool:
+    """True when the build derived a setpoint's ``pair``."""
+    provenance = channel.get("provenance")
+    defaults = provenance.get("defaults", []) if isinstance(provenance, dict) else []
+    return "pair" in defaults
+
+
+def _pair_remedy(address: str, channel: Mapping[str, Any], remedy: str) -> str:
+    """A pair stop's remedy, naming the explicit way out when the pair is derived."""
+    return remedy + _UNPAIR.format(address=address) if _derived_pair(channel) else remedy
 
 
 def _single_pass(model: Mapping[str, Any]) -> bool:
@@ -1770,6 +2104,120 @@ def _clamp_problem(clamp: Any) -> str | None:
     if low is not None and high is not None and low > high:
         return f"`clamp` low {low} is above high {high}"
     return None
+
+
+#: The most setpoint addresses a lane's tolerance warning lists.
+_WARNED_ADDRESSES = 10
+
+
+def tolerance_warnings(
+    document: Mapping[str, Any], lanes: Sequence[tuple[str, bool, float]]
+) -> list[str]:
+    """What a render's Bluesky lanes should know about the declared tolerances.
+
+    Two kinds of warning, each one string: a scenario that, active on its own,
+    moves a toleranced setpoint's readback beyond the tolerance, so its moves
+    time out while it is active; and, per lane that does not serve the
+    simulator, the count of float setpoints that declare no ``tolerance`` and
+    so settle within the lane's floor, the first line followed by up to
+    :data:`_WARNED_ADDRESSES` of their addresses, one per line.
+
+    Args:
+        document: The facility file.
+        lanes: Each lane as ``(service key, serves the simulator, floor)``.
+
+    Returns:
+        The warnings, scenario lines first.
+    """
+    from osprey_connectors.simulation.envelope import active_envelopes
+
+    channels = _by_key(document.get("channels"), "id")
+    seeds = {
+        address: channel["simulation"]
+        for address, channel in channels.items()
+        if isinstance(channel.get("simulation"), Mapping)
+    }
+    scenarios = {
+        str(scenario["name"]): scenario
+        for scenario in document.get("scenarios") or []
+        if isinstance(scenario, Mapping) and "name" in scenario
+    }
+    toleranced = {
+        address: bound
+        for address, channel in sorted(channels.items())
+        if (bound := tolerance_bound(channel)) is not None
+    }
+    lines: list[str] = []
+    for name in sorted(scenarios):
+        envelopes = active_envelopes(seeds, scenarios, [name])
+        for setpoint, bound in toleranced.items():
+            channel = channels[setpoint]
+            readback = str(channel.get("pair", setpoint))
+            envelope = envelopes.get(readback, 0.0)
+            if envelope > bound:
+                unit = channel.get("unit", "")
+                lines.append(
+                    f"scenario {name} moves {readback} up to {envelope:g} {unit}, beyond "
+                    f"{setpoint}'s tolerance {bound:g} {unit}; its moves time out while it is "
+                    "active"
+                )
+    bare = [
+        address
+        for address, channel in sorted(channels.items())
+        if channel.get("role") == "setpoint"
+        and channel.get("value_type", "float") == "float"
+        and not channel.get("tolerance")
+    ]
+    for key, simulated, floor in lanes:
+        if simulated or not bare:
+            continue
+        listed = "".join(f"\n{address}" for address in bare[:_WARNED_ADDRESSES])
+        more = len(bare) - _WARNED_ADDRESSES
+        lines.append(
+            f"{len(bare)} setpoints declare no `tolerance`; on lane {key} they settle within the "
+            f"floor {floor:g}{listed}" + (f"\nand {more} more" if more > 0 else "")
+        )
+    return lines
+
+
+def tolerance_bound(channel: Mapping[str, Any]) -> float | None:
+    """A setpoint's tolerance in its unit at its operating point.
+
+    Args:
+        channel: A setpoint channel record.
+
+    Returns:
+        ``absolute``, or ``relative`` times ``|nominal|`` of the setpoint's
+        seed; None when the channel states no tolerance or a relative one
+        without a numeric ``nominal``.
+    """
+    record = channel.get("tolerance")
+    if not isinstance(record, Mapping):
+        return None
+    if "absolute" in record:
+        return abs(float(record["absolute"]))
+    seed = channel.get("simulation")
+    nominal = seed.get("nominal") if isinstance(seed, Mapping) else None
+    if not _numeric(nominal):
+        nominal = None
+    if _RELATIVE not in record or nominal is None:
+        return None
+    return abs(float(record[_RELATIVE])) * abs(float(nominal))
+
+
+def _terms_stated(keys: Sequence[str]) -> str:
+    """What a noise record states other than exactly one term, for its error line."""
+    unknown = [str(key) for key in keys if key not in _NOISE_TERMS]
+    if unknown:
+        return f"{quoted_slots(unknown)}, not `absolute` or `relative`"
+    if not keys:
+        return "neither `absolute` nor `relative`"
+    return "both `absolute` and `relative`"
+
+
+def _numeric(value: Any) -> bool:
+    """A real number other than a bool."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
 
 
 def _finite(value: Any) -> bool:

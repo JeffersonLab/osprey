@@ -8,21 +8,27 @@ comparison relies on: the fingerprint's size, role split and pinned sha256,
 the in_context size, the standalone address set, the limits projection and
 the byte identity of the pre-LINE channel-finder index copies.
 
+The copies are read to prove nothing was lost, never to fix the index's shape.
 The parity tests hold the hierarchical and middle-layer views, called as pure
 functions on the shared control-assistant build's facility file, to those
-copies: the same address set less the declared fingerprint additions, the
-machine, system and family descriptions reachable, every benchmark target
-indexed, each copy's Family with an equal ``DeviceList``, and no fewer
-benchmark queries answerable by whole index cells than the copies answer. The in_context view,
+copies: the same address set plus the declared fingerprint additions each
+view files (the middle-layer view files the transfer line's, which its
+devices hold, and leaves out those bound only to a place), the
+machine, system and family descriptions kept, every field and subfield
+sentence on the channels it described, every benchmark target indexed, and no
+fewer benchmark queries answerable by whole index cells than the copies answer. The in_context view,
 called the same way, holds the in_context golden's address set, and every
 in_context benchmark target is one of its rows. Each query file is checked
-against the indexes its pipeline scores.
+against the indexes its pipeline scores. The transfer line, which has no copy,
+is held to the Families and the ``DeviceList`` and ``PlaceList`` entries its
+records derive.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from functools import cache
@@ -170,23 +176,6 @@ def hierarchical_subtrees(index: dict[str, Any]) -> list[list[frozenset[str]]]:
     return subtrees
 
 
-def hierarchical_descriptions(index: dict[str, Any]) -> set[str]:
-    """The ``_description`` of every node of a hierarchical index above its leaves."""
-    depth = len(index["hierarchy"]["levels"])
-    found: set[str] = set()
-
-    def walk(node: dict[str, Any], level: int) -> None:
-        if level == depth:
-            return
-        for _key, child in _children(node):
-            if child.get("_description"):
-                found.add(child["_description"])
-            walk(child, level + 1)
-
-    walk(index["tree"], 1)
-    return found
-
-
 def middle_layer_cells(index: dict[str, Any]) -> list[frozenset[str]]:
     """The address set of every ``ChannelNames`` list of a middle-layer index."""
     cells: list[frozenset[str]] = []
@@ -248,6 +237,37 @@ def golden_family_descriptions() -> dict[tuple[str, str], str]:
         for _system, system_node in _children(machine_node)
         for family, node in _children(system_node)
     }
+
+
+def golden_leaf_sentences() -> dict[str, tuple[str, str]]:
+    """Each pre-LINE leaf's (field sentence, subfield sentence) by address.
+
+    A leaf of the hierarchical copy sits at machine/system/family/device
+    instance/field/subfield; the field and subfield nodes carry the sentences.
+    """
+    index = pre_line_index("hierarchical")
+    pattern = index["hierarchy"]["naming_pattern"]
+    out: dict[str, tuple[str, str]] = {}
+    for ring, ring_node in _children(index["tree"]):
+        for system, system_node in _children(ring_node):
+            for family, family_node in _children(system_node):
+                for _key, container in _children(family_node):
+                    for device in _instances(container["_expansion"]):
+                        for field, field_node in _children(container):
+                            for subfield, leaf in _children(field_node):
+                                address = leaf.get("_channel_part") or pattern.format(
+                                    ring=ring,
+                                    system=system,
+                                    family=family,
+                                    device=device,
+                                    field=field,
+                                    subfield=subfield,
+                                )
+                                out[address] = (
+                                    field_node["_description"],
+                                    leaf["_description"],
+                                )
+    return out
 
 
 def golden_system_descriptions() -> dict[tuple[str, str], str]:
@@ -410,13 +430,52 @@ def test_the_pre_line_copies_describe_three_machines_and_28_families() -> None:
     } == set(families)
 
 
+def test_the_pre_line_copy_holds_161_field_sentences() -> None:
+    sentences = golden_leaf_sentences()
+    assert set(sentences) == fingerprint_addresses()
+    assert len({sentence for pair in sentences.values() for sentence in pair}) == 161
+
+
+@pytest.mark.slow
+def test_every_pre_line_field_sentence_survives_on_its_channels(
+    built_control_assistant: BuiltProject,
+) -> None:
+    from osprey.facility.validate import vocabulary
+
+    roles = {row["name"]: row.get("description") for row in vocabulary()["signal_roles"]}
+    channels = {channel["id"]: channel for channel in built_control_assistant.facility["channels"]}
+    lost = [
+        (address, sentence)
+        for address, pair in golden_leaf_sentences().items()
+        for sentence in pair
+        if sentence not in channels[address]["description"]
+        and sentence != roles.get(channels[address].get("signal"))
+    ]
+    assert lost == []
+
+
+@pytest.mark.slow
+def test_every_pre_line_family_description_survives_on_a_group_or_its_devices(
+    built_control_assistant: BuiltProject,
+) -> None:
+    facility = built_control_assistant.facility
+    groups = {group["description"] for group in facility["groups"] if "description" in group}
+    devices = facility["devices"]
+    for family, description in golden_family_descriptions().items():
+        if description in groups:
+            continue
+        holders = [device for device in devices if device.get("description") == description]
+        assert holders, family
+        assert all(device["id"].startswith(f"{family[0]}/") for device in holders), family
+
+
 @pytest.mark.slow
 def test_the_hierarchical_view_holds_the_pre_line_addresses(
     hierarchical_view: dict[str, Any],
 ) -> None:
     golden = {address for _path, address in hierarchical_leaves(pre_line_index("hierarchical"))}
     view = {address for _path, address in hierarchical_leaves(hierarchical_view)}
-    assert view - addition_addresses() == golden
+    assert view == golden | addition_addresses()
 
 
 @pytest.mark.slow
@@ -425,7 +484,8 @@ def test_the_middle_layer_view_holds_the_pre_line_addresses(
 ) -> None:
     golden = set().union(*middle_layer_cells(pre_line_index("middle_layer")))
     view = set().union(*middle_layer_cells(middle_layer_view))
-    assert view - addition_addresses() == golden
+    line = {address for address in addition_addresses() if address.startswith("LINE:")}
+    assert view == golden | line
 
 
 @pytest.mark.slow
@@ -441,18 +501,18 @@ def test_the_hierarchical_view_keeps_the_machine_and_family_descriptions(
     machines = {key: node.get("_description") for key, node in _children(hierarchical_view["tree"])}
     for machine, description in golden_machine_descriptions().items():
         assert machines[machine] == description, machine
-    reachable = hierarchical_descriptions(hierarchical_view)
-    for family, description in golden_family_descriptions().items():
-        assert description in reachable, family
 
 
 @pytest.mark.slow
 def test_the_middle_layer_view_keeps_the_machine_and_family_descriptions(
-    middle_layer_view: dict[str, Any],
+    built_control_assistant: BuiltProject, middle_layer_view: dict[str, Any]
 ) -> None:
+    kept = {group["id"] for group in built_control_assistant.facility["groups"]}
     for machine, description in golden_machine_descriptions().items():
         assert middle_layer_view[machine]["_description"] == description, machine
     for (system, family), description in golden_family_descriptions().items():
+        if f"{system}/{family}" not in kept:
+            continue
         assert middle_layer_view[system][family]["_description"] == description, (system, family)
 
 
@@ -487,11 +547,115 @@ def test_every_in_context_benchmark_target_is_an_in_context_row(
         assert set(query["targeted_pv"]) <= rows, query["user_query"]
 
 
+def _digit_key(text: str) -> list[tuple[int, int | str]]:
+    """``text`` split into digit runs compared as numbers and other runs compared as text."""
+    return [(0, int(run)) if run.isdigit() else (1, run) for run in re.split(r"(\d+)", text) if run]
+
+
+def _sibling_indices(facility: dict[str, Any]) -> dict[str, int]:
+    """Each place's 1-based rank among same-level siblings, for a place that has siblings."""
+    lowest: dict[str, float] = {}
+    for device in facility["devices"]:
+        parts = str(device.get("place") or "").split("/")
+        for depth in range(1, len(parts) + 1):
+            if "s" in device and parts[0]:
+                key = "/".join(parts[:depth])
+                lowest[key] = min(lowest.get(key, device["s"]), device["s"])
+    siblings: dict[tuple[str, Any], list[str]] = defaultdict(list)
+    for place in facility["places"]:
+        if "/" in place["id"]:
+            siblings[(place["id"].rsplit("/", 1)[0], place.get("level"))].append(place["id"])
+    index: dict[str, int] = {}
+    for ids in siblings.values():
+        ranked = sorted(ids, key=lambda i: (i not in lowest, lowest.get(i, 0.0), _digit_key(i)))
+        index.update({i: n for n, i in enumerate(ranked, 1) if len(ids) > 1})
+    return index
+
+
+def _member_order(device: dict[str, Any]) -> tuple[bool, float, str]:
+    return (device.get("s") is None, device.get("s", 0.0), device["id"])
+
+
+def _derived_rows(members: list[dict[str, Any]], index: dict[str, int]) -> list[list[int]]:
+    """A Family's ``DeviceList`` for ``members`` in member order, from their places."""
+    seen: dict[str, int] = defaultdict(int)
+    unindexed = 0
+    rows = []
+    for device in members:
+        place = device.get("place")
+        if place in index:
+            seen[place] += 1
+            rows.append([index[place], seen[place]])
+        else:
+            unindexed += 1
+            rows.append([0, unindexed])
+    return rows
+
+
+def _derived_places(members: list[dict[str, Any]]) -> list[str | None]:
+    """A Family's ``PlaceList`` for ``members`` in member order: each one's place, else ``None``."""
+    return [device.get("place") or None for device in members]
+
+
+def _derived_device_lists(
+    facility: dict[str, Any],
+) -> dict[tuple[str, str], tuple[list[list[int]], list[str | None]]]:
+    """Each (System, group id)'s ``DeviceList`` and ``PlaceList``, derived from the records."""
+    index = _sibling_indices(facility)
+    devices = {device["id"]: device for device in facility["devices"]}
+    out: dict[tuple[str, str], tuple[list[list[int]], list[str | None]]] = {}
+    for group in facility["groups"]:
+        by_system: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for member in group["members"]:
+            device = devices[member]
+            by_system[str(device.get("place") or "-").split("/")[0]].append(device)
+        for system, members in by_system.items():
+            ordered = sorted(members, key=_member_order)
+            out[(system, group["id"])] = (_derived_rows(ordered, index), _derived_places(ordered))
+    return out
+
+
+def _line_families(facility: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Each Family of System ``LINE`` derived from the records, with its members in order.
+
+    A group with a member placed in ``LINE`` is a Family named by its id less
+    ``LINE/``; a classed ``LINE`` device that no single-class such group holds
+    files into the Family named by its class.
+    """
+    devices = {
+        device["id"]: device
+        for device in facility["devices"]
+        if str(device.get("place") or "").split("/")[0] == "LINE"
+    }
+    families: dict[str, list[dict[str, Any]]] = {}
+    covered: set[str] = set()
+    for group in facility["groups"]:
+        members = [devices[member] for member in group["members"] if member in devices]
+        if not members:
+            continue
+        families[group["id"].removeprefix("LINE/")] = members
+        classes = {member.get("class") for member in members}
+        if len(classes) == 1 and None not in classes:
+            covered.update(member["id"] for member in members)
+    for device_id, device in devices.items():
+        if device.get("class") and device_id not in covered:
+            families.setdefault(device["class"], []).append(device)
+    return {name: sorted(members, key=_member_order) for name, members in families.items()}
+
+
 @pytest.mark.slow
-def test_every_pre_line_family_keeps_its_device_list(middle_layer_view: dict[str, Any]) -> None:
-    for system, family, golden in middle_layer_families(pre_line_index("middle_layer")):
-        view = middle_layer_view[system][family]["_setup"]["DeviceList"]
-        assert view == golden["_setup"]["DeviceList"], (system, family)
+def test_every_pre_line_family_s_device_list_is_derived_from_places(
+    built_control_assistant: BuiltProject, middle_layer_view: dict[str, Any]
+) -> None:
+    derived = _derived_device_lists(built_control_assistant.facility)
+    for system, family, _golden in middle_layer_families(pre_line_index("middle_layer")):
+        if (system, f"{system}/{family}") not in derived:
+            continue
+        setup = middle_layer_view[system][family]["_setup"]
+        assert len(setup["DeviceList"]) == len(setup["CommonNames"]), (system, family)
+        rows, places = derived[(system, f"{system}/{family}")]
+        assert setup["DeviceList"] == rows, (system, family)
+        assert setup["PlaceList"] == places, (system, family)
 
 
 @pytest.mark.slow
@@ -501,3 +665,24 @@ def test_the_views_answer_no_fewer_tree_queries_than_the_pre_line_copies(
     golden = answerable_count(pre_line_index("hierarchical"), pre_line_index("middle_layer"))
     assert golden > 0
     assert answerable_count(hierarchical_view, middle_layer_view) >= golden
+
+
+@pytest.mark.slow
+def test_every_line_device_sits_in_each_family_derived_from_its_records(
+    built_control_assistant: BuiltProject, middle_layer_view: dict[str, Any]
+) -> None:
+    facility = built_control_assistant.facility
+    families = _line_families(facility)
+    line_devices = {
+        device["id"]
+        for device in facility["devices"]
+        if str(device.get("place") or "").split("/")[0] == "LINE"
+    }
+    assert line_devices
+    assert {device["id"] for members in families.values() for device in members} == line_devices
+    index = _sibling_indices(facility)
+    for name, members in families.items():
+        setup = middle_layer_view["LINE"][name]["_setup"]
+        assert setup["CommonNames"] == [d.get("label") or d["id"] for d in members], name
+        assert setup["DeviceList"] == _derived_rows(members, index), name
+        assert setup["PlaceList"] == _derived_places(members), name

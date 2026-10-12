@@ -98,6 +98,15 @@ def update(rel: str, index: int, **slots: Any) -> Edit:
     return edit
 
 
+def drop_file(rel: str) -> Edit:
+    """Remove one file from the tree."""
+
+    def edit(tree: Tree) -> None:
+        del tree[rel]
+
+    return edit
+
+
 def drop_slot(rel: str, index: int, slot: str) -> Edit:
     """Remove one slot from one row of a list file."""
 
@@ -240,6 +249,7 @@ def _cavity(at: Any) -> Any:
 STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     ("source_invalid__pydantic_failure", "source-invalid", "a pydantic failure"),
     ("source_invalid__unknown_key", "source-invalid", "an unknown key such as `kind:`"),
+    ("source_invalid__group_signals", "source-invalid", "a group stating `signals`"),
     ("source_invalid__on_both_kinds", "source-invalid", "an `on` naming both kinds"),
     (
         "source_invalid__list_row_device_and_place",
@@ -254,6 +264,8 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
         "two model names equal case-insensitively",
     ),
     ("source_invalid__computed_slot", "source-invalid", "a layer writes a computed slot"),
+    ("source_invalid__bare_noise", "source-invalid", "a bare-float seed `noise`"),
+    ("source_invalid__seed_noise_abs", "source-invalid", "a seed `noise` stating `noise_abs`"),
     (
         "layer_conflict__map_slot",
         "layer-conflict",
@@ -279,6 +291,7 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     ("reference_missing__slice_device", "reference-missing", "`slices[].device`"),
     ("reference_missing__span_model", "reference-missing", "span model"),
     ("reference_missing__device_place", "reference-missing", "device place"),
+    ("reference_missing__device_model", "reference-missing", "device model"),
     ("reference_missing__place_parent", "reference-missing", "place parent path"),
     ("reference_missing__seed_address", "reference-missing", "seeds.yaml address"),
     ("reference_missing__limit_address", "reference-missing", "limits.yaml record address"),
@@ -376,6 +389,39 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     ("value_invalid__options_presence", "value-invalid", "`options` presence wrong"),
     ("value_invalid__shape_presence", "value-invalid", "`shape` presence wrong"),
     ("value_invalid__motion_non_float", "value-invalid", "motion on non-float"),
+    ("value_invalid__noise_both_terms", "value-invalid", "a seed `noise` stating both terms"),
+    (
+        "value_invalid__scenario_noise_abs",
+        "value-invalid",
+        "a scenario `noise` entry stating `noise_abs`",
+    ),
+    (
+        "value_invalid__scenario_noise_both_terms",
+        "value-invalid",
+        "a scenario `noise` entry stating both terms",
+    ),
+    ("value_invalid__still_shape", "value-invalid", "a `still` neither `all` nor addresses"),
+    ("value_invalid__still_non_float", "value-invalid", "a `still` listing a non-float"),
+    (
+        "value_invalid__still_with_motion",
+        "value-invalid",
+        "a scenario setting the motion of a reading it stills",
+    ),
+    ("value_invalid__tolerance_not_setpoint", "value-invalid", "`tolerance` on a non-setpoint"),
+    ("value_invalid__tolerance_non_float", "value-invalid", "`tolerance` on a non-float"),
+    ("value_invalid__tolerance_no_unit", "value-invalid", "`tolerance` on a channel with no unit"),
+    (
+        "value_invalid__tolerance_pair_unit",
+        "value-invalid",
+        "`tolerance` on a setpoint whose pair states another unit",
+    ),
+    ("value_invalid__tolerance_both_terms", "value-invalid", "a `tolerance` stating both terms"),
+    ("value_invalid__tolerance_not_finite", "value-invalid", "a `tolerance` not finite"),
+    (
+        "value_invalid__tolerance_relative_without_nominal",
+        "value-invalid",
+        "a relative `tolerance` on a setpoint without a seed `nominal`",
+    ),
     ("value_invalid__enum_bounds", "value-invalid", "enum bounds"),
     ("value_invalid__linear_wired", "value-invalid", "`linear` inputs wired"),
     ("value_invalid__linear_cyclic", "value-invalid", "`linear` inputs cyclic"),
@@ -389,7 +435,9 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     ),
     ("value_invalid__clamp_order", "value-invalid", "`clamp` lo > hi"),
     ("value_invalid__clamp_non_float", "value-invalid", "`clamp` on a non-float"),
-    ("value_invalid__stuck_non_setpoint", "value-invalid", "`stuck` on a non-setpoint"),
+    ("value_invalid__stuck_under_faults", "value-invalid", "`stuck` under a scenario's `faults`"),
+    ("value_invalid__channel_fault_role", "value-invalid", "a channel fault on a role it skips"),
+    ("value_invalid__channel_fault_word", "value-invalid", "a channel fault word not in the table"),
     (
         "value_invalid__archiver_days_ago_negative",
         "value-invalid",
@@ -403,6 +451,16 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     ("seed_invalid__nominal_out_of_band", "seed-invalid", "nominal out of band"),
     ("seed_invalid__nominal_wired", "seed-invalid", "nominal on a wired channel"),
     ("seed_invalid__motion_on_setpoint", "seed-invalid", "noise/drift on a setpoint"),
+    (
+        "seed_invalid__relative_noise_without_nominal",
+        "seed-invalid",
+        "a relative `noise` on a seed without a `nominal`",
+    ),
+    (
+        "seed_invalid__seed_beyond_tolerance",
+        "seed-invalid",
+        "a readback's motion beyond its setpoint's tolerance",
+    ),
     ("seed_invalid__paired_seed", "seed-invalid", "paired seed disagrees"),
     ("seed_invalid__int_nominal", "seed-invalid", "non-integral nominal on an int channel"),
     ("seed_invalid__int_override", "seed-invalid", "non-integral override on an int channel"),
@@ -427,6 +485,13 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
         "place-conflict",
         "an imported place contradicting its span",
     ),
+    ("place_conflict__stated_s", "place-conflict", "a wired device's stated s off its deck"),
+    (
+        "place_conflict__stated_model",
+        "place-conflict",
+        "a wired device's stated model not its wiring's",
+    ),
+    ("place_conflict__s_outside_deck", "place-conflict", "a stated s outside a single-pass deck"),
     ("span_invalid__overlap", "span-invalid", "overlapping spans"),
     ("span_invalid__marker_absent", "span-invalid", "a marker absent"),
     ("span_invalid__marker_not_unique", "span-invalid", "a marker not unique"),
@@ -542,9 +607,9 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
         "a facility channel equals a status address",
     ),
     (
-        "view_unsupported__in_context_no_tagged_channel",
+        "view_unsupported__in_context_no_channel",
         "view-unsupported",
-        "an in_context selection with zero tagged channels",
+        "an in_context selection with no channel",
     ),
     (
         "view_unsupported__hierarchical_meta_key",
@@ -559,7 +624,7 @@ STOP_SENTENCES: tuple[tuple[str, str, str], ...] = (
     (
         "view_unsupported__middle_layer_no_groups",
         "view-unsupported",
-        "a middle_layer selection with no groups",
+        "a middle_layer selection with no group and no classed device",
     ),
     (
         "view_unsupported__middle_layer_meta_key",
@@ -687,6 +752,18 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             "records/devices.yaml"
         ),
     ),
+    "source_invalid__group_signals": (
+        _plain(
+            put(
+                "records/groups.yaml",
+                [{"id": "QUADS", "members": ["SR/Q1"], "signals": {"SP": "x"}}],
+            )
+        ),
+        (
+            "facility: source-invalid: group QUADS — unknown key `signals`; fix: remove "
+            "`signals` from records/groups.yaml"
+        ),
+    ),
     "source_invalid__on_both_kinds": (
         _plain(
             append("records/places.yaml", {"id": "SR"}),
@@ -735,10 +812,24 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
         ),
     ),
     "source_invalid__computed_slot": (
-        _plain(update("records/devices.yaml", 0, s=1.0)),
+        _plain(update("records/devices.yaml", 0, ordinalInPlace=1)),
         (
-            "facility: source-invalid: device SR/Q1 — `s` is computed by the build; fix: remove "
-            "`s` from records/devices.yaml"
+            "facility: source-invalid: device SR/Q1 — `ordinalInPlace` is computed by the build; "
+            "fix: remove `ordinalInPlace` from records/devices.yaml"
+        ),
+    ),
+    "source_invalid__bare_noise": (
+        _plain(seeds(**{"BPM1:X": {"noise": 0.1}})),
+        (
+            "facility: source-invalid: path channels.0.simulation.noise — seeds.yaml: input "
+            "should be a valid dictionary or instance of Noise; fix: correct `noise` in seeds.yaml"
+        ),
+    ),
+    "source_invalid__seed_noise_abs": (
+        _plain(seeds(**{"BPM1:X": {"noise": {"noise_abs": 0.1}}})),
+        (
+            "facility: source-invalid: path channels.0.simulation.noise.noise_abs — seeds.yaml: "
+            "extra inputs are not permitted; fix: remove `noise_abs` from seeds.yaml"
         ),
     ),
     "layer_conflict__map_slot": (
@@ -823,11 +914,19 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
     "fix_computed__set": (
         _plain(
             put("imported/mml/devices.yaml", [{"id": "SR/Q1", "class": QUAD}]),
-            fixes({"op": "set", "kind": "device", "id": "SR/Q1", "fields": {"s": 1.0}, "why": "x"}),
+            fixes(
+                {
+                    "op": "set",
+                    "kind": "device",
+                    "id": "SR/Q1",
+                    "fields": {"ordinalInModel": 1},
+                    "why": "x",
+                }
+            ),
         ),
         (
-            "facility: fix-computed: device SR/Q1 — `set` names `s`, which the build computes; "
-            "fix: remove `s` from the fix"
+            "facility: fix-computed: device SR/Q1 — `set` names `ordinalInModel`, which the build "
+            "computes; fix: remove `ordinalInModel` from the fix"
         ),
     ),
     "fix_authored__authored_only": (
@@ -980,6 +1079,13 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             "SR, which does not exist; fix: add place SR or correct `place`"
         ),
     ),
+    "reference_missing__device_model": (
+        _plain(update("records/devices.yaml", 0, model="Nope", s=1.0)),
+        (
+            "facility: reference-missing: device SR/Q1 — records/devices.yaml `model` names model "
+            "Nope, which does not exist; fix: add model Nope or correct `model`"
+        ),
+    ),
     "reference_missing__place_parent": (
         _plain(put("records/places.yaml", [{"id": "SR/S01"}])),
         (
@@ -1032,7 +1138,7 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
         ),
     ),
     "reference_missing__noise": (
-        _plain(scenario("warm", {"noise": {"Q9:RB": {"noise": 0.0, "noise_abs": 0.1}}})),
+        _plain(scenario("warm", {"noise": {"Q9:RB": {"absolute": 0.1}}})),
         (
             "facility: reference-missing: scenario warm — scenarios/warm.yaml `noise` names "
             "channel Q9:RB, which does not exist; fix: add channel Q9:RB or correct `noise`"
@@ -1378,11 +1484,135 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
     "value_invalid__motion_non_float": (
         _plain(
             append("records/channels.yaml", {"id": "T", "value_type": "int"}),
-            seeds(T={"noise": 1.0}),
+            seeds(T={"noise": {"absolute": 1.0}}),
         ),
         (
             "facility: value-invalid: channel T — a int channel carries `noise`; motion, `clamp` "
             "and `linear` apply to float channels only; fix: remove `noise`"
+        ),
+    ),
+    "value_invalid__noise_both_terms": (
+        _plain(seeds(**{"BPM1:X": {"nominal": 1.0, "noise": {"absolute": 0.1, "relative": 0.01}}})),
+        (
+            "facility: value-invalid: channel BPM1:X — `noise` states both `absolute` and "
+            "`relative`; fix: write `noise: {absolute: <sigma>}` or `noise: {relative: "
+            "<fraction>}`"
+        ),
+    ),
+    "value_invalid__scenario_noise_abs": (
+        _plain(scenario("warm", {"noise": {"BPM1:X": {"noise": 0.0, "noise_abs": 0.1}}})),
+        (
+            "facility: value-invalid: scenario warm — `noise.BPM1:X` states `noise`, `noise_abs`; "
+            "fix: write `BPM1:X: {absolute: <sigma>}`"
+        ),
+    ),
+    "value_invalid__scenario_noise_both_terms": (
+        _plain(scenario("warm", {"noise": {"BPM1:X": {"absolute": 0.1, "relative": 0.01}}})),
+        (
+            "facility: value-invalid: scenario warm — `noise.BPM1:X` states both `absolute` and "
+            "`relative`; fix: write `BPM1:X: {absolute: <sigma>}` or `BPM1:X: {relative: "
+            "<fraction>}`"
+        ),
+    ),
+    "value_invalid__still_shape": (
+        _plain(scenario("warm", {"still": "everything"})),
+        (
+            "facility: value-invalid: scenario warm — `still` is 'everything', neither `all` "
+            "nor a list of addresses; fix: write `still: all` or a list of addresses"
+        ),
+    ),
+    "value_invalid__still_non_float": (
+        _plain(
+            append("records/channels.yaml", {"id": "T", "value_type": "int"}),
+            scenario("warm", {"still": ["T"]}),
+        ),
+        (
+            "facility: value-invalid: scenario warm — `still` lists T, a int channel; fix: "
+            "remove T from `still`; only a float reading moves"
+        ),
+    ),
+    "value_invalid__still_with_motion": (
+        _plain(scenario("warm", {"still": "all", "noise": {"BPM1:X": {"absolute": 0.1}}})),
+        (
+            "facility: value-invalid: scenario warm — `noise.BPM1:X` sets the motion of a "
+            "reading `still` stills; fix: a scenario either stills a reading or sets its motion"
+        ),
+    ),
+    "value_invalid__tolerance_not_setpoint": (
+        _plain(update("records/channels.yaml", 1, unit="A", tolerance={"absolute": 0.1})),
+        (
+            "facility: value-invalid: channel Q1:RB — a `tolerance` on a readback channel; fix: "
+            "remove `tolerance`; only a float setpoint carries one"
+        ),
+    ),
+    "value_invalid__tolerance_non_float": (
+        _plain(
+            append(
+                "records/channels.yaml",
+                {
+                    "id": "T:SP",
+                    "role": "setpoint",
+                    "value_type": "int",
+                    "unit": "A",
+                    "tolerance": {"absolute": 1.0},
+                },
+            )
+        ),
+        (
+            "facility: value-invalid: channel T:SP — a `tolerance` on a int channel; fix: remove "
+            "`tolerance`; only a float setpoint carries one"
+        ),
+    ),
+    "value_invalid__tolerance_no_unit": (
+        _plain(update("records/channels.yaml", 0, tolerance={"absolute": 0.1})),
+        (
+            "facility: value-invalid: channel Q1:SP — a `tolerance` on a channel that states no "
+            "`unit`; fix: state the channel's `unit`; the tolerance is in it"
+        ),
+    ),
+    "value_invalid__tolerance_pair_unit": (
+        _plain(
+            update("records/channels.yaml", 0, unit="A", tolerance={"absolute": 0.1}),
+            update("records/channels.yaml", 1, unit="mA"),
+        ),
+        (
+            "facility: value-invalid: channel Q1:SP — `unit` A differs from its pair Q1:RB's mA; "
+            "fix: give Q1:SP and Q1:RB the same `unit`; the tolerance is in it"
+        ),
+    ),
+    "value_invalid__tolerance_both_terms": (
+        _plain(
+            update(
+                "records/channels.yaml", 0, unit="A", tolerance={"absolute": 0.1, "relative": 0.01}
+            ),
+            update("records/channels.yaml", 1, unit="A"),
+        ),
+        (
+            "facility: value-invalid: channel Q1:SP — `tolerance` states both `absolute` and "
+            "`relative`; fix: write `tolerance: {absolute: <x>}` or `tolerance: {relative: "
+            "<fraction>}`"
+        ),
+    ),
+    "value_invalid__tolerance_not_finite": (
+        _plain(
+            update("records/channels.yaml", 0, unit="A", tolerance={"absolute": float("inf")}),
+            update("records/channels.yaml", 1, unit="A"),
+        ),
+        (
+            "facility: value-invalid: channel Q1:SP — `tolerance.absolute` is inf, not a finite "
+            "number; fix: write `tolerance: {absolute: <x>}` or `tolerance: {relative: "
+            "<fraction>}`"
+        ),
+    ),
+    "value_invalid__tolerance_relative_without_nominal": (
+        _plain(
+            update("records/channels.yaml", 0, unit="A", tolerance={"relative": 0.01}),
+            update("records/channels.yaml", 1, unit="A"),
+        ),
+        (
+            "facility: value-invalid: channel Q1:SP — a relative `tolerance` is taken of the "
+            "setpoint's seed `nominal`, which it does not state; fix: state `absolute`, or give "
+            "the setpoint a seed `nominal`"
         ),
     ),
     "value_invalid__enum_bounds": (
@@ -1464,14 +1694,29 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             "and `linear` apply to float channels only; fix: remove `clamp`"
         ),
     ),
-    "value_invalid__stuck_non_setpoint": (
+    "value_invalid__stuck_under_faults": (
         _plain(
             put("models.yaml", [NO_DECK]),
             scenario("warm", {"faults": {"optics": {"BPM1:X": "stuck"}}}),
         ),
         (
-            "facility: value-invalid: scenario warm — `faults.optics.BPM1:X` is `stuck` on a "
-            "readback channel; fix: fault a setpoint with `stuck`, or write a value"
+            "facility: value-invalid: scenario warm — `faults.optics.BPM1:X` is `stuck`; fix: "
+            "move it to `channel_faults: {BPM1:X: stuck}`"
+        ),
+    ),
+    "value_invalid__channel_fault_role": (
+        _plain(scenario("warm", {"channel_faults": {"BPM1:X": "stuck"}})),
+        (
+            "facility: value-invalid: scenario warm — `channel_faults.BPM1:X` is `stuck` on a "
+            "readback channel; fix: `stuck` faults a setpoint, `frozen` a reading, "
+            "`disconnected` any channel"
+        ),
+    ),
+    "value_invalid__channel_fault_word": (
+        _plain(scenario("warm", {"channel_faults": {"BPM1:X": "offline"}})),
+        (
+            "facility: value-invalid: scenario warm — `channel_faults.BPM1:X` is `offline`; "
+            "fix: write one of `stuck`, `frozen`, `disconnected`"
         ),
     ),
     "value_invalid__archiver_days_ago_negative": (
@@ -1539,10 +1784,30 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
         ),
     ),
     "seed_invalid__motion_on_setpoint": (
-        _plain(seeds(**{"Q1:SP": {"noise": 0.1}})),
+        _plain(seeds(**{"Q1:SP": {"noise": {"absolute": 0.1}}})),
         (
             "facility: seed-invalid: channel Q1:SP — a setpoint carries `noise`; fix: remove "
             "`noise`; a setpoint holds the value written to it"
+        ),
+    ),
+    "seed_invalid__relative_noise_without_nominal": (
+        _plain(seeds(**{"BPM1:X": {"noise": {"relative": 0.01}}})),
+        (
+            "facility: seed-invalid: channel BPM1:X — a relative `noise` is taken of the seed's "
+            "`nominal`, which this seed does not state; fix: state `absolute`, or give the seed a "
+            "`nominal`"
+        ),
+    ),
+    "seed_invalid__seed_beyond_tolerance": (
+        _plain(
+            update("records/channels.yaml", 0, unit="A", tolerance={"absolute": 0.01}),
+            update("records/channels.yaml", 1, unit="A"),
+            seeds(**{"Q1:RB": {"noise": {"absolute": 0.01}}}),
+        ),
+        (
+            "facility: seed-invalid: channel Q1:SP — the simulated readback Q1:RB moves up to "
+            "0.06 A, more than Q1:SP settles within (0.01 A); fix: lower the seed's "
+            "`noise`/`drift`, or widen `tolerance`"
         ),
     ),
     "seed_invalid__paired_seed": (
@@ -1660,6 +1925,32 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             "facility: place-conflict: device SR/QD — layer mml states place SR/B, but the span "
             "of place SR/A holds the device at s 1.25 in model SR; fix: drop `place` from the "
             "layer, or add a fix `set` of place SR/B"
+        ),
+    ),
+    "place_conflict__stated_s": (
+        _deck(put("imported/mml/devices.yaml", [{"id": "SR/QD", "s": 99.0}])),
+        (
+            "facility: place-conflict: device SR/QD — layer mml states s 99 in model SR, but the "
+            "deck puts the device at s 1.25; fix: drop `s` from the layer, or add a fix `set` of "
+            "the deck's value"
+        ),
+    ),
+    "place_conflict__stated_model": (
+        _deck(put("imported/mml/devices.yaml", [{"id": "SR/QD", "model": "LINE"}])),
+        (
+            "facility: place-conflict: device SR/QD — layer mml states model LINE, but the deck "
+            "wires the device in model SR; fix: drop `model` from the layer, or add a fix `set` of "
+            "the deck's value"
+        ),
+    ),
+    "place_conflict__s_outside_deck": (
+        _deck(
+            append("records/devices.yaml", {"id": "SR/SPARE", "class": QUAD}),
+            put("imported/mml/devices.yaml", [{"id": "SR/SPARE", "model": "LINE", "s": 9.0}]),
+        ),
+        (
+            "facility: place-conflict: device SR/SPARE — layer mml states s 9 in model LINE, "
+            "outside its deck of length 2.2; fix: state an s inside the deck, or drop it"
         ),
     ),
     "span_invalid__overlap": (
@@ -1980,12 +2271,12 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             "address itself"
         ),
     ),
-    "view_unsupported__in_context_no_tagged_channel": (
-        _plain(),
+    "view_unsupported__in_context_no_channel": (
+        _plain(drop_file("records/channels.yaml")),
         (
             "facility: view-unsupported: path channel_finder.pipeline_mode — selects in_context "
-            "and no channel is tagged `in_context`; fix: tag at least one channel `in_context`, "
-            "or select another channel_finder_mode"
+            "and the facility has no channel; fix: add a channel, or select another "
+            "channel_finder_mode"
         ),
     ),
     "view_unsupported__hierarchical_meta_key": (
@@ -2011,11 +2302,14 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
         ),
     ),
     "view_unsupported__middle_layer_no_groups": (
-        _plain(),
+        _plain(
+            drop_slot("records/devices.yaml", 0, "class"),
+            drop_slot("records/devices.yaml", 1, "class"),
+        ),
         (
             "facility: view-unsupported: path channel_finder.pipeline_mode — selects "
-            "middle_layer and the facility has no group; fix: add at least one group, or "
-            "select another channel_finder_mode"
+            "middle_layer and no device of the facility is in a group or has a class; fix: add "
+            "a group or give the devices a class, or select another channel_finder_mode"
         ),
     ),
     "view_unsupported__middle_layer_meta_key": (
@@ -2024,7 +2318,7 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             update("records/devices.yaml", 0, place="SR"),
             put(
                 "records/groups.yaml",
-                [{"id": "SR/_X", "members": ["SR/Q1"], "signals": {"SP": "the setpoint"}}],
+                [{"id": "SR/_X", "members": ["SR/Q1"]}],
             ),
         ),
         (
@@ -2039,11 +2333,11 @@ CASES: dict[str, tuple[Callable[[], Tree], str]] = {
             update("records/devices.yaml", 0, place="schema"),
             put(
                 "records/groups.yaml",
-                [{"id": "QUADS", "members": ["SR/Q1"], "signals": {"SP": "the setpoint"}}],
+                [{"id": "QUADS", "members": ["SR/Q1"]}],
             ),
         ),
         (
-            "facility: view-unsupported: place schema — its System key `schema` is the document "
+            "facility: view-unsupported: place schema — its System key `schema` is a document "
             "key of the middle-layer index; fix: give the place an id other than `schema`, or "
             "select another channel_finder_mode"
         ),
@@ -2355,6 +2649,15 @@ def _disable_approval(repo: Path) -> None:
         persona.write_text(text.replace(armed, armed.replace("true", "false")), encoding="utf-8")
 
 
+def _select_in_context_unprobed(repo: Path) -> None:
+    """Select in_context for a tree with no channel, which no probe can name."""
+    _select_in_context(repo)
+    profile = repo / "profile.yml"
+    data = yaml.safe_load(profile.read_text(encoding="utf-8"))
+    del data["config"][VA_PROBE_KEY]
+    profile.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 def _ship_limits(repo: Path) -> None:
     (repo / "data" / "channel_limits.json").write_text('{"_version": "4.0"}\n', encoding="utf-8")
 
@@ -2373,7 +2676,7 @@ def _persona_serves_models(repo: Path) -> None:
 
 #: The profile edit a case makes beside a clean tree.
 PROFILE_EDITS: dict[str, Callable[[Path], None]] = {
-    "view_unsupported__in_context_no_tagged_channel": _select_in_context,
+    "view_unsupported__in_context_no_channel": _select_in_context_unprobed,
     "view_unsupported__hierarchical_meta_key": _select_hierarchical,
     "view_unsupported__hierarchical_two_level_words": _select_hierarchical,
     "view_unsupported__middle_layer_no_groups": _select_middle_layer,

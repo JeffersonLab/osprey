@@ -4,10 +4,10 @@ Written into ``<render>/data/simulator/``::
 
     served_models.json   {schema: osprey.facility.served_models/1, models: [...]}
     addresses.json       {schema: osprey.facility.addresses/1, channels: [...], status: [...]}
-    decks/<model>.json   a byte copy of each deck-bearing model's deck
+    decks/<model><suffix>   a byte copy of each deck-bearing model's deck, under its own suffix
     variables.json       {schema: osprey.facility.simulator/2, code, models: [...], channels: [...]}
-    seeds.json           {schema: osprey.facility.seeds/1, seeds: {<address>: <seed record>}}
-    scenarios.json       {schema: osprey.facility.scenarios/1, scenarios: [...]}
+    seeds.json           {schema: osprey.facility.seeds/2, seeds: {<address>: <seed record>}}
+    scenarios.json       {schema: osprey.facility.scenarios/2, scenarios: [...]}
     scenarios/<name>/    a byte copy of each file a scenario's logbook entries attach
 
 ``models`` lists the served physics models sorted by name, then ``texture``;
@@ -36,7 +36,9 @@ is not writable.
 ``seeds.json`` maps each channel carrying a seed record to that record.
 ``scenarios.json`` lists every scenario, sorted by name, with each block it
 states carried verbatim; ``faults`` maps each faulted model to ``{writes}``,
-plus ``inactive: model not served`` when the render does not serve it. Each
+plus ``inactive: model not served`` when the render does not serve it; a
+scenario named ``still`` that stills every reading is listed when no file
+defines one. Each
 file a logbook entry's ``attachments`` names, relative to the facility's
 ``scenarios/<name>/``, is copied to the same path under the view's
 ``scenarios/<name>/``, so the entries read back against the view's copy.
@@ -60,6 +62,7 @@ from osprey.facility.build import FacilityDocument
 from osprey.facility.errors import FacilityBuildError
 from osprey.facility.scenarios import scenario_logbook
 from osprey.facility.views import ViewInputs, view_bytes
+from osprey_connectors.simulation import STILL_SCENARIO
 from osprey_connectors.simulation.values import DEFAULT_VALUE_TYPE
 from osprey_connectors.simulation.view import (
     ADDRESSES_FILE,
@@ -90,6 +93,7 @@ __all__ = [
     "SERVED_MODELS_SCHEMA",
     "VARIABLES_FILE",
     "VARIABLES_SCHEMA",
+    "served_deck_path",
     "simulator_wiring",
     "status_address",
     "write_simulator_view",
@@ -111,7 +115,16 @@ _SCENARIO_BLOCKS = (
     "drivers",
     "couple",
     "noise",
+    "still",
+    "channel_faults",
 )
+
+#: The scenario ``scenarios.json`` lists when no file defines ``still``.
+_BUILT_IN_STILL = {
+    "name": STILL_SCENARIO,
+    "description": "Every reading serves without drift, couplings or noise.",
+    "still": "all",
+}
 
 #: The keys a wiring entry may carry, in emission order: the wiring record's
 #: own keys, then the engine's description of it.
@@ -225,6 +238,22 @@ def _describer(model: Mapping[str, Any]) -> Callable[[Any], Mapping[str, Any]]:
         )
     described: Callable[[Any], Mapping[str, Any]] = describe
     return described
+
+
+def served_deck_path(model: Mapping[str, Any]) -> str | None:
+    """The file the view serves a model's deck as, relative to the view.
+
+    Args:
+        model: A facility-file model record.
+
+    Returns:
+        ``decks/<model><suffix>``, the suffix of the deck the model names;
+        ``None`` for a model with no deck.
+    """
+    deck = model.get("deck")
+    if not deck:
+        return None
+    return f"{DECKS_DIR}/{model['name']}{Path(deck).suffix}"
 
 
 def _setpoint_pairs(channels: Iterable[Mapping[str, Any]]) -> frozenset[str]:
@@ -353,7 +382,7 @@ def _variables_document(inputs: ViewInputs) -> dict[str, Any]:
                 "engine": model.get("engine"),
                 "served": model["name"] in inputs.served,
                 "settings": copy.deepcopy(model.get("settings") or {}),
-                "deck": f"{DECKS_DIR}/{model['name']}.json" if model.get("deck") else None,
+                "deck": served_deck_path(model),
                 "wiring": simulator_wiring(doc, str(model["name"])),
             }
             for model in models
@@ -387,6 +416,9 @@ def _scenarios_document(inputs: ViewInputs) -> dict[str, Any]:
                     fault["inactive"] = INACTIVE_UNSERVED
                 entry["faults"][model] = fault
         scenarios.append(entry)
+    if all(str(entry["name"]) != STILL_SCENARIO for entry in scenarios):
+        scenarios.append(copy.deepcopy(_BUILT_IN_STILL))
+        scenarios.sort(key=lambda entry: str(entry["name"]))
     return {"schema": SCENARIOS_SCHEMA, "scenarios": scenarios}
 
 
@@ -448,13 +480,12 @@ def write_simulator_view(root: Path, inputs: ViewInputs) -> list[Path]:
 
     written.extend(_copy_scenario_files(root, inputs))
 
-    decks = root / DECKS_DIR
     for model in doc.get("models", []):
-        deck = model.get("deck")
-        if deck is None:
+        served = served_deck_path(model)
+        if served is None:
             continue
-        decks.mkdir(exist_ok=True)
-        target = decks / f"{model['name']}.json"
-        target.write_bytes((inputs.facility_dir / deck).read_bytes())
+        (root / DECKS_DIR).mkdir(exist_ok=True)
+        target = root / served
+        target.write_bytes((inputs.facility_dir / model["deck"]).read_bytes())
         written.append(target)
     return sorted(written)

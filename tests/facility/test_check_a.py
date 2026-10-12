@@ -20,6 +20,15 @@ cavity state), never by which tree it came from. The two facility storage rings
 and the NSLS-II transport line are checked, the line to the same strict floor
 as the rings; the engine builds each model on the deck as the build wrote it,
 in 6D on the rings. A shifted quadrupole shows the tune replay can fail.
+
+A family step lands on each element at the device's step times the slice's
+weight, the share and the sign the wiring states. The weighted strength
+families the fixture trees carry are ``WEIGHTED_STRENGTH_FAMILIES``: the NSLS-II
+transport line's ``Q``, seven of whose quadrupoles the deck holds at the other
+sign. A transport line's model file refuses the tune and chromaticity
+responses, so no model answer holds a weighted step, and
+``test_a_weighted_step_moves_each_slice_by_the_step_times_its_weight`` holds it
+instead.
 """
 
 from __future__ import annotations
@@ -74,6 +83,9 @@ MODELS = pytest.mark.parametrize(
 )
 RESPONSES = pytest.mark.parametrize("name", ["tune_response", "chromaticity_response"])
 
+#: The ``(stem, family)`` of every ``PolynomB`` family whose write slices carry a weight other than 1.
+WEIGHTED_STRENGTH_FAMILIES: frozenset[tuple[str, str]] = frozenset({("nsls2.ltb", "Q")})
+
 Built = Callable[[str, str], BuiltModel]
 
 
@@ -86,11 +98,26 @@ def _row(values: Sequence[float]) -> tuple[int, ...]:
     return tuple(int(value) for value in values)
 
 
+def _pieces(entry: dict[str, Any], own: str | None) -> list[tuple[str, str | None, float]]:
+    """``(element, device, weight)`` for every slice of one wiring entry.
+
+    A slice naming no device sits on ``own``, the device the entry's address
+    sits on; a slice stating no weight weighs 1. The weight is the share and
+    the sign the wiring states. An entry without slices is one piece of
+    weight 1 on its own element.
+    """
+    return [
+        (str(piece["element"]), piece.get("device", own), float(piece.get("weight", 1.0)))
+        for piece in entry.get("slices") or [{"element": entry["element"]}]
+    ]
+
+
 class Wiring:
     """One model's wiring, read as the elements each ``DeviceList`` row of a family binds.
 
-    A family is the mapping's: its group of devices in the model, and the
-    engine words the model wires it through. An entry with exactly those words binds its
+    A family is the mapping's: the devices the import's row table records for
+    its export rows in the model, and the engine words the model wires it
+    through. An entry with exactly those words binds its
     element to the device its address sits on; an entry over slices binds each
     slice to the device the slice names, so a supply driving a whole string
     binds every device of the string to its own elements.
@@ -98,21 +125,24 @@ class Wiring:
 
     def __init__(self, built: BuiltModel) -> None:
         from osprey.facility.layers.mml.mapping import MAPPING_FILE, read_mapping
+        from osprey.facility.layers.mml.rows import read_rows
 
         self.built = built
         self.mapping = read_mapping(built.facility / MAPPING_FILE)
         (self.model,) = [
             model for model in self.mapping.models.values() if model.name == built.name
         ]
-        self.groups = {
-            str(group["id"]): set(group.get("members", [])) for group in built.document["groups"]
+        table = {
+            family: rows
+            for (model, family), rows in read_rows(built.facility).items()
+            if model == built.name
         }
-        self.rows = {
-            str(device["id"]): _row(device["attributes"]["DeviceList"])
-            for device in built.document["devices"]
-            if device.get("model") == built.name
-            and "DeviceList" in (device.get("attributes") or {})
-        }
+        #: Each family's devices, keyed by the family's mapped token.
+        self.groups: dict[str, set[str]] = {}
+        for family, rows in table.items():
+            self.groups.setdefault(self.mapping.mapped(family), set()).update(rows.values())
+        #: Each device's export row.
+        self.rows = {device: row for rows in table.values() for row, device in rows.items()}
         self.on_device = {
             str(channel["id"]): (channel.get("on") or {}).get("device")
             for channel in built.document["channels"]
@@ -130,26 +160,34 @@ class Wiring:
             if getattr(wired.engine, key) is not None
         }
 
-    def elements(self, family: str, direction: str) -> dict[tuple[int, ...], list[str]]:
-        """The elements each row of ``family`` binds in one direction, by ``DeviceList`` row."""
+    def slices(self, family: str, direction: str) -> dict[tuple[int, ...], list[tuple[str, float]]]:
+        """The elements each row of ``family`` binds in one direction, each with its slice weight.
+
+        Keyed by ``DeviceList`` row; one device bound to one element twice at
+        two weights is a wiring this replay refuses.
+        """
         members = self.groups[self.mapping.mapped(family)]
         words = self.engine(family)
         devices = {self.rows[device]: device for device in sorted(members) if device in self.rows}
         assert len(devices) == len([device for device in members if device in self.rows]), (
             f"{family} devices share a DeviceList row"
         )
-        found: dict[str, list[str]] = {}
+        found: dict[str, list[tuple[str, float]]] = {}
         for entry in self.built.wiring:
             if entry.get("direction") != direction or dict(entry.get("engine") or {}) != words:
                 continue
             own = self.on_device.get(str(entry["address"]))
-            pieces = [
-                (str(piece["element"]), piece.get("device", own))
-                for piece in entry.get("slices") or [{"element": entry["element"]}]
-            ]
-            for element, device in pieces:
-                if device in members and element not in found.setdefault(device, []):
-                    found[device].append(element)
+            for element, device, weight in _pieces(entry, own):
+                if device not in members:
+                    continue
+                bound = found.setdefault(device, [])
+                held = dict(bound)
+                if element not in held:
+                    bound.append((element, weight))
+                    continue
+                assert held[element] == weight, (
+                    f"{family} {device} binds {element} at weights {held[element]} and {weight}"
+                )
         return {row: found[device] for row, device in devices.items() if device in found}
 
 
@@ -197,8 +235,8 @@ class Deck:
 
     def _bound(
         self, family: str, direction: str, device_list: Sequence[Sequence[float]]
-    ) -> list[list[str]]:
-        bound = self.wiring.elements(family, direction)
+    ) -> list[list[tuple[str, float]]]:
+        bound = self.wiring.slices(family, direction)
         rows = [_row(row) for row in device_list]
         missing = [row for row in rows if row not in bound]
         assert not missing, f"the wiring binds no {direction} element for {family} {missing}"
@@ -208,7 +246,8 @@ class Deck:
         """The replay-deck position of each listed monitor of ``family``, in listed order."""
         positions = []
         bound = self._bound(family, "read", device_list)
-        for row, elements in zip(device_list, bound, strict=True):
+        for row, pieces in zip(device_list, bound, strict=True):
+            elements = [element for element, _weight in pieces]
             assert len(elements) == 1, f"{family} {row} reads {elements}"
             positions.append(self.where(elements[0]))
         return positions
@@ -225,7 +264,8 @@ class Deck:
         The Middle Layer's calculator kicks one element per device, so a device
         split over several elements has no replay.
         """
-        (elements,) = self._bound(family, "write", [device])
+        (pieces,) = self._bound(family, "write", [device])
+        elements = [element for element, _weight in pieces]
         assert len(elements) == 1, f"{family} {_row(device)} kicks {elements}"
         return self.where(elements[0]), self.kick_plane(family)
 
@@ -235,19 +275,38 @@ class Deck:
         ``dK = k_per_amp * delta_resp_mat`` is the step the Middle Layer's
         family measurement lands on the model (``hw2physics`` of the nominal
         plus the width, less that of the nominal); ``setsp`` writes a device's
-        strength to every element it drives.
+        strength to every element it drives, times that slice's weight.
         """
         lattice = self.copy()
         engine = self.wiring.engine(family)
         attribute, index = str(engine["attribute"]), int(engine["index"])
-        bound = self._bound(family, "write", facts["device_list"])
-        for elements, step in zip(bound, _step(facts), strict=True):
-            for element in elements:
-                target = lattice[self.where(element)]
-                values = np.array(getattr(target, attribute), dtype=float)
-                values[index] += step
-                setattr(target, attribute, values)
+        bound = [
+            [(self.where(element), weight) for element, weight in pieces]
+            for pieces in self._bound(family, "write", facts["device_list"])
+        ]
+        _apply_steps(lattice, bound, _step(facts), attribute, index)
         return lattice
+
+
+def _apply_steps(
+    lattice: Any,
+    bound: Sequence[Sequence[tuple[int, float]]],
+    steps: np.ndarray,
+    attribute: str,
+    index: int,
+) -> None:
+    """Add ``steps[n]`` times each slice's weight to ``attribute[index]`` of device ``n``'s elements.
+
+    ``bound[n]`` holds ``(position, weight)`` for every element device ``n``
+    drives; ``setsp`` writes a device's strength to every element it drives,
+    times that slice's weight.
+    """
+    for pieces, step in zip(bound, steps, strict=True):
+        for position, weight in pieces:
+            target = lattice[position]
+            values = np.array(getattr(target, attribute), dtype=float)
+            values[index] += step * weight
+            setattr(target, attribute, values)
 
 
 def _deck(built: BuiltModel, reference: dict[str, Any]) -> Deck:
@@ -849,3 +908,71 @@ def test_monitors_listed_out_of_ring_order_read_in_listed_order(mml_built: Built
     forward = deck.positions(monitors["family"], listed)
     rotated = deck.positions(monitors["family"], listed[1:] + listed[:1])
     assert rotated == forward[1:] + forward[:1]
+
+
+# ---------------------------------------------------------------------------
+# Weighted slices
+# ---------------------------------------------------------------------------
+
+
+def test_a_wiring_entry_reads_as_its_slices_with_their_weights() -> None:
+    """Each slice binds its element at its weight; an entry without slices is one piece."""
+    sliced = {"address": "Q:SP", "slices": [{"element": "QA"}, {"element": "QB", "weight": -1.0}]}
+    whole = {"address": "Q:SP", "element": "Q1"}
+
+    assert _pieces(sliced, "D1") == [("QA", "D1", 1.0), ("QB", "D1", -1.0)]
+    assert _pieces(whole, "D1") == [("Q1", "D1", 1.0)]
+
+
+def test_a_weighted_step_moves_each_slice_by_the_step_times_its_weight() -> None:
+    """Two devices, the first split over two slices of opposite sign, the second at half weight."""
+    lattice = at.Lattice(
+        [
+            at.Quadrupole("QA", 0.2, 1.0),
+            at.Quadrupole("QB", 0.2, -1.0),
+            at.Quadrupole("QC", 0.2, 0.5),
+        ],
+        energy=3e9,
+    )
+
+    _apply_steps(
+        lattice, [[(0, 1.0), (1, -1.0)], [(2, 0.5)]], np.array([2e-3, 4e-3]), "PolynomB", 1
+    )
+
+    strengths = [float(element.PolynomB[1]) for element in lattice]
+    assert strengths == pytest.approx([1.0 + 2e-3, -1.0 - 2e-3, 0.5 + 0.5 * 4e-3], abs=1e-15)
+
+
+def test_the_weighted_strength_families_are_the_named_ones_and_no_model_file_answers_them(
+    mml_built: Built,
+) -> None:
+    """Every fixture tree's weighted ``PolynomB`` families, and no response answer over one."""
+    weighted: set[tuple[str, str]] = set()
+    for tree, stem in (*MATLAB_RINGS, *MATLAB_LINES):
+        wiring = Wiring(mml_built(tree, stem))
+        for family, wired in wiring.model.wiring.items():
+            if wired.engine is None or wired.engine.attribute != "PolynomB":
+                continue
+            if wiring.mapping.mapped(family) not in wiring.groups:
+                continue
+            weights = {
+                weight
+                for pieces in wiring.slices(family, "write").values()
+                for _element, weight in pieces
+            }
+            if weights != {1.0}:
+                weighted.add((stem, family))
+    assert weighted == WEIGHTED_STRENGTH_FAMILIES
+
+    trees = {stem: tree for tree, stem in (*MATLAB_RINGS, *MATLAB_LINES)}
+    answered = []
+    for stem, family in sorted(WEIGHTED_STRENGTH_FAMILIES):
+        reference = model_reference(trees[stem], stem)
+        for name in ("tune_response", "chromaticity_response"):
+            block = reference[name]
+            if refusal(block) is not None:
+                continue
+            facts = block["families"].get(family)
+            if facts is not None and refusal(facts) is None:
+                answered.append(f"{stem} {family} {name}")
+    assert not answered, f"a model file answers a weighted strength family: {answered}"

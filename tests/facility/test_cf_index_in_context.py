@@ -1,11 +1,12 @@
-"""The in_context channel-finder index: the build's tagged channels as the flat database.
+"""The in_context channel-finder index: the build's channels as the flat database.
 
 ``data/channel_finder/in_context.json`` carries
-``"schema": "osprey.facility.channel_finder/1"`` and one row per channel tagged
-``in_context``, sorted by address: ``channel`` is the first ``names`` entry, else
-the address; ``address``; ``description``. A render carries it when its
-``channel_finder.pipeline_mode`` is ``in_context``; a facility with no tagged
-channel then stops with ``view-unsupported``.
+``"schema": "osprey.facility.channel_finder/1"`` and one row per channel, or per
+channel tagged ``in_context`` when the facility tags any, sorted by address:
+``channel`` is the channel's ``label``, else the address; ``address``;
+``description``. A render carries it when its ``channel_finder.pipeline_mode``
+is ``in_context``; a facility with no channel then stops with
+``view-unsupported``.
 """
 
 from __future__ import annotations
@@ -48,27 +49,66 @@ def _channel(id_: str, **fields: Any) -> dict[str, Any]:
 # --- the document ------------------------------------------------------------------
 
 
-def test_a_tagged_channel_is_one_row_named_by_its_first_name() -> None:
+def test_a_tagged_subset_narrows_the_index_and_a_label_names_its_row() -> None:
     document = in_context_document(
         {
             "channels": [
                 _channel(
-                    "B:RB", names=["Beta", "B2"], description="beta", tags=["in_context", "x"]
+                    "B:RB",
+                    label="Beta",
+                    names=["B2", "Bb"],
+                    description="beta",
+                    tags=["in_context", "x"],
                 ),
-                _channel("A:RB", description="alpha", tags=["in_context"]),
-                _channel("C:RB", names=["Gamma"], tags=["other"]),
-                _channel("D:RB", names=[]),
+                _channel("A:RB", names=["Alpha"], description="alpha", tags=["in_context"]),
+                _channel("C:RB", label="Gamma", tags=["other"]),
+                _channel("D:RB"),
             ]
         }
     )
 
     assert document == {
         "schema": CHANNEL_FINDER_SCHEMA,
+        "count": 2,
         "channels": [
             {"channel": "A:RB", "address": "A:RB", "description": "alpha"},
             {"channel": "Beta", "address": "B:RB", "description": "beta"},
         ],
     }
+
+
+def test_the_count_is_the_number_of_rows_written() -> None:
+    document = in_context_document({"channels": [_channel("B:RB"), _channel("A:RB")]})
+
+    assert document["count"] == 2 == len(document["channels"])
+
+
+def test_an_untagged_facility_indexes_every_channel() -> None:
+    document = in_context_document(
+        {
+            "channels": [
+                _channel("B:RB", label="Beta", tags=["other"]),
+                _channel("A:RB", description="alpha"),
+            ]
+        }
+    )
+
+    assert document["channels"] == [
+        {"channel": "A:RB", "address": "A:RB", "description": "alpha"},
+        {"channel": "Beta", "address": "B:RB", "description": None},
+    ]
+
+
+def test_hello_world_builds_an_in_context_index_of_its_five_labelled_channels() -> None:
+    from osprey.facility.build import build_facility
+    from tests.facility.test_standalone_sources import HELLO_WORLD, HELLO_WORLD_ADDRESSES
+
+    document = in_context_document(build_facility(HELLO_WORLD, project_name="hello"))
+
+    rows = document["channels"]
+    assert [row["address"] for row in rows] == HELLO_WORLD_ADDRESSES
+    assert all(row["channel"] != row["address"] for row in rows)
+    assert all(row["description"] for row in rows)
 
 
 def test_a_channel_without_a_description_carries_none() -> None:
@@ -129,24 +169,29 @@ def test_a_render_that_selects_another_index_names_none(
 
 
 def test_the_writer_writes_the_index_with_its_header(tmp_path: Path) -> None:
+    from osprey.services.channel_finder.databases.flat import ChannelDatabase
+
     root = tmp_path / "data" / "channel_finder"
     written = write_in_context(
-        root, _inputs({"channels": [_channel("A:RB", names=["A"], tags=["in_context"])]})
+        root, _inputs({"channels": [_channel("A:RB", label="A", tags=["in_context"])]})
     )
 
     assert written == [root / IN_CONTEXT_FILE]
     raw = written[0].read_bytes()
     assert raw.endswith(b"}\n")
     assert json.loads(raw)["schema"] == CHANNEL_FINDER_SCHEMA
+    assert json.loads(raw)["count"] == 1
+    assert len(ChannelDatabase(str(written[0])).get_all_channels()) == 1
 
 
-def test_zero_tagged_channels_stop_with_view_unsupported(tmp_path: Path) -> None:
+def test_a_facility_with_no_channel_stops_with_view_unsupported(tmp_path: Path) -> None:
     with pytest.raises(FacilityBuildError) as caught:
-        write_in_context(tmp_path, _inputs({"channels": [_channel("A:RB", tags=["other"])]}))
+        write_in_context(tmp_path, _inputs({"channels": []}))
 
-    assert caught.value.kind == "view-unsupported"
-    assert caught.value.format_message().startswith(
-        "facility: view-unsupported: path channel_finder.pipeline_mode — "
+    assert caught.value.format_message() == (
+        "facility: view-unsupported: path channel_finder.pipeline_mode — selects in_context "
+        "and the facility has no channel; fix: add a channel, or select another "
+        "channel_finder_mode"
     )
     assert not (tmp_path / IN_CONTEXT_FILE).exists()
 
@@ -161,12 +206,13 @@ def test_the_demo_index_holds_the_569_golden_rows(
     golden = load_golden("in_context_size.json")
     (target,) = write_in_context(tmp_path, _inputs(built_control_assistant.facility))
 
-    rows = json.loads(target.read_bytes())["channels"]
+    document = json.loads(target.read_bytes())
+    rows = document["channels"]
 
     assert len(rows) == golden["size"] == 569
-    assert {row["address"]: row["channel"] for row in rows} == {
-        row["address"]: row["channel"] for row in golden["rows"]
-    }
+    assert document["count"] == 569
+    assert {row["address"] for row in rows} == {row["address"] for row in golden["rows"]}
+    assert all(row["channel"] == row["address"] for row in rows)
     assert all(row["description"] for row in rows)
 
 

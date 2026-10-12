@@ -1709,7 +1709,8 @@ class TestRegistryProvider(RegistryConfigProvider):
             "default_policy": "selective",
         },
         "control_system": {
-            "type": "mock",  # Use mock for tests - default patterns include write_channel/read_channel
+            "type": "virtual_accelerator",  # Use mock for tests - default patterns include write_channel/read_channel
+            "connector": {"virtual_accelerator": {"serving": "in_process"}},
         },
         "execution": {
             "execution_method": "subprocess",
@@ -1765,7 +1766,8 @@ class TestRegistryProvider(RegistryConfigProvider):
             "default_policy": "selective",
         },
         "control_system": {
-            "type": "mock",  # Use mock for tests - default patterns include write_channel/read_channel
+            "type": "virtual_accelerator",  # Use mock for tests - default patterns include write_channel/read_channel
+            "connector": {"virtual_accelerator": {"serving": "in_process"}},
         },
         "execution": {
             "execution_method": "subprocess",

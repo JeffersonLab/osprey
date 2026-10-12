@@ -22,6 +22,7 @@ from click.testing import CliRunner
 from osprey.cli.build_cmd import build
 from osprey.facility import TEXTURE
 from osprey.facility.render import FACILITY_FILE, facility_digest
+from osprey.facility.validate import FACILITY_HEADER
 from osprey.utils.workspace import BUILD_DIR_NAME, IMAGE_DIR_NAME
 from tests._builds import BuiltProject, init_project
 
@@ -76,6 +77,7 @@ def test_the_facility_file_is_written_only_through_render_facility_outputs(
             "data/pyaml/SR/lattice.json",
             "data/pyaml/SR/trm.json",
             "data/simulator/addresses.json",
+            "data/simulator/decks/LINE.json",
             "data/simulator/decks/SR.json",
             "data/simulator/scenarios/bpm-polarity/plots/corrector_bump_test.png",
             "data/simulator/scenarios/nominal/plots/orbit_rms.json",
@@ -94,7 +96,7 @@ def test_the_facility_file_is_the_demo_facility_without_build_facts(
     raw = built_control_assistant.facility_raw
     document = json.loads(raw)
 
-    assert document["schema"] == "osprey.facility.facility/1"
+    assert document["schema"] == FACILITY_HEADER
     assert document["identity"]["code"] == "ca"
     assert document["models"][-1] == {"name": TEXTURE, "engine": TEXTURE}
     assert raw.endswith(b"}\n")

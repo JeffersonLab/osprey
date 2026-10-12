@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ import yaml
 from osprey.facility.layers.mml.importer import LAYER_DIR, MappingProblems, import_mml
 from osprey.facility.layers.mml.mapping import MAPPING_FILE, ImportStop
 from osprey.facility.validate import run_stages
+from tests.facility._mml_built import BuiltModel
 from tests.facility.test_word_ratchet import OUTSIDE_FORMAT_FILES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +88,7 @@ def test_writes_record_sources_never_a_view(spear3: Path) -> None:
         "groups.yaml",
         "mapping.yaml",
         "models.yaml",
+        "rows.json",
     ]
     assert sorted(p.name for p in (layer / "decks").iterdir()) == ["StorageRing.json"]
     files = [p.relative_to(spear3).as_posix() for p in layer.rglob("*") if p.is_file()]
@@ -101,15 +104,33 @@ def test_each_record_file_is_sorted_by_id(spear3: Path) -> None:
         assert len(ids) == len(set(ids))
 
 
-def test_devices_carry_device_list_and_element_list(spear3: Path) -> None:
+def test_devices_carry_their_common_name_as_label_and_no_attributes(spear3: Path) -> None:
     ao = json.loads((FIXTURES / "spear3" / "spear3.storagering.ao.json").read_text())
     devices = _by_id(_rows(spear3, "devices.yaml"))
-    for name, row, element in zip(
-        ao["BPMx"]["CommonNames"], ao["BPMx"]["DeviceList"], ao["BPMx"]["ElementList"], strict=True
-    ):
+    for name in ao["BPMx"]["CommonNames"]:
         device = devices[f"StorageRing/{name}"]
         assert device["class"] == "BeamPositionMonitor"
-        assert device["attributes"] == {"DeviceList": row, "ElementList": element}
+        assert device["label"] == name
+    assert [d["id"] for d in devices.values() if "attributes" in d or "names" in d] == []
+
+
+def test_rows_json_maps_every_export_row_to_its_device(spear3: Path, tmp_path: Path) -> None:
+    from osprey.facility.layers.mml.rows import ROWS_FILE, ROWS_SCHEMA, read_rows
+
+    ao = json.loads((FIXTURES / "spear3" / "spear3.storagering.ao.json").read_text())
+    raw = (spear3 / LAYER_DIR / ROWS_FILE).read_bytes()
+    document = json.loads(raw)
+    rows = document["rows"]
+    keys = [(row["model"], row["family"], row["device_list"]) for row in rows]
+
+    assert document["schema"] == ROWS_SCHEMA
+    assert keys == sorted(keys)
+    assert read_rows(spear3)["StorageRing", "BPMx"] == {
+        tuple(row): f"StorageRing/{name}"
+        for name, row in zip(ao["BPMx"]["CommonNames"], ao["BPMx"]["DeviceList"], strict=True)
+    }
+    again = _import(tmp_path, "spear3")
+    assert (again / LAYER_DIR / ROWS_FILE).read_bytes() == raw
 
 
 def test_each_family_is_a_group_of_its_devices(spear3: Path) -> None:
@@ -123,16 +144,109 @@ def test_each_family_is_a_group_of_its_devices(spear3: Path) -> None:
     assert hcm["description"]
 
 
-def test_a_setpoint_pairs_with_its_family_monitor(spear3: Path) -> None:
+def _built(mml_built: Callable[[str, str], BuiltModel], tree: str) -> dict[str, Any]:
+    """The tree's facility file, built once per session."""
+    return mml_built(tree, TREES[tree][0]).document
+
+
+@pytest.mark.xdist_group("mml_built")
+def test_the_build_pairs_a_setpoint_with_its_monitor(
+    spear3: Path, mml_built: Callable[[str, str], BuiltModel]
+) -> None:
     ao = json.loads((FIXTURES / "spear3" / "spear3.storagering.ao.json").read_text())
-    channels = _by_id(_rows(spear3, "channels.yaml"))
+    imported = _by_id(_rows(spear3, "channels.yaml"))
     setpoint = ao["HCM"]["Setpoint"]["ChannelNames"][0].strip()
     monitor = ao["HCM"]["Monitor"]["ChannelNames"][0].strip()
-    assert channels[setpoint]["role"] == "setpoint"
-    assert channels[setpoint]["pair"] == monitor
-    assert channels[setpoint]["on"] == {"device": f"StorageRing/{ao['HCM']['CommonNames'][0]}"}
-    assert channels[monitor]["role"] == "readback"
-    assert "pair" not in channels[monitor]
+    assert imported[setpoint]["role"] == "setpoint"
+    assert "pair" not in imported[setpoint]
+    assert imported[setpoint]["on"] == {"device": f"StorageRing/{ao['HCM']['CommonNames'][0]}"}
+    assert imported[monitor]["role"] == "readback"
+    built = _by_id(_built(mml_built, "spear3")["channels"])
+    assert built[setpoint]["pair"] == monitor
+    assert "pair" in built[setpoint]["provenance"]["defaults"]
+
+
+@pytest.mark.xdist_group("mml_built")
+def test_a_two_coil_corrector_pairs_each_coil_with_its_own_readback(
+    mml_built: Callable[[str, str], BuiltModel],
+) -> None:
+    channels = _by_id(_built(mml_built, "nsls2")["channels"])
+    coil = "SR:C02-MG{PS:CH1A}I:"
+    for setpoint, readback in (("Sp1-SP", "Ps1DCCT1-I"), ("Sp2-SP", "Ps2DCCT1-I")):
+        channel = channels[coil + setpoint]
+        assert channel["on"] == {"device": "StorageRing/ch1g2c02a"}
+        assert channel["pair"] == coil + readback
+        assert "pair" in channel["provenance"]["defaults"]
+
+
+def _first_device(facility: Path, family: str) -> tuple[str, float]:
+    """The device of a spear3 family's first export row, and that row's ``Position``."""
+    from osprey.facility.layers.mml.rows import read_rows
+
+    ao = json.loads((FIXTURES / "spear3" / "spear3.storagering.ao.json").read_text())
+    row = tuple(ao[family]["DeviceList"][0])
+    return read_rows(facility)["StorageRing", family][row], ao[family]["Position"][0]
+
+
+@pytest.mark.xdist_group("mml_built")
+def test_a_device_carries_the_exports_position(
+    spear3: Path, mml_built: Callable[[str, str], BuiltModel]
+) -> None:
+    device_id, position = _first_device(spear3, "IonGauge")
+    imported = _by_id(_rows(spear3, "devices.yaml"))[device_id]
+    assert (imported["s"], imported["model"]) == (position, "StorageRing")
+    built = _by_id(_built(mml_built, "spear3")["devices"])[device_id]
+    assert built["s"] == position
+    assert "place" not in built
+    assert "ordinalInModel" in built
+    assert "s" not in built["provenance"]["defaults"]
+
+
+@pytest.mark.xdist_group("mml_built")
+@pytest.mark.parametrize(("tree", "count"), [("spear3", 509), ("nsls2", 817)])
+def test_every_wired_position_agrees_with_the_deck(
+    tree: str, count: int, mml_built: Callable[[str, str], BuiltModel]
+) -> None:
+    """A wired device's stated ``s`` agrees with its deck, else the build stops."""
+    model = mml_built(tree, TREES[tree][0])
+    built = _by_id(model.document["devices"])
+    wired = _wired_devices(model.document)
+    stated = {
+        row["id"]: row["s"]
+        for row in _rows(model.facility, "devices.yaml")
+        if "s" in row and row["id"] in wired
+    }
+    assert len(stated) == count
+    assert {device: built[device]["s"] for device in stated} == stated
+
+
+@pytest.mark.xdist_group("mml_built")
+@pytest.mark.parametrize(("tree", "count"), [("spear3", 142), ("nsls2", 246)])
+def test_unwired_devices_gain_s(
+    tree: str, count: int, mml_built: Callable[[str, str], BuiltModel]
+) -> None:
+    document = _built(mml_built, tree)
+    wired = _wired_devices(document)
+    assert wired
+    assert len([d for d in document["devices"] if "s" in d and d["id"] not in wired]) == count
+
+
+def _wired_devices(document: dict[str, Any]) -> set[str]:
+    """The devices an element of some deck-bearing model's wiring belongs to."""
+    channels = {channel["id"]: channel for channel in document["channels"]}
+    wired: set[str] = set()
+    for model in document["models"]:
+        if "deck" not in model:
+            continue
+        for record in model.get("wiring", []):
+            on = channels.get(record["address"], {}).get("on") or {}
+            own = on.get("device")
+            if "element" in record and own is not None:
+                wired.add(own)
+            for piece in record.get("slices") or []:
+                if piece.get("device", own) is not None:
+                    wired.add(piece.get("device", own))
+    return wired
 
 
 def test_an_address_a_write_field_names_is_a_setpoint_whichever_field_named_it_first(
@@ -146,12 +260,66 @@ def test_an_address_a_write_field_names_is_a_setpoint_whichever_field_named_it_f
     channel = _by_id(_rows(spear3, "channels.yaml"))[address]
     assert channel["role"] == "setpoint"
     assert "pair" not in channel
-    assert list(channel) == ["id", "on", "role", "unit", "description"]
+    assert list(channel) == ["id", "on", "role", "tolerance", "unit", "description"]
     described = yaml.safe_load((spear3 / MAPPING_FILE).read_text(encoding="utf-8"))
     fields = described["families"]["RF"]["fields"]
     assert fields["Setpoint"]["description"] != fields["Monitor"]["description"]
-    assert channel["description"] == fields["Setpoint"]["description"]
+    owner = _by_id(_rows(spear3, "devices.yaml"))[channel["on"]["device"]]
+    label = owner.get("label", owner["id"])
+    assert channel["description"] == f"{label}: {fields['Setpoint']['description']}"
     assert channel["unit"] == family["Setpoint"]["HWUnits"]
+
+
+def _setpoint(tree: str, family: str, index: int = 0) -> str:
+    stem = TREES[tree][0]
+    ao = json.loads((FIXTURES / tree / f"{stem}.ao.json").read_text())
+    names = ao[family]["Setpoint"]["ChannelNames"]
+    return (names[index] if isinstance(names, list) else names).strip()
+
+
+def test_a_setpoint_takes_its_exports_tolerance(spear3: Path, tmp_path: Path) -> None:
+    nsls2 = _import(tmp_path, "nsls2")
+
+    assert _by_id(_rows(spear3, "channels.yaml"))[_setpoint("spear3", "HCM")]["tolerance"] == {
+        "absolute": 0.101
+    }
+    assert _by_id(_rows(nsls2, "channels.yaml"))[_setpoint("nsls2", "HCM")]["tolerance"] == {
+        "absolute": 0.01
+    }
+
+
+def test_a_per_element_tolerance_is_sliced(tmp_path: Path) -> None:
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    for source in sorted((FIXTURES / "spear3").glob("spear3.storagering.*")):
+        shutil.copyfile(source, exports / source.name)
+    ao_path = exports / "spear3.storagering.ao.json"
+    ao = json.loads(ao_path.read_text())
+    count = len(ao["HCM"]["Setpoint"]["Tolerance"])
+    ao["HCM"]["Setpoint"]["Tolerance"] = [0.1 + i / 100 for i in range(count)]
+    ao_path.write_text(json.dumps(ao), encoding="utf-8")
+    facility = _facility(tmp_path, "spear3")
+
+    import_mml([ao_path], facility)
+
+    channels = _by_id(_rows(facility, "channels.yaml"))
+    assert channels[_setpoint("spear3", "HCM", 3)]["tolerance"] == {"absolute": 0.1 + 3 / 100}
+
+
+def test_an_eps_or_infinite_tolerance_writes_none(
+    spear3: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nsls2 = _import(tmp_path, "nsls2")
+    ao = json.loads((FIXTURES / "spear3" / "spear3.storagering.ao.json").read_text())
+    voltage = ao["RF"]["VoltageCtrl"]["ChannelNames"].strip()
+
+    assert "tolerance" not in _by_id(_rows(nsls2, "channels.yaml"))[_setpoint("nsls2", "RF")]
+    assert "tolerance" not in _by_id(_rows(spear3, "channels.yaml"))[voltage]
+    assert re.search(
+        r"^\d+ setpoint devices export no usable `Setpoint.Tolerance`$",
+        capsys.readouterr().out,
+        re.MULTILINE,
+    )
 
 
 def test_the_imported_tree_loads_with_its_mapping_beside_the_records(spear3: Path) -> None:
@@ -191,7 +359,7 @@ def test_nsls2_imports_both_trees_into_one_facility(tmp_path: Path) -> None:
     facility = _import(tmp_path, "nsls2")
 
     groups = _by_id(_rows(facility, "groups.yaml"))
-    bpms = groups["BPMx"]["members"]
+    bpms = groups["BPM"]["members"]
     assert any(m.startswith("LTB/") for m in bpms)
     assert any(m.startswith("StorageRing/") for m in bpms)
     assert bpms == sorted(set(bpms))
@@ -327,23 +495,55 @@ def test_a_mapping_that_fails_its_check_stops_the_import_before_anything_is_writ
     assert sorted(path.name for path in facility.iterdir()) == ["imported"]
 
 
-def test_a_field_s_signal_role_lands_on_its_channels_and_keys_its_group_sentence(
-    spear3: Path,
-) -> None:
+def test_a_field_s_signal_role_lands_on_its_channels(spear3: Path) -> None:
     channels = _by_id(_rows(spear3, "channels.yaml"))
     groups = _by_id(_rows(spear3, "groups.yaml"))
     assert channels["01G-BPM1:U"]["signal"] == "position_x_readback"
     assert channels["MS1-BD:CurrSetpt"]["signal"] == "current_setpoint"
-    assert set(groups["BPMx"]["signals"]) == {"position_x_readback"}
-    unroled = [group for group in groups.values() if "signals" not in group]
-    assert unroled
-    for group in groups.values():
-        assert set(group.get("signals", {})) <= {
-            "current_setpoint",
-            "current_readback",
-            "position_x_readback",
-            "position_y_readback",
-        }
+    assert all("signals" not in group for group in groups.values())
+
+
+def test_plane_twins_are_one_group(spear3: Path) -> None:
+    groups = _by_id(_rows(spear3, "groups.yaml"))
+    mapping = yaml.safe_load((spear3 / MAPPING_FILE).read_text(encoding="utf-8"))["families"]
+    twins = ["BPMx", "BPMy", "BTSBPMx", "BTSBPMy", "KickerAmp", "KickerDelay"]
+    twins += ["BLErr", "BLOpen", "BLSum"]
+
+    assert {"BPM", "BTSBPM", "Kicker", "BL"} <= set(groups)
+    assert set(twins).isdisjoint(groups)
+    assert {"BPMx", "BPMy"} <= set(groups["BPM"]["names"])
+    for twin in ("BPMx", "BPMy"):
+        assert mapping[twin]["description"] in groups["BPM"]["description"]
+    assert len(groups) == 38
+
+
+def test_two_folds_with_one_stem_keep_both_groups() -> None:
+    from osprey.facility.layers.mml.importer import _physical_groups
+
+    def group(token: str, members: list[str]) -> dict[str, Any]:
+        return {"id": token, "members": members}
+
+    groups = {
+        "BPMa": group("BPMa", ["A1", "A2"]),
+        "BPMb": group("BPMb", ["A1", "A2"]),
+        "BPMx": group("BPMx", ["X1", "X2"]),
+        "BPMy": group("BPMy", ["X1", "X2"]),
+    }
+
+    folded = _physical_groups(groups)
+
+    assert sorted(folded) == ["BPMa", "BPMx"]
+    assert folded["BPMa"]["members"] == ["A1", "A2"]
+    assert folded["BPMx"]["members"] == ["X1", "X2"]
+
+
+def test_a_channel_is_described_by_its_device_and_its_field_sentence(spear3: Path) -> None:
+    channel = _by_id(_rows(spear3, "channels.yaml"))["01G-BPM1:U"]
+    device = _by_id(_rows(spear3, "devices.yaml"))[channel["on"]["device"]]
+    mapping = yaml.safe_load((spear3 / MAPPING_FILE).read_text(encoding="utf-8"))["families"]
+    sentence = mapping["BPMx"]["fields"]["Monitor"]["description"]
+
+    assert channel["description"] == f"{device['label']}: {sentence}"
 
 
 def test_a_readback_several_setpoints_share_pairs_none_of_them(tmp_path: Path) -> None:
@@ -353,7 +553,10 @@ def test_a_readback_several_setpoints_share_pairs_none_of_them(tmp_path: Path) -
     import_mml([FIXTURES / "paired" / "quokka.ring.ao.json"], facility)
     channels = _by_id(_rows(facility, "channels.yaml"))
     assert channels["QK:R12:HCM:RB"]["endpoint_of"] == ["RING/hcm_1", "RING/hcm_2"]
+    result = run_stages(facility, project_name="demo")
+    assert not result.errors
+    built = _by_id(result.validated.document["channels"])
     for setpoint in ("QK:R1:HCM1:SP", "QK:R2:HCM1:SP"):
         assert channels[setpoint]["role"] == "setpoint"
         assert "pair" not in channels[setpoint], setpoint
-    assert not run_stages(facility, project_name="demo").errors
+        assert built[setpoint]["pair"] == setpoint

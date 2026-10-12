@@ -37,7 +37,6 @@ is restated from a plan.
 from __future__ import annotations
 
 import json
-import math
 import re
 import shlex
 import shutil
@@ -260,12 +259,8 @@ def seed_stops(stderr: str) -> dict[str, tuple[str, float]]:
 
 
 def widen_limits_record(limits: Path, address: str, edge: str, nominal: float) -> None:
-    """Move one edge of one limits record out to hold *nominal*; change no other line.
-
-    The stop states the nominal to six significant digits, so the edge is set to
-    the whole number at or beyond it rather than to the stated digits.
-    """
-    value = float(math.ceil(nominal) if edge == "max_value" else math.floor(nominal))
+    """Move one edge of one limits record out to *nominal*, the value the stop states; change no other line."""
+    value = nominal
     lines = limits.read_text(encoding="utf-8").split("\n")
     starts = [
         index
@@ -292,15 +287,16 @@ def apply_seed_invalid_remedies(
     so its stderr is where the stops are read. Each line names one address, and
     exactly that record of the deployment's ``data/facility/limits.yaml`` is
     widened to hold the nominal the line states. The verb then runs once more,
-    render included, and must print the tree's response-check lines and
-    nothing else; a note a written view prints about its own index is that
+    render included, and must print the tree's build warnings and response-check
+    lines and nothing else; a note a written view prints about its own index is that
     view's fact, asserted by its own tests, and is not read here.
 
     Args:
         runner: The CLI runner.
         repo: The deployment repo.
-        responses: The response-check lines the clean run prints, in order; when
-            omitted, every line it prints must be a response-check line.
+        responses: The lines the clean run prints, in order (build warnings, then
+            response-check lines); when omitted, every line it prints must be a
+            response-check line.
 
     Returns:
         The widened addresses, in the order the stops were printed.
@@ -339,16 +335,17 @@ def expected_seed_stops(tree: str) -> frozenset[str]:
 
 
 def expected_response_lines(tree: str) -> tuple[str, ...]:
-    """The response-check lines a fixture tree's clean ``facility validate`` prints."""
+    """The lines a fixture tree's clean ``facility validate`` prints: its build warnings, then its response-check lines."""
     from tests.facility.test_response_check import (
         NSLS2_LINES,
         SPEAR3_LINE,
+        SPEAR3_WRAPPED_LINES,
         SYNTHETIC_LINE,
     )
 
     return {
         "nsls2": (NSLS2_LINES[0], NSLS2_LINES[1]),
-        "spear3": (SPEAR3_LINE,),
+        "spear3": (*SPEAR3_WRAPPED_LINES, SPEAR3_LINE),
         "synthetic": (SYNTHETIC_LINE,),
     }[tree]
 
@@ -713,7 +710,7 @@ class TestTheFacilityImportOfATwoZeroExport:
         assert record == {
             "address": address,
             "min_value": -1.0,
-            "max_value": 2.0,
+            "max_value": 1.5,
             "writable": True,
         }
 

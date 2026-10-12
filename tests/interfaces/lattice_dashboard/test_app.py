@@ -3,7 +3,8 @@
 Each app is built over a synthetic render under ``tmp_path``: its simulator
 view ``data/simulator/`` holds the view's documents, ``variables.json`` listing
 the models, and a pyAT JSON deck per deck-bearing model. Worker launches go to ``FakeSlots``
-(conftest), so no subprocess runs.
+(conftest), so no subprocess runs. ``TestDemoRender`` builds its app over the
+built control-assistant demo's render instead.
 """
 
 from __future__ import annotations
@@ -132,6 +133,19 @@ def select(client, name: str) -> dict:
     response = client.post("/api/models/select", json={"name": name})
     assert response.status_code == 200, response.text
     return settle(client)
+
+
+def _block_read_catalog(monkeypatch) -> threading.Event:
+    """Hold every catalog read until the returned event is set."""
+    release = threading.Event()
+    read = app_mod.read_catalog
+
+    def blocked(*args, **kwargs):
+        release.wait(10)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "read_catalog", blocked)
+    return release
 
 
 def job_spec(client, slots, name: str) -> dict:
@@ -323,8 +337,106 @@ class TestModels:
             release.set()
         assert settle(client)["selection"]["model"] == "SR"
 
+    def test_select_answers_while_the_catalog_is_read_again(self, client, render, monkeypatch):
+        _write_render(
+            render,
+            served=["SR", "TRANSFER", "BOOSTER", "texture"],
+            models={
+                "BOOSTER": {"solve": "periodic"},
+                "SR": {"solve": "periodic"},
+                "TRANSFER": {"solve": "single_pass", "twiss_in": TWISS_IN},
+            },
+        )
+        release = _block_read_catalog(monkeypatch)
+        try:
+            answers = []
+            picker = threading.Thread(
+                target=lambda: answers.append(
+                    client.post("/api/models/select", json={"name": "TRANSFER"})
+                )
+            )
+            picker.start()
+            picker.join(timeout=5)
+
+            assert [answer.status_code for answer in answers] == [200]
+            assert answers[0].json()["status"] == "loading"
+        finally:
+            release.set()
+        state = settle(client)
+        assert state["selection"]["model"] == "TRANSFER"
+        assert state["selection"]["status"] == "ready"
+
     def test_select_unknown_model_404(self, client):
-        assert client.post("/api/models/select", json={"name": "SPARE"}).status_code == 404
+        wanted = client.app.state.lattice.wanted()
+
+        response = client.post("/api/models/select", json={"name": "SPARE"})
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Unknown model: SPARE"}
+        assert client.app.state.lattice.wanted() == wanted
+
+    def test_an_unlisted_pick_while_the_view_changed_resolves_to_no_model_and_keeps_the_last_pick(
+        self, client, render
+    ):
+        select(client, "BOOSTER")
+        _write_render(
+            render,
+            served=["SR", "TRANSFER", "BOOSTER", "texture"],
+            models={
+                "BOOSTER": {"solve": "periodic"},
+                "SR": {"solve": "periodic"},
+                "TRANSFER": {"solve": "single_pass", "twiss_in": TWISS_IN},
+            },
+        )
+
+        response = client.post("/api/models/select", json={"name": "GHOST"})
+        state = settle(client)
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "loading"
+        assert state["selection"]["model"] is None
+        assert state["selection"]["status"] == "none"
+        assert state["selection"]["error"] == "Unknown model: GHOST"
+        assert client.app.state.lattice.wanted() == "BOOSTER"
+
+    def test_a_pick_before_the_first_catalog_read_answers_loading(
+        self, tmp_path, render, monkeypatch
+    ):
+        release = _block_read_catalog(monkeypatch)
+        app = create_app(workspace_root=tmp_path / "ws", render_root=render)
+        with TestClient(app) as client:
+            try:
+                response = client.post("/api/models/select", json={"name": "SR"})
+            finally:
+                release.set()
+            state = settle(client)
+            wanted = client.app.state.lattice.wanted()
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "loading"
+        assert state["selection"]["model"] == "SR"
+        assert state["selection"]["status"] == "ready"
+        assert wanted == "SR"
+
+    def test_an_unlisted_pick_before_the_first_catalog_read_resolves_to_no_model(
+        self, tmp_path, render, monkeypatch
+    ):
+        release = _block_read_catalog(monkeypatch)
+        app = create_app(workspace_root=tmp_path / "ws", render_root=render)
+        with TestClient(app) as client:
+            try:
+                response = client.post("/api/models/select", json={"name": "GHOST"})
+            finally:
+                release.set()
+            state = settle(client)
+            wanted = client.app.state.lattice.wanted()
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "loading"
+        assert state["selection"]["model"] is None
+        assert state["selection"]["status"] == "none"
+        assert state["selection"]["error"] == "Unknown model: GHOST"
+        assert wanted is None
 
     def test_select_unserved_model(self, client):
         assert select(client, "BOOSTER")["selection"]["model"] == "BOOSTER"
@@ -386,6 +498,7 @@ class TestSelection:
 
         assert state["selection"]["model"] is None
         assert state["selection"]["status"] == "none"
+        assert state["selection"]["error"] == "Unknown model: BOOSTER"
         assert state["families"] == {}
         assert client.get("/api/figures/optics").status_code == 404
 
@@ -604,3 +717,43 @@ class TestUnservedIsAMark:
         models = {m["name"]: m["served"] for m in booster.get("/api/models").json()}
 
         assert models == {"SR": True, "TRANSFER": True, "BOOSTER": False}
+
+
+@pytest.mark.slow
+class TestDemoRender:
+    """The app over the built control-assistant demo's render."""
+
+    @pytest.fixture
+    def demo(self, tmp_path, built_control_assistant):
+        app = create_app(
+            workspace_root=tmp_path / "ws", render_root=built_control_assistant.build_dir
+        )
+        with TestClient(app) as client:
+            settle(client)
+            yield client
+
+    def test_models_list_the_served_models_in_served_order(self, demo, built_control_assistant):
+        view = built_control_assistant.build_dir / "data" / "simulator"
+        served = json.loads((view / SERVED_MODELS_FILE).read_text())["models"]
+        models = demo.get("/api/models").json()
+
+        assert [m["name"] for m in models] == [name for name in served if name != TEXTURE]
+        assert [(m["name"], m["served"], m["solve"]) for m in models] == [
+            ("LINE", True, "single_pass"),
+            ("SR", True, "periodic"),
+        ]
+
+    def test_startup_selects_the_first_served_model(self, demo, built_control_assistant):
+        view = built_control_assistant.build_dir / "data" / "simulator"
+        first = json.loads((view / SERVED_MODELS_FILE).read_text())["models"][0]
+        selection = demo.get("/api/state").json()["selection"]
+
+        assert (selection["model"], selection["status"]) == (first, "ready")
+        assert first == "LINE"
+
+    def test_line_chromaticity_figure_409(self, demo):
+        assert select(demo, "LINE")["selection"]["model"] == "LINE"
+        r = demo.get("/api/figures/chromaticity")
+
+        assert r.status_code == 409
+        assert r.json() == {"status": "unavailable", "reason": SINGLE_PASS_UNAVAILABLE}

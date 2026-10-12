@@ -493,6 +493,22 @@ class SignalRoleEnum(str, Enum):
     """
     Stored offset subtracted from a measured position.
     """
+    current_x_setpoint = "current_x_setpoint"
+    """
+    Power-supply current setpoint of the coil that acts in the horizontal plane, on a device that holds one coil per plane.
+    """
+    current_x_readback = "current_x_readback"
+    """
+    Power-supply current readback of the coil that acts in the horizontal plane.
+    """
+    current_y_setpoint = "current_y_setpoint"
+    """
+    Power-supply current setpoint of the coil that acts in the vertical plane, on a device that holds one coil per plane.
+    """
+    current_y_readback = "current_y_readback"
+    """
+    Power-supply current readback of the coil that acts in the vertical plane.
+    """
 
 
 class PropertyNameEnum(str, Enum):
@@ -1188,8 +1204,7 @@ class Place(ConfiguredBaseModel):
                        'Channel',
                        'Group',
                        'Scenario']} })
-    names: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group'],
-         'list_elements_ordered': True} })
+    names: Optional[list[str]] = Field(default=None, description="""Other names a person at the facility uses for the record; a set, compared and written sorted.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group']} })
     attributes: Optional[Any] = Field(default=None, description="""A free string to scalar or list map, carried verbatim.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel']} })
     span: Optional[Span] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place']} })
     provenance: Optional[Provenance] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group', 'Model', 'Wiring']} })
@@ -1222,13 +1237,13 @@ class Device(ConfiguredBaseModel):
                        'Channel',
                        'Group',
                        'Scenario']} })
-    names: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group'],
-         'list_elements_ordered': True} })
+    label: Optional[str] = Field(default=None, description="""The one name a person reads for the record; a view that shows one name takes it, else the id.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device', 'Channel', 'Group']} })
+    names: Optional[list[str]] = Field(default=None, description="""Other names a person at the facility uses for the record; a set, compared and written sorted.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group']} })
     properties: Optional[list[str]] = Field(default=None, description="""Vocabulary property names.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device'], 'list_elements_ordered': True} })
     attributes: Optional[Any] = Field(default=None, description="""A free string to scalar or list map, carried verbatim.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel']} })
-    model: Optional[str] = Field(default=None, description="""Computed; the model whose deck gave `s` and `length`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Span', 'Device']} })
-    s: Optional[float] = Field(default=None, description="""Computed; the entrance of the device's wired elements, in metres.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
-    length: Optional[float] = Field(default=None, description="""Computed; in metres.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
+    model: Optional[str] = Field(default=None, description="""The model whose deck `s` and `length` are measured in; computed when the device is wired, else stated with `s`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Span', 'Device']} })
+    s: Optional[float] = Field(default=None, description="""The entrance of the device in metres along its model; computed from the deck when the device is wired, and a source may state it when not. On a periodic deck of length L a stated s is read modulo L, and the device is placed and numbered there; a stated s outside [0, L] builds with one warning per device. On a single-pass deck it lies in [0, L].""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
+    length: Optional[float] = Field(default=None, description="""In metres; computed when the device is wired, and a source may state it when not.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
     ordinalInPlace: Optional[int] = Field(default=None, description="""Computed; the device's ordinal among its class in its place.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
     ordinalInModel: Optional[int] = Field(default=None, description="""Computed; the device's ordinal among its class in its model.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device']} })
     groups: Optional[list[str]] = Field(default=None, description="""Computed; the groups naming the device as a member.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Facility', 'Device', 'Measurement']} })
@@ -1253,20 +1268,21 @@ class Channel(ConfiguredBaseModel):
 
     id: str = Field(default=..., json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group', 'Wiring']} })
     role: Optional[RoleEnum] = Field(default=None, description="""Absent means readback.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
-    pair: Optional[str] = Field(default=None, description="""The readback address of a setpoint; absent means the setpoint itself.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
+    pair: Optional[str] = Field(default=None, description="""The readback address of a setpoint. Absent, the build pairs the setpoint with the one readback on the same device, place or nothing whose signal names the same quantity, else with itself.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
+    tolerance: Optional[Tolerance] = Field(default=None, description="""On a float setpoint: how close its readback (its pair, else itself) must come.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     on: Optional[OnTarget] = Field(default=None, description="""Absent means the channel belongs to nothing.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     endpoint_of: Optional[list[str]] = Field(default=None, description="""The devices sharing this channel as an endpoint.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     signal: Optional[str] = Field(default=None, description="""A vocabulary signal role.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     unit: Optional[str] = Field(default=None, description="""Free text.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Channel', 'Wiring']} })
-    description: Optional[str] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Identity',
+    description: Optional[str] = Field(default=None, description="""What this channel is. When a source states none and the channel names a `signal`, the build composes one from its owner, its signal and its unit, and records it in `provenance.defaults`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Identity',
                        'FacilityClass',
                        'Place',
                        'Device',
                        'Channel',
                        'Group',
                        'Scenario']} })
-    names: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group'],
-         'list_elements_ordered': True} })
+    label: Optional[str] = Field(default=None, description="""The one name a person reads for the record; a view that shows one name takes it, else the id.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device', 'Channel', 'Group']} })
+    names: Optional[list[str]] = Field(default=None, description="""Other names a person at the facility uses for the record; a set, compared and written sorted.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group']} })
     former_addresses: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     tags: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Channel']} })
     attributes: Optional[Any] = Field(default=None, description="""A free string to scalar or list map, carried verbatim.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel']} })
@@ -1285,10 +1301,30 @@ class Seed(ConfiguredBaseModel):
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://narad.example.org/schema/osprey.facility.core'})
 
     nominal: Optional[Any] = Field(default=None, description="""The value at start, of the channel's value_type.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Seed']} })
-    noise: Optional[float] = Field(default=None, description="""Additive Gaussian sigma in the channel's unit.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Seed', 'Scenario']} })
+    noise: Optional[Noise] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Seed', 'Scenario']} })
     drift: Optional[Drift] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Seed']} })
     clamp: Optional[list[Any]] = Field(default=None, description="""[low, high]; either side may be null.""", min_length=2, max_length=2, json_schema_extra = { "linkml_meta": {'domain_of': ['Seed'], 'list_elements_ordered': True} })
     linear: Optional[dict[str, Union[float, LinearTerm]]] = Field(default=None, description="""The value as a weighted sum of other channels, `{<address>: <coefficient>}`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Seed', 'Curve'], 'list_elements_ordered': True} })
+
+
+class Noise(ConfiguredBaseModel):
+    """
+    Additive Gaussian noise, stating exactly one of `absolute`, `relative`.
+    """
+    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://narad.example.org/schema/osprey.facility.core'})
+
+    absolute: Optional[float] = Field(default=None, description="""Gaussian sigma in the channel's unit.""", ge=0, json_schema_extra = { "linkml_meta": {'domain_of': ['Noise', 'Tolerance']} })
+    relative: Optional[float] = Field(default=None, description="""Gaussian sigma as a fraction of the reading.""", ge=0, json_schema_extra = { "linkml_meta": {'domain_of': ['Noise', 'Tolerance']} })
+
+
+class Tolerance(ConfiguredBaseModel):
+    """
+    How close a readback must come to its setpoint's demand, stating exactly one of `absolute`, `relative`.
+    """
+    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://narad.example.org/schema/osprey.facility.core'})
+
+    absolute: Optional[float] = Field(default=None, description="""Largest |readback − demand| at which a move counts as done, in the channel's unit.""", ge=0, json_schema_extra = { "linkml_meta": {'domain_of': ['Noise', 'Tolerance']} })
+    relative: Optional[float] = Field(default=None, description="""The same bound as a fraction of the demand.""", ge=0, json_schema_extra = { "linkml_meta": {'domain_of': ['Noise', 'Tolerance']} })
 
 
 class Drift(ConfiguredBaseModel):
@@ -1307,30 +1343,22 @@ class LinearTerm(ConfiguredBaseModel):
 
 class Group(ConfiguredBaseModel):
     """
-    A named set of devices.
+    A named set of devices. A channel's meaning is on the channel: its `signal` and its `description`.
     """
     linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://narad.example.org/schema/osprey.facility.core'})
 
     id: str = Field(default=..., json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group', 'Wiring']} })
-    description: Optional[str] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Identity',
+    description: Optional[str] = Field(default=None, description="""What the set is, in the facility's words.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Identity',
                        'FacilityClass',
                        'Place',
                        'Device',
                        'Channel',
                        'Group',
                        'Scenario']} })
-    names: Optional[list[str]] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group'],
-         'list_elements_ordered': True} })
+    label: Optional[str] = Field(default=None, description="""The one name a person reads for the record; a view that shows one name takes it, else the id.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Device', 'Channel', 'Group']} })
+    names: Optional[list[str]] = Field(default=None, description="""Other names a person at the facility uses for the record; a set, compared and written sorted.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group']} })
     members: Optional[list[str]] = Field(default=None, description="""Device ids.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Group']} })
-    signals: Optional[dict[str, Union[str, SignalSentence]]] = Field(default=None, description="""One sentence per kind of signal the members carry, `{<field or field/subfield>: <sentence>}`, carried verbatim.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Group'], 'list_elements_ordered': True} })
     provenance: Optional[Provenance] = Field(default=None, json_schema_extra = { "linkml_meta": {'domain_of': ['Place', 'Device', 'Channel', 'Group', 'Model', 'Wiring']} })
-
-
-class SignalSentence(ConfiguredBaseModel):
-    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://narad.example.org/schema/osprey.facility.core'})
-
-    key: str = Field(default=..., json_schema_extra = { "linkml_meta": {'domain_of': ['SignalSentence']} })
-    sentence: str = Field(default=..., json_schema_extra = { "linkml_meta": {'domain_of': ['SignalSentence']} })
 
 
 class Model(ConfiguredBaseModel):
@@ -1499,12 +1527,14 @@ class Scenario(ConfiguredBaseModel):
                        'Group',
                        'Scenario']} })
     overrides: Optional[Any] = Field(default=None, description="""`{<address>: <value>}`, each value of the channel's value_type.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
-    faults: Optional[Any] = Field(default=None, description="""`{<model>: {<address or engine variable>: <value>}}`, where a value is a scalar, the word `stuck`, or a map `{<fault field>: <value>}`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
+    faults: Optional[Any] = Field(default=None, description="""`{<model>: {<address or engine variable>: <value>}}`, where a value is a scalar or a map `{<fault field>: <value>}`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
+    channel_faults: Optional[Any] = Field(default=None, description="""`{<address>: stuck | frozen | disconnected}`: faults of the channel itself while the scenario is active. `stuck` holds a setpoint's writes; `frozen` holds a reading at the value it served when the scenario became active; `disconnected` reads not-a-number with an undefined alarm and holds writes.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
     archiver: Optional[list[Any]] = Field(default=None, description="""`[{channel, events}]`, the history each channel's archive shows. An event's `at_offset` is in seconds relative to the moment the scenario is applied (negative is the past); a step or spike may instead state `at_when` `{days_ago, time}`, a logbook entry's own `when`, so the event and the entry narrating it fall at one instant. An anchored spike's `width` is its Gaussian sigma in seconds. An event meant to be sampled densely sits inside the archive's dense tier, with a `width` of at least twice the sampling interval.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario'], 'list_elements_ordered': True} })
     logbook: Optional[list[Any]] = Field(default=None, description="""`[{entry_id, when, author, title, text, tags?, categories?, loto_tag?, extra?, attachments?}]`, the entries the scenario narrates. `attachments` lists the entry's pictures, each `{path: <picture file>}` or `{plot: <plot spec .json>}`, relative to the scenario's own directory `scenarios/<name>/`.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario'], 'list_elements_ordered': True} })
     drivers: Optional[Any] = Field(default=None, description="""`{<driver>: {kind, amplitude, period_s}}`, slow signals shared by the channels `couple` names, so those channels move together.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
     couple: Optional[Any] = Field(default=None, description="""`{<address>: [{driver, gain, gain_wander?}]}`: the channel adds `gain` times each named driver to its value; `gain_wander` `{amplitude, period_s}` lets that gain wax and wane.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
-    noise: Optional[Any] = Field(default=None, description="""`{<address>: {noise, noise_abs}}`, the channel's noise while the scenario is active, in place of its seed's.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Seed', 'Scenario']} })
+    noise: Optional[Any] = Field(default=None, description="""`{<address>: {absolute: <sigma>} | {relative: <fraction>}}`, the channel's noise while the scenario is active, in place of its seed's.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Seed', 'Scenario']} })
+    still: Optional[Any] = Field(default=None, description="""`all`, or a list of addresses: while the scenario is active, those readings serve without drift, couplings or noise.""", json_schema_extra = { "linkml_meta": {'domain_of': ['Scenario']} })
 
 
 # Model rebuild
@@ -1561,10 +1591,11 @@ Device.model_rebuild()
 OnTarget.model_rebuild()
 Channel.model_rebuild()
 Seed.model_rebuild()
+Noise.model_rebuild()
+Tolerance.model_rebuild()
 Drift.model_rebuild()
 LinearTerm.model_rebuild()
 Group.model_rebuild()
-SignalSentence.model_rebuild()
 Model.model_rebuild()
 Wiring.model_rebuild()
 Slice.model_rebuild()

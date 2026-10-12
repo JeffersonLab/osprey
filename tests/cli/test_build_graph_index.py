@@ -81,9 +81,10 @@ def _graph_repo(
         "data: data\n"
         "config:\n"
         # The posture floor a hand-written profile states for itself: with no
-        # app template beneath it, nothing else can answer these. `mock` and
-        # `none` because this repo is about the search index, not the machine.
-        "  control_system.type: mock\n"
+        # app template beneath it, nothing else can answer these. The simulator
+        # in process and `none` because this repo is about the search index, not the machine.
+        "  control_system.type: virtual_accelerator\n"
+        "  control_system.connector.virtual_accelerator.serving: in_process\n"
         "  archiver.type: none\n"
         # No approval hook is selected, so nothing would ask: approval is off.
         "  approval.enabled: false\n"

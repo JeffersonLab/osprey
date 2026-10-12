@@ -1,8 +1,9 @@
-"""The mock's served nominals against the per-address nominal golden, and its served noise against the seeds.
+"""The in-process simulator's served nominals against the per-address nominal golden, and its served noise against the seeds.
 
-``tests/facility/golden/nominal_mock.json`` holds, for every demo address, the
-nominal the mock serves with no scenario active. The mock serves the
-control-assistant build's simulator view through a composite, so these tests
+``tests/facility/golden/nominal_in_process.json`` holds, for every demo
+address but the deck's tune and chromaticity instruments and the transfer
+line's channels, the nominal the simulator served in process serves with no
+scenario active. It serves the control-assistant build's simulator view through a composite, so these tests
 build that composite from the shared build and hold it to the golden to 1e-12
 on every address, except the declared re-baselines:
 
@@ -33,7 +34,7 @@ import pytest
 from tests.facility.conftest import BuiltProject
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GOLDEN = REPO_ROOT / "tests/facility/golden/nominal_mock.json"
+GOLDEN = REPO_ROOT / "tests/facility/golden/nominal_in_process.json"
 
 #: A served value's tolerance against the golden.
 TOLERANCE = 1e-12
@@ -46,6 +47,9 @@ PHYSICS_MODEL = "SR"
 
 #: The deck machine's instruments the golden's capture predates.
 ADDITIONS = frozenset({"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y", "SR:DIAG:TUNE:X", "SR:DIAG:TUNE:Y"})
+
+#: How many transfer line channels the golden's capture predates.
+LINE_CHANNELS = 40
 
 #: An ``SR`` beam position monitor's horizontal position.
 SR_BPM_X = re.compile(r"SR:DIAG:BPM:\d+:POSITION:X")
@@ -78,7 +82,7 @@ def close(actual: float, expected: float) -> bool:
 
 
 class Served:
-    """The composite a mock builds from the control-assistant simulator view."""
+    """The composite the in-process simulator builds from the control-assistant simulator view."""
 
     def __init__(self, view: Path) -> None:
         from osprey_connectors.simulation.composite import Composite
@@ -115,8 +119,11 @@ def rebaselined() -> set[str]:
     return {address for address in golden() if SR_BPM_X.fullmatch(address)} | set(WIRED_CAVITY)
 
 
-def test_the_golden_holds_every_served_channel_but_the_deck_instruments(served: Served) -> None:
-    assert set(served.channels) - set(golden()) == ADDITIONS
+def test_the_golden_holds_every_served_channel_but_the_added_ones(served: Served) -> None:
+    unheld = set(served.channels) - set(golden())
+    line = {address for address in unheld if address.startswith("LINE:")}
+    assert len(line) == LINE_CHANNELS
+    assert unheld - line == ADDITIONS
     assert set(golden()) <= set(served.channels)
 
 
@@ -156,7 +163,8 @@ def test_a_read_adds_the_seed_noise_times_the_channel_s_keyed_draw(served: Serve
     checked = 0
     for address in sorted(golden()):
         seed = served.seeds.get(address, {})
-        if not served.is_float_readback(address) or not seed.get("noise"):
+        sigma = (seed.get("noise") or {}).get("absolute")
+        if not served.is_float_readback(address) or not sigma:
             continue
         if "clamp" in seed or "linear" in seed:
             continue
@@ -169,7 +177,7 @@ def test_a_read_adds_the_seed_noise_times_the_channel_s_keyed_draw(served: Serve
             reading = reading - series.wander(
                 key, INSTANTS, float(drift["amplitude"]), float(drift["period_s"])
             )
-        expected = seed["noise"] * series.keyed_normals(key, counters_ms)
+        expected = sigma * series.keyed_normals(key, counters_ms)
         np.testing.assert_allclose(reading, expected, rtol=1e-9, atol=TOLERANCE, err_msg=address)
         checked += 1
     assert checked == 225

@@ -12,8 +12,10 @@ a deck sits a physics model built through the `LUME
 pyAT lattice as a ``LUMEModel`` via ``lume-pyat``, so that writing a corrector
 moves the orbit that the BPMs report. The texture model serves every channel no
 model wires, so a client sees one machine rather than a physics island
-surrounded by dead addresses. The ``mock`` connector serves the same view
-in-process.
+surrounded by dead addresses. Served in process
+(``control_system.connector.virtual_accelerator.serving: in_process``), the
+same simulator reads the same view through the same composite, with no
+container and no network.
 
 This page is about how those pieces fit. Running one, and the
 ``control_system.type`` switch that selects it, are in
@@ -41,7 +43,7 @@ every channel address the facility declares, then one
 ``<code>:SIM:<model>:STATUS`` address for each served physics model. Which
 models are served is the view's ``served_models.json``, with the texture model
 always last. A physics model is one child of the composite, built from the
-view's ``variables.json`` and its deck, ``decks/<model>.json``, through the
+view's ``variables.json`` and its deck, ``decks/<model>.<its suffix>``, through the
 engine plug-in its record names; the texture serves every channel no model
 wires. The container's ready line prints how many channels it serves, so the
 count is read off the running service rather than kept in prose that would
@@ -142,7 +144,7 @@ Bringing your own model
 
 The runner serves one composite, and the composite builds one child per
 served physics model from the view's ``variables.json`` and the model's deck,
-``decks/<model>.json``, through the engine plug-in the model's record names:
+``decks/<model>.<its suffix>``, through the engine plug-in the model's record names:
 its ``engine``, looked up in the ``osprey.simulation.engines`` entry-point
 group. Nothing in the entrypoint, a profile or ``.env`` names an engine.
 
@@ -222,7 +224,10 @@ a channel address. A monitor reading carries ``offset``, ``gain``, ``noise``
 and ``polarity`` on its own axis, and a monitor one ``roll``, on its x-axis
 reading or its only one. A setpoint on ``PolynomB`` or ``KickAngle`` carries
 ``cal_factor`` and ``cal_offset``; a calibration is the supply's, so where one
-element is driven by two setpoints, each is miscalibrated alone.
+element is driven by two setpoints, each is miscalibrated alone. A monitor's
+roll turns the beam position in the deck's unit, before the monitor's
+conversion to the unit it publishes, and its offset, gain, noise and polarity
+then act on the published reading.
 
 Four read-only arrays sit beside them: ``tunes``, ``chromaticity``,
 ``beta_at_monitors`` and ``orbit_at_monitors``, the last two one row per
@@ -233,11 +238,16 @@ for them.
 
 The imperfections a machine starts from are scenario faults. A scenario under
 ``data/facility/scenarios/`` names them in its ``faults`` block, keyed by model
-and then by address, each a value, ``stuck``, or a map of fault fields to
-values; the composite seeds them into its models when the scenario is
-active. ``stuck`` is a fault of the composite's write path rather than of a
-model: a stuck setpoint accepts a write, reads the value written, and forwards
-none of it; its readback shows the model where it was.
+and then by address, each a value or a map of fault fields to values; the
+composite seeds them into its models when the scenario is active. Channel
+faults, named in the scenario's ``channel_faults`` block, are faults of the
+composite's channel layer rather than of a model, and act on wired and
+texture channels alike. A ``stuck`` setpoint accepts a write, reads the value
+written, and forwards none of it; its readback shows the machine where it
+was. A ``frozen`` reading serves the value it served when the scenario became
+active. A ``disconnected`` channel holds writes as ``stuck`` does, and its
+reading serves not-a-number, or for a non-float the value it served when the
+scenario became active, with the ``udf`` condition.
 
 A readout fault never moves the orbit; it changes what a monitor reports.
 ``diff`` is where it becomes visible, as a served reading that has parted from

@@ -9,8 +9,10 @@
 #
 # `noise` is the sigma of a read's Gaussian noise and `drift` a slow wander of
 # `amplitude` over `period_s`; each is `{value, unit}` or `none`, converted into
-# the channel's own unit. `source` names the instrument behaviour the value
-# stands for.
+# the channel's own unit. A setpoint row states `tolerance` instead, `{value,
+# unit}`: how close the setpoint's readback must come for a move to count as
+# done, stamped into records/channels.yaml and never below the readback's
+# motion envelope. `source` names the instrument behaviour the value stands for.
 
 - class: Dipole
   signal: current_readback
@@ -86,6 +88,36 @@
   source: single-pass BPM resolution
 
 - class: BeamPositionMonitor
+  signal: position_x_readback
+  machine: LINE
+  noise: none
+  source: model-computed trajectory, served without simulated motion
+
+- class: BeamPositionMonitor
+  signal: position_y_readback
+  machine: LINE
+  noise: none
+  source: model-computed trajectory, served without simulated motion
+
+- class: Quadrupole
+  signal: current_readback
+  machine: LINE
+  noise: none
+  source: model-served supply readback, served without simulated motion
+
+- class: HCorrector
+  signal: current_readback
+  machine: LINE
+  noise: none
+  source: model-served supply readback, served without simulated motion
+
+- class: VCorrector
+  signal: current_readback
+  machine: LINE
+  noise: none
+  source: model-served supply readback, served without simulated motion
+
+- class: BeamPositionMonitor
   signal: position_offset
   noise: none
   source: stored reference, not a measurement
@@ -149,7 +181,7 @@
 
 - class: AcceleratingCavity
   signal: rf_forward_power_readback
-  noise: {value: 4.949999999999999, unit: W}
+  noise: {value: 4.95, unit: W}
   source: RF power meter, ~1 % of range
 
 - class: AcceleratingCavity
@@ -191,12 +223,12 @@
 
 - class: Gauge
   signal: vacuum_readback
-  noise: {value: 1.4999999999999998e-09, unit: Pa}
+  noise: {value: 1.5e-09, unit: Pa}
   source: gauge reading scatter, 3 % of nominal
 
 - class: Pump
   signal: vacuum_readback
-  noise: {value: 1.0000000000000001e-11, unit: Pa}
+  noise: {value: 1e-11, unit: Pa}
   source: gauge reading scatter, 1 % of nominal
 
 - class: Pump
@@ -208,3 +240,53 @@
   signal: voltage_readback
   noise: {value: 5, unit: V}
   source: pump HV regulation, 0.1 %
+
+- class: Dipole
+  signal: current_setpoint
+  tolerance: {value: 0.05, unit: A}
+  source: bend supply settle band, as a middle-layer export states it
+
+- class: Quadrupole
+  signal: current_setpoint
+  tolerance: {value: 0.05, unit: A}
+  source: quadrupole supply settle band, as a middle-layer export states it
+
+- class: Sextupole
+  signal: current_setpoint
+  tolerance: {value: 0.05, unit: A}
+  source: sextupole supply settle band, as a middle-layer export states it
+
+- class: HCorrector
+  signal: current_setpoint
+  tolerance: {value: 0.02, unit: A}
+  source: corrector supply settle band, between the 0.01 A and 0.1 A export classes
+
+- class: VCorrector
+  signal: current_setpoint
+  tolerance: {value: 0.02, unit: A}
+  source: corrector supply settle band, between the 0.01 A and 0.1 A export classes
+
+- class: AcceleratingCavity
+  signal: frequency_setpoint
+  tolerance: {value: 10, unit: Hz}
+  source: frequency-counter resolution
+
+- class: AcceleratingCavity
+  signal: tuner_position_setpoint
+  tolerance: {value: 1100, unit: µm}
+  source: tuner encoder band plus the cooling-water thermal wander of the cavity body
+
+- class: AcceleratingCavity
+  signal: voltage_setpoint
+  tolerance: {value: 0.02, unit: V}
+  source: amplitude loop settle band
+
+- class: Modulator
+  signal: rf_hv_setpoint
+  tolerance: {value: 1.0, unit: V}
+  source: HV regulation settle band
+
+- class: Pump
+  signal: voltage_setpoint
+  tolerance: {value: 50, unit: V}
+  source: ion-pump controller settle band

@@ -12,8 +12,11 @@ tree the response check runs before the render and prints one line per kept
 response export. When the check left rows out of the comparison, a second line
 for that model follows on stderr, giving the number of rows left out and the
 count per reason (unwired, no width, unsolved, table calibration); it does not
-change the verdict or the exit code. Persona and image renders are checked by ``osprey build``
-alone.
+change the verdict or the exit code. A device whose stated s lies outside its
+periodic model's deck prints one warning on stderr; it does not change the exit
+code. A scenario that moves a readback beyond its setpoint's tolerance, and a
+lane whose float setpoints declare no tolerance, print the build's
+settle-tolerance warning on stderr; it does not change the exit code. Persona and image renders are checked by ``osprey build`` alone.
 
 ``osprey facility show [--json] [ID]`` builds in memory as ``validate`` does
 and prints what the build holds: the identity, the records per kind and the
@@ -37,6 +40,11 @@ file without the layer's header line that names something the imported facility
 does not have, and deletes none.
 ``--print-exporter`` prints the MATLAB exporter the layer ships and needs
 neither a repo nor an export.
+
+``osprey facility import list FILE`` writes a CSV channel list as the list
+layer's sources, ``data/facility/imported/list/channels.yaml`` and, when a row
+states a device's ``s``, ``devices.yaml`` beside it, and seeds nothing. Every row the layer refuses prints one ``source-invalid`` line on
+stderr, and the verb then writes nothing and exits 1.
 
 Note: the facility package and the build's render are imported inside the
 command body, so ``osprey --help`` does not load them.
@@ -76,7 +84,12 @@ def validate(ctx: click.Context, repo: Path | None) -> None:
     left rows out of the comparison, a second line for that model follows on
     stderr, giving the number of rows left out and the count per reason
     (unwired, no width, unsolved, table calibration); it does not change the
-    verdict or the exit code.
+    verdict or the exit code. A device whose stated s lies outside its
+    periodic model's deck prints one warning per device on stderr; it does
+    not change the exit code. A scenario that moves a readback beyond its
+    setpoint's tolerance, and a lane whose float setpoints declare no
+    tolerance, print the build's settle-tolerance warning on stderr; it does
+    not change the exit code.
     """
     _build_in_memory(ctx, repo)
 
@@ -114,10 +127,10 @@ def _build_in_memory(
 
     from osprey.errors import BuildProfileError
     from osprey.facility.build import LATER_STAGES
+    from osprey.facility.layers.mml.response_check import check_responses
+    from osprey.facility.layers.mml.response_check import report as report_responses
     from osprey.facility.render import facility_digest
-    from osprey.facility.response_check import check_responses
-    from osprey.facility.response_check import report as report_responses
-    from osprey.facility.validate import report, run_stages
+    from osprey.facility.validate import report, report_warnings, run_stages
 
     from .build_cmd import _render_project, _render_zones, _rendered_config, _SharedRenderInputs
     from .profile_conventions import (
@@ -150,6 +163,7 @@ def _build_in_memory(
     if not result.ok:
         report(result.errors)
         ctx.exit(1)
+    report_warnings(result.validated.warnings)
     document = result.validated.document
     if document is None:
         raise RuntimeError("the stages ran clean without producing the document")
@@ -622,3 +636,49 @@ def import_mml(ctx: click.Context, exports: tuple[Path, ...], repo: Path | None)
             if attached.is_dir():
                 lines.append(f"  rm -r {shlex.quote(_shown(attached, repo_root) + '/')}")
             click.echo("\n".join(lines), err=True)
+
+
+@import_group.command("list")
+@click.argument(
+    "listing",
+    metavar="FILE",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True, path_type=Path),
+)
+@repo_option
+@click.pass_context
+def import_list(ctx: click.Context, listing: Path, repo: Path | None) -> None:
+    """Write a CSV channel list as sources under data/facility/imported/list/.
+
+    \b
+    FILE is UTF-8 CSV. A header row names its columns, in any order:
+      address      the channel's full address; required
+      role         setpoint, readback or none; empty means readback
+      pair         a setpoint's readback address
+      device       the device the channel belongs to
+      place        the place the channel belongs to
+      unit         free text
+      description  free text
+      tags         separated by ;
+      s            the device's position in metres along model
+      model        the model whose deck s is measured in
+    A file without an address column holds one address per line.
+
+    Each device a row states s for is written with its s and model to
+    devices.yaml beside the channels. Seeds no authored file. Exits 1 and
+    writes nothing when a row names both a device and a place, states an
+    unknown role, has no address or repeats one, states s or model with no
+    device or an s that is not a number, when two rows state different
+    positions for one device, when the header names an unknown column, or
+    while the profile does not resolve.
+    """
+    from osprey.errors import BuildProfileError
+    from osprey.facility.layers.list import import_list as run_import
+
+    repo_root = find_repo_root(repo)
+    try:
+        facility_dir = _facility_dir(_main_profile(repo_root)[0], repo_root)
+    except (BuildProfileError, ValueError, RuntimeError) as error:
+        fail("The profile does not resolve.", str(error))
+        ctx.exit(1)
+    for path in run_import(listing, facility_dir):
+        report(f"wrote {_shown(path, repo_root)}")

@@ -1,9 +1,13 @@
 """The built demo against its frozen fingerprint.
 
 ``osprey build`` on the control-assistant preset writes ``build/facility.json``.
-Its channels, joined as the fingerprint joins them (address, role, value type,
-names, description), hold every frozen row unchanged, and what they hold beyond
-the frozen rows is exactly the additions file. The file validates as the
+Its channels, joined as the fingerprint joins them less the ``names`` column
+(address, role, value type, description), hold every frozen row with its
+address, role and value type unchanged and its description as the prefix of
+the served one, and what they hold beyond the frozen rows is exactly the
+additions file, the transfer line's rows among them; no demo channel carries
+a name. The build holds 532 devices in 29 groups, three of them the line's,
+and twelve sectors under ``SR``. The file validates as the
 generated ``Facility`` model, and the committed sources validate clean. The
 channel roster read off the built render enumerates every frozen address with
 the direction its role states.
@@ -18,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from osprey.facility.validate import FACILITY_HEADER
 from tests.facility.test_cf_view_parity import (
     FINGERPRINT_ROW_KEYS,
     FINGERPRINT_SHA256,
@@ -31,10 +36,18 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.slow]
 
 
+#: The fingerprint columns the comparison reads: every one but ``names``.
+ROW_KEYS = [key for key in FINGERPRINT_ROW_KEYS if key != "names"]
+
+
+def _project(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: row[key] for key in ROW_KEYS}
+
+
 def _rows(document: dict[str, Any]) -> list[dict[str, Any]]:
-    """The facility file's channels as fingerprint rows, sorted by address."""
+    """The facility file's channels as fingerprint rows less ``names``, sorted by address."""
     rows = [
-        {"address": channel["id"], **{key: channel[key] for key in FINGERPRINT_ROW_KEYS[1:]}}
+        {"address": channel["id"], **{key: channel[key] for key in ROW_KEYS[1:]}}
         for channel in document["channels"]
     ]
     return sorted(rows, key=lambda row: row["address"])
@@ -51,12 +64,24 @@ def test_the_frozen_rows_are_unchanged() -> None:
     assert _sha256(rows) == FINGERPRINT_SHA256
 
 
-def test_every_frozen_row_is_served_unchanged(built_control_assistant: BuiltProject) -> None:
+def test_every_frozen_row_is_served_with_its_description_as_a_prefix(
+    built_control_assistant: BuiltProject,
+) -> None:
     served = {row["address"]: row for row in _rows(built_control_assistant.facility)}
     missing = [row["address"] for row in fingerprint_rows() if row["address"] not in served]
-    changed = [row for row in fingerprint_rows() if served.get(row["address"], row) != row]
+    frozen = [row for row in map(_project, fingerprint_rows()) if row["address"] in served]
+    changed = [
+        row["address"]
+        for row in frozen
+        if {**served[row["address"]], "description": None} != {**row, "description": None}
+        or not served[row["address"]]["description"].startswith(row["description"])
+    ]
     assert missing == []
     assert changed == []
+
+
+def test_no_demo_channel_carries_a_name(built_control_assistant: BuiltProject) -> None:
+    assert [c["id"] for c in built_control_assistant.facility["channels"] if c.get("names")] == []
 
 
 def test_the_rows_beyond_the_frozen_ones_are_exactly_the_additions(
@@ -66,14 +91,39 @@ def test_the_rows_beyond_the_frozen_ones_are_exactly_the_additions(
     beyond = [
         row for row in _rows(built_control_assistant.facility) if row["address"] not in frozen
     ]
-    assert beyond == load_golden("demo_fingerprint_additions.json")["rows"]
+    assert beyond == [
+        _project(row) for row in load_golden("demo_fingerprint_additions.json")["rows"]
+    ]
+
+
+def test_the_line_rows_are_exactly_the_additions_line_rows(
+    built_control_assistant: BuiltProject,
+) -> None:
+    def line(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [row for row in rows if row["address"].startswith("LINE:")]
+
+    served = line(_rows(built_control_assistant.facility))
+    added = line([_project(row) for row in load_golden("demo_fingerprint_additions.json")["rows"]])
+    assert len(served) == 40
+    assert served == added
+
+
+def test_the_demo_holds_532_devices_in_29_groups(built_control_assistant: BuiltProject) -> None:
+    groups = sorted(group["id"] for group in built_control_assistant.facility["groups"])
+    assert len(built_control_assistant.facility["devices"]) == 532
+    assert len(groups) == 29
+    assert [group for group in groups if group.startswith("LINE/")] == [
+        "LINE/BPM",
+        "LINE/HCM",
+        "LINE/VCM",
+    ]
 
 
 def test_the_facility_file_validates_as_the_model(built_control_assistant: BuiltProject) -> None:
     from osprey.facility.schema import Facility
 
     Facility.model_validate(built_control_assistant.facility)
-    assert built_control_assistant.facility["schema"] == "osprey.facility.facility/1"
+    assert built_control_assistant.facility["schema"] == FACILITY_HEADER
 
 
 def test_the_sources_validate_clean(built_control_assistant: BuiltProject) -> None:

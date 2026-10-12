@@ -20,20 +20,24 @@ Database Contracts, per Paradigm
 In-context
 ----------
 
-A flat JSON structure, the index ``osprey build`` writes from the channels
-tagged ``in_context``: one row per channel, sorted by address, loaded by the
-flat ``ChannelDatabase``:
+A flat JSON structure, the index ``osprey build`` writes from every channel, or
+from the subset the facility tags ``in_context``: one row per channel, sorted by
+address, loaded by the flat ``ChannelDatabase``. A row's ``channel`` is the
+channel's ``label``, else its address:
 
 .. code-block:: json
 
    {
      "schema": "osprey.facility.channel_finder/1",
+     "count": 1,
      "channels": [
        {"channel": "TerminalVoltageReadBack",
         "address": "TerminalVoltageReadBack",
         "description": "Actual value of the terminal potential"}
      ]
    }
+
+``count`` is the number of rows.
 
 .. _channel-finder-db-hierarchical:
 
@@ -91,7 +95,13 @@ roster in its ``setup`` block:
      }
    }
 
-``DeviceList`` holds ``[sector, device]`` pairs, parallel to ``CommonNames``.
+``DeviceList`` holds ``[place index, ordinal]`` pairs: the device's place
+numbered among its sibling places at the same level, by beam position, and the
+device's ordinal inside that place. A device whose place has no sibling places
+— one at the machine itself, or with no place — has place index 0, and those
+devices are numbered together, so no two rows of a family are equal.
+``PlaceList``, when present, holds each device's place beside its row.
+It is parallel to ``CommonNames``, which is each device's label, else its id.
 An existing MML export keeps its metadata keys (``Units``, ``DataType``,
 ``Description``, …) — the pipeline skips them during navigation rather than
 requiring their removal.
@@ -104,6 +114,14 @@ database can describe a facility that runs both. The ``list_channels`` tool
 takes a ``protocol`` argument to pick between them; without one it returns the
 ``ChannelNames`` list, and asking for a protocol the field does not carry is an
 error naming the keys it does.
+
+**The row count.** Every index ``osprey build`` writes states ``count`` beside
+``schema``: the rows of an in-context index, the leaves of a hierarchical
+tree, the distinct addresses listed under the fields of a middle-layer index
+(a channel of no family is not counted). ``osprey channel-finder benchmark``
+records it as the run's ``channel_count`` and refuses an index that does not
+state it; in graph mode the number is the store's channel count. A
+middle-layer System cannot be named ``schema`` or ``count``.
 
 .. _channel-finder-db-graph:
 

@@ -162,23 +162,36 @@ until it reaches the demand. Two profile keys bound that wait:
 ``bluesky.settle_timeout_s`` (default 5.0 seconds) is how long the poll runs
 before the move fails and the plan aborts, and ``bluesky.settle_tolerance``
 (default ``1e-9``) is how close the readback must come, as an absolute
-difference. The tolerance is a floor: a device whose readback declares motion
-in the facility file settles within that motion's band
-(``|drift.amplitude| + 6 × |noise|``), which the build writes into the device
-file, so only a device whose readback declares no motion and still physically
-moves needs ``settle_tolerance`` raised, and a slow device needs
-``settle_timeout_s`` raised. Running out of budget always fails the plan:
-neither key can turn an unsettled move into a successful one.
+difference. That tolerance is a floor, never a ceiling.
 
-A deployment pointed at the ``mock`` control system drives no channels, so its
-queue server comes up able to browse and describe plans and to run none of
+A setpoint states its own bound in the facility file, next to its ``pair``:
+``tolerance: {absolute: <x>}`` in the channel's unit, or ``tolerance:
+{relative: <f>}``, a fraction of the demand. The build writes it into the
+device file, and the device settles within the larger of the floor and that
+tolerance on every lane. A setpoint with no ``tolerance`` settles, on a lane
+that serves the simulator, within its readback's motion band
+(``|drift.amplitude|`` + 6 × the noise sigma, a ``relative`` sigma taken at the
+seed's ``nominal``), and on a live or stand-in lane within the floor. The
+build warns once per such lane with the count of setpoints that declare no
+``tolerance``, and once per scenario that moves a readback beyond its
+setpoint's tolerance, since that scenario's moves time out while it is active.
+``osprey facility validate`` prints the same warnings.
+
+A device that physically moves needs a ``tolerance`` on its setpoint, and a
+slow device needs ``settle_timeout_s`` raised. Running out of budget always
+fails the plan: neither key can turn an unsettled move into a successful one.
+
+A deployment serving the simulator in process drives no channels over Channel
+Access, so its queue server comes up able to browse and describe plans and to run none of
 them. That is a plain statement about the deployment, not a fault, and the
 build says so in its output.
 
 .. note::
 
-   **The limits database is not the channel list.** ``channel_limits.json``
-   states the range a write to a listed channel has to fall inside. It gates
+   **The limits database is not the channel list.** The limits are the
+   records of ``data/facility/limits.yaml``, which ``osprey build`` renders
+   into ``build/data/channel_limits.json``, the file the connector's reference
+   monitor and the runtime's limits check enforce on every write. It gates
    writes over a subset of the machine, and nothing *enumerates* the facility
    from it: a file listing a few hundred writable channels says nothing about
    the few thousand the facility has. The device set comes from the facility

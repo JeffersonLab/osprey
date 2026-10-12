@@ -112,11 +112,11 @@ DISCRETE = (CAVITY_VALID, READY)
 
 #: The simulator view's channels: moving floats and two flags.
 CHANNELS: dict[str, dict[str, Any]] = {
-    CAVITY_TEMP: {"nominal": 23.0, "noise": 0.01},
-    CAVITY_POWER: {"nominal": 12.0, "noise": 0.02},
+    CAVITY_TEMP: {"nominal": 23.0, "noise": {"absolute": 0.01}},
+    CAVITY_POWER: {"nominal": 12.0, "noise": {"absolute": 0.02}},
     CAVITY_VALID: {"value_type": "bool", "nominal": "TRUE"},
-    BPM_X: {"nominal": 0.0, "noise": 0.001},
-    VAC_PRESSURE: {"nominal": 1e-9, "noise": 1e-11},
+    BPM_X: {"nominal": 0.0, "noise": {"absolute": 0.001}},
+    VAC_PRESSURE: {"nominal": 1e-9, "noise": {"absolute": 1e-11}},
     READY: {"value_type": "bool", "nominal": "TRUE"},
 }
 ADDRESSES = sorted(CHANNELS)
@@ -397,7 +397,10 @@ def world(tmp_path, mongo, mongo_client, monkeypatch):
     config = {
         "project_name": "archiver-world-contracts",
         "project_root": str(root),
-        "control_system": {"type": "mock"},
+        "control_system": {
+            "type": "virtual_accelerator",
+            "connector": {"virtual_accelerator": {"serving": "in_process"}},
+        },
         "archiver": {
             "type": "mongodb_archiver",
             "mongodb_archiver": {

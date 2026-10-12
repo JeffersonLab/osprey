@@ -102,16 +102,10 @@ _WORKFLOW: tuple[str, ...] = (
 _ADDRESSES: dict[str, object] = {
     "property": "fullPv",
     "node_label": "ChannelBinding",
-    "form": "colon-separated tokens, ending in the field the address reads or writes",
-    "generated_grammar": {
-        "tokens": ["ring", "system", "family", "device", "field", "subfield"],
-        "example": "SR:MAG:DIPOLE:01:CURRENT:SP",
-    },
+    "form": "the facility's own spelling of the address, whole",
     "notes": [
-        "The six-token grammar is the generated demo corpus'. A corpus built from a "
-        "real facility records whatever that facility calls its channels — "
-        "often fewer tokens, in that facility's own order — so read the shape "
-        "off the rows rather than assuming it.",
+        "Corpora differ in how many parts an address has and in their order, so "
+        "read the shape off the rows rather than assuming one.",
         "An address is a value in the graph, not a string you can derive. Take "
         "fullPv verbatim from a row; a token pattern that looks right for one "
         "corpus is a fabricated address in another.",
@@ -119,15 +113,14 @@ _ADDRESSES: dict[str, object] = {
 }
 
 #: Prose a phrase search can match against, per node type. ``presence`` is the
-#: part an agent cannot guess: these predicates are a *generator* convention, so
-#: they exist in corpora built from a channel database and are simply absent
-#: from one imported straight from a facility export.
+#: part an agent cannot guess: the prose is the facility file's, so a corpus
+#: loaded from a facility export may carry none of it.
 _PROSE_IS_CORPUS_DEPENDENT = (
-    "Present in generator-built corpora such as the demo machine, whose source "
-    "channel database carries prose. A corpus imported straight from a facility "
-    "export may carry none of them, and a phrase search against them then "
-    "returns no rows — confirm with get_schema before concluding the phrase "
-    "is wrong."
+    "Present when the facility file carries descriptions, as the demo machine "
+    "does: the build writes each one onto its binding. A corpus loaded from a "
+    "facility export may carry none of them, and a phrase search against them "
+    "then returns no rows — confirm with get_schema before concluding the "
+    "phrase is wrong."
 )
 
 _DESCRIPTION_PREDICATES: dict[str, dict[str, object]] = {
@@ -145,9 +138,10 @@ _DESCRIPTION_PREDICATES: dict[str, dict[str, object]] = {
         "match": "(:ChannelBinding)-[:READSSIGNAL|WRITESSIGNAL]->(s)",
         "properties": [],
         "presence": (
-            "Never: a signal is keyed (FAMILY, FIELD, SUBFIELD) without a ring "
-            "while the prose is ring-qualified, so it lives on the binding "
-            "instead. Match a phrase on the binding and walk to the signal."
+            "Never: a signal is a vocabulary name such as `position_x_readback`, "
+            "shared by every channel that carries it, so the prose that says what "
+            "one channel means lives on its binding. Match a phrase on the binding "
+            "and walk to the signal."
         ),
     },
 }
@@ -180,11 +174,11 @@ _CORPUS: dict[str, object] = {
         "manifest cannot answer it. Every device carries it in facility. The "
         "example_queries parameter values belong to the demo machine; on any "
         "other corpus, take values from the rows the structural queries return.",
-        "Corpora differ in what they carry, not in the Cypher. The generated "
-        "demo corpus comes from a channel database that carries prose, so it "
-        "has every description predicate above; a corpus with no source "
-        "database has none of them, and on that corpus a phrase search returns "
-        "no rows while the structural queries still work.",
+        "Corpora differ in what they carry, not in the Cypher. The demo "
+        "machine's facility file carries prose, so its corpus has every "
+        "description predicate above; a corpus whose facility file carries "
+        "none has none of them, and on that corpus a phrase search returns no "
+        "rows while the structural queries still work.",
     ],
 }
 

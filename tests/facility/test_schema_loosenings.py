@@ -47,6 +47,10 @@ FACILITY_SLOTS = [
 #: The multivalued slots that are sets: compared and written sorted by their
 #: string form. Every other multivalued slot keeps its source order.
 SET_VALUED = {
+    ("Place", "names"),
+    ("Device", "names"),
+    ("Channel", "names"),
+    ("Group", "names"),
     ("Channel", "tags"),
     ("Channel", "former_addresses"),
     ("Channel", "endpoint_of"),
@@ -161,18 +165,9 @@ def test_channel_declares_an_optional_signal(core: dict) -> None:
     assert signal.get("range", core["default_range"]) == "string"
 
 
-def test_group_declares_an_optional_signals_map_of_strings(core: dict) -> None:
-    signals = _attrs(core, "Group")["signals"]
-    assert not signals.get("required")
-    assert signals.get("multivalued") and signals.get("inlined")
-    assert not signals.get("inlined_as_list")
-    entry = _attrs(core, signals["range"])
-    keys = [name for name, slot in entry.items() if slot and slot.get("key")]
-    values = [name for name in entry if name not in keys]
-    assert len(keys) == 1 and len(values) == 1
-    value = entry[values[0]]
-    assert value.get("required")
-    assert value.get("range", core["default_range"]) == "string"
+def test_a_group_has_no_signals_slot(core: dict) -> None:
+    assert "signals" not in _attrs(core, "Group")
+    assert "SignalSentence" not in core["classes"]
 
 
 def test_device_attributes_is_a_free_map(core: dict) -> None:
@@ -187,16 +182,23 @@ def test_scenario_record_shape(core: dict) -> None:
         "description",
         "overrides",
         "faults",
+        "channel_faults",
         "archiver",
         "logbook",
         "drivers",
         "couple",
         "noise",
+        "still",
     ]
     faults = scenario["faults"]
     assert faults["range"] == "Any" and not faults.get("multivalued")
-    for part in ("<model>", "<address or engine variable>", "`stuck`", "{<fault field>: <value>}"):
+    for part in ("<model>", "<address or engine variable>", "{<fault field>: <value>}"):
         assert part in faults["description"]
+    assert "stuck" not in faults["description"]
+    channel_faults = scenario["channel_faults"]
+    assert channel_faults["range"] == "Any" and not channel_faults.get("multivalued")
+    for word in ("stuck", "frozen", "disconnected"):
+        assert f"`{word}`" in channel_faults["description"]
 
 
 def test_measurement_block(core: dict) -> None:
@@ -246,7 +248,7 @@ def test_every_multivalued_slot_but_the_sets_keeps_source_order(core: dict) -> N
                 target = ordered if slot.get("list_elements_ordered") else unordered
                 target.add((cls_name, slot_name))
     assert unordered == SET_VALUED
-    for named in ("slices", "names", "options", "shape", "clamp"):
+    for named in ("slices", "options", "shape", "clamp"):
         assert any(slot == named for _, slot in ordered), named
 
 

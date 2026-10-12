@@ -97,6 +97,14 @@ def test_cypher_is_row_capped(query: ExampleQuery) -> None:
 
 
 @pytest.mark.parametrize("query", EXAMPLE_QUERIES, ids=lambda q: q.key)
+def test_a_device_column_returns_the_device_id(query: ExampleQuery) -> None:
+    """A column named for the device carries its ``deviceId``, the id ``q3`` takes; a source name is not unique."""
+    for line in query.cypher.splitlines():
+        if re.search(r"\bAS devices?\b", line):
+            assert "d.deviceId" in line, (query.key, line)
+
+
+@pytest.mark.parametrize("query", EXAMPLE_QUERIES, ids=lambda q: q.key)
 def test_cypher_passes_the_client_side_gate(query: ExampleQuery) -> None:
     """A curated example the gate would refuse is a broken example."""
     vet_query(query.cypher)
@@ -132,8 +140,8 @@ def test_parameter_values_exist_in_the_demo_corpus(query: ExampleQuery, view_gra
     for name, value in query.parameters.items():
         if name == "section":
             assert _literal(view_graph, "sectionCode", value), (query.key, name, value)
-        elif name == "name":
-            assert _literal(view_graph, "sourceName", value), (query.key, name, value)
+        elif name == "device":
+            assert _literal(view_graph, "deviceId", value), (query.key, name, value)
         elif name == "pv":
             assert _literal(view_graph, "fullPv", value), (query.key, name, value)
         elif name in {"class_uri", "root_uri"}:
@@ -156,11 +164,7 @@ def test_the_q3_device_owns_the_q6_address(view_graph: Graph) -> None:
     def p(name: str) -> URIRef:
         return URIRef(_NARAD_P + name)
 
-    devices = {
-        device
-        for device in view_graph.subjects(p("sourceName"), Literal(q3["name"]))
-        if (device, p("sectionCode"), Literal(q3["section"])) in view_graph
-    }
+    devices = set(view_graph.subjects(p("deviceId"), Literal(q3["device"])))
     assert len(devices) == 1, devices
     (device,) = devices
     bindings = set(view_graph.subjects(p("fullPv"), Literal(q6["pv"])))

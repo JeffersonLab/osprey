@@ -97,6 +97,7 @@ asserts its own derivation against::
       "_epics_configured": bool,
       # diagnostics, alongside the five verification fields above
       "connector_type": str,     # what `target` resolved to
+      "transport":      str | None,  # the wire the built connector speaks
       "target":         str,
       "writes_enabled": bool,    # the posture the gateway selection was made
       "readonly_run":   bool,    # on, and the run mode (see below)
@@ -122,7 +123,7 @@ the reason.
 
 **A connector that configures no CA environment reports all five as
 null/false**, and that is a well-formed report rather than a degraded one: the
-mock connector talks to no gateway, so ``selected_role``, ``mode``, ``host``
+simulator served in process talks to no gateway, so ``selected_role``, ``mode``, ``host``
 and ``port`` are ``None`` and ``_epics_configured`` is ``False``. There is
 nothing for the parent to verify because there is no endpoint to get wrong.
 
@@ -580,6 +581,7 @@ def _post_connect_report(
         "port": port,
         "_epics_configured": bool(getattr(connector, "_epics_configured", False)),
         "connector_type": connector_type,
+        "transport": getattr(connector, "transport", None),
         "target": target,
         "writes_enabled": writes_enabled,
         "readonly_run": readonly_run,
@@ -638,10 +640,19 @@ async def _build_connector(
     if marks is not None:
         marks.mark("imports")
 
-    # The section is passed whole with only its type replaced: writes_enabled and
-    # the limits block, per-channel confirm included, travel with it, and the
-    # connector sub-block is already keyed by the resolved type.
-    config = {**section, "type": connector_type}
+    # The section is passed whole: writes_enabled and the limits block,
+    # per-channel confirm included, travel with it, and the connector sub-block
+    # is already keyed by the resolved type. Its type is restated only when the
+    # target's type differs from the section's own resolved type, because the
+    # serving leaf is read under the section's own spelling (no stated type is
+    # the simulator in process; a stated virtual_accelerator without the leaf is
+    # the served one), so restating a type the section already resolves to
+    # would build the other venue.
+    config = (
+        section
+        if types.resolve_control_system_type(section) == connector_type
+        else {**section, "type": connector_type}
+    )
     # The target the parent pointed this child at — already validated by
     # resolve_target above, which refuses anything that is not one of the three
     # literals — is what indexes the per-target narrowing the reference monitor

@@ -55,10 +55,8 @@ A family without the key is identified by ``names``; the import stops
 slots, and (``mapping-invalid``) where an answer does not fit the export.
 
 Every channel's role follows from its field's direction (:func:`field_roles`):
-``write`` is a setpoint, ``read`` a readback, and a family's ``Setpoint`` field
-reads back through its ``Monitor`` field when the family has both; every other
-setpoint is its own pair. A pair is always a readback, so a ``Monitor`` whose
-direction is ``write`` is a setpoint of its own and pairs with nothing.
+``write`` is a setpoint, ``read`` a readback. The import writes no ``pair``; the
+build pairs each setpoint with the readback of its quantity.
 
 :func:`check_mapping` checks meaning: identity and model names are PN_LOCAL,
 ``section_order`` lists every model once, classes and branches resolve against
@@ -78,7 +76,8 @@ export by :func:`draft_mapping` and stops the import
 (``import mml: mapping-draft``), so the reviewer edits one stable file rather
 than writing it from scratch. The draft proposes every family's ``devices``:
 ``names`` where the export names every device, ``same_as`` where exactly one
-such family binds the other axis of the same addresses, else ``address`` with
+such family binds the other axis of the same addresses and states no
+``[sector, device]`` row at two slots under two names, else ``address`` with
 the ids it yields in a comment beneath. Families of one system that share an
 address each binds at exactly one slot, at the same ``[sector, device]``, bind
 one device; where those answers give such an address two ids, and a family of
@@ -181,8 +180,8 @@ UNBOUND_KIND = "unbound_devices"
 SHARED_KIND = "shared_pvs"
 
 
-#: The field a family's setpoints are written through and the one it reads
-#: back through: a family carrying both pairs the first with the second.
+#: The fields a family's setpoints are written through and read back through;
+#: the export's own words, used as a direction vote and for the wired fields.
 SETPOINT_FIELD = "Setpoint"
 MONITOR_FIELD = "Monitor"
 
@@ -959,14 +958,9 @@ def read_mapping(path: Path) -> Mapping:
 
 @dataclass(frozen=True)
 class FieldRole:
-    """The role every channel of one family field takes, and what it pairs with.
-
-    ``pair`` names the family field a setpoint reads back through; ``None``
-    means the channel is its own pair (and always ``None`` for a readback).
-    """
+    """The role every channel of one family field takes."""
 
     role: Literal["setpoint", "readback"]
-    pair: str | None = None
 
 
 def _undecided_direction(key: str) -> ImportStop:
@@ -974,14 +968,9 @@ def _undecided_direction(key: str) -> ImportStop:
 
 
 def field_roles(mapping: Mapping) -> dict[str, FieldRole]:
-    """Derive the role of every family field from its direction.
+    """The role of every family field from its direction.
 
-    ``write`` is a setpoint and ``read`` a readback. A family's ``Setpoint``
-    field pairs with its ``Monitor`` field when the family has both; every
-    other setpoint is its own pair. A setpoint reads back only through a
-    readback, so the pair holds only while the ``Monitor`` is ``read``: a
-    ``Monitor`` the mapping marks ``write`` is itself a setpoint, and the
-    ``Setpoint`` beside it is its own pair.
+    ``write`` is a setpoint and ``read`` a readback.
 
     Args:
         mapping: The parsed mapping.
@@ -1000,12 +989,6 @@ def field_roles(mapping: Mapping) -> dict[str, FieldRole]:
         roles[key] = FieldRole(
             role=SETPOINT_ROLE if direction.direction == "write" else READBACK_ROLE
         )
-    for key, found in roles.items():
-        family, _, name = key.partition(".")
-        monitor = roles.get(f"{family}.{MONITOR_FIELD}")
-        if name == SETPOINT_FIELD and found.role == SETPOINT_ROLE and monitor is not None:
-            if monitor.role == READBACK_ROLE:
-                roles[key] = FieldRole(role=SETPOINT_ROLE, pair=MONITOR_FIELD)
     return roles
 
 
@@ -1874,14 +1857,27 @@ _CURRENT_UNITS: frozenset[str] = frozenset({"a", "amp", "amps", "ampere", "amper
 _MAGNET_ATTRIBUTES: frozenset[str] = frozenset({"PolynomB", "PolynomA", "KickAngle"})
 
 
-def _draft_signal(views: list[Any], name: str, direction: str | None) -> str | None:
+def _current_field(views: list[Any], name: str) -> bool:
+    """True when every unit a family field states for its hardware is a current."""
+    units = {
+        unit.lower()
+        for view in views
+        if name in view.fields and (unit := _one_unit(view.fields[name].body.get("HWUnits")))
+    }
+    return bool(units) and units <= _CURRENT_UNITS
+
+
+def _draft_signal(
+    views: list[Any], name: str, direction: str | None, current_writes: frozenset[str]
+) -> str | None:
     """The signal role a family field's channels play, where the export decides it.
 
     A beam monitor's ``Monitor`` reads the position on its axis. A magnet
     family -- a dipole string, or one whose lattice type drives a multipole or
     a kick -- whose field states its hardware in a current commands that
-    current where the field is written and reads it back through its
-    ``Monitor``. Every other field is left for the reviewer.
+    current where the field is the family's one written current field
+    (``current_writes``), and reads it back through its ``Monitor``. Every
+    other field is left for the reviewer.
     """
     token = next((found for view in views if (found := _lattice_type(view)) is not None), None)
     engine = ENGINE_BY_TYPE.get(token, {}) if token is not None else {}
@@ -1889,15 +1885,10 @@ def _draft_signal(views: list[Any], name: str, direction: str | None) -> str | N
         return f"position_{engine['axis']}_readback" if name == MONITOR_FIELD else None
     if token != _BEND_TYPE and engine.get("attribute") not in _MAGNET_ATTRIBUTES:
         return None
-    units = {
-        unit.lower()
-        for view in views
-        if name in view.fields and (unit := _one_unit(view.fields[name].body.get("HWUnits")))
-    }
-    if not units or not units <= _CURRENT_UNITS:
+    if not _current_field(views, name):
         return None
     if direction == "write":
-        return "current_setpoint"
+        return "current_setpoint" if current_writes == {name} else None
     if direction == "read" and name == MONITOR_FIELD:
         return "current_readback"
     return None
@@ -1913,8 +1904,9 @@ def _draft_devices(
 
     ``names`` where the export names every device of the family in every
     system carrying it; ``{same_as: <family>}`` where exactly one such family
-    binds, in each of those systems, the other axis of the same addresses;
-    else ``address``. Families that bind one device then take one identity
+    binds, in each of those systems, the other axis of the same addresses and
+    states no ``[sector, device]`` row at two slots under two names; else
+    ``address``. Families that bind one device then take one identity
     where these answers give it two ids (:func:`_one_identity`).
 
     Args:
@@ -1931,7 +1923,12 @@ def _draft_devices(
         ``address`` answer yields, and the families each family shares its
         devices with, all keyed by raw family.
     """
-    from osprey.facility.layers.mml.identity import axis_twins, device_ids, stated_ids
+    from osprey.facility.layers.mml.identity import (
+        _lent_rows,
+        axis_twins,
+        device_ids,
+        stated_ids,
+    )
 
     systems = list(models)
     carried = {
@@ -1950,13 +1947,19 @@ def _draft_devices(
             view.system in theirs and axis_twins(view, theirs[view.system]) for view in carried[raw]
         )
 
+    def lends(other: str) -> bool:
+        return all(
+            not _lent_rows(view, [d or "" for d in stated_ids(view, systems, models)])[1]
+            for view in carried[other]
+        )
+
     answers: dict[str, DeviceIdentity] = {}
     for raw in carried:
         if raw in named:
             answers[raw] = "names"
             continue
         twins = [other for other in named if twin(raw, other)]
-        answers[raw] = SameAs(twins[0]) if len(twins) == 1 else "address"
+        answers[raw] = SameAs(twins[0]) if len(twins) == 1 and lends(twins[0]) else "address"
 
     ordered = [view for view in imported if view.channel_count > 0]
     shared = _one_identity(ordered, device_ids(ordered, models, answers), answers, wired or {})
@@ -2361,8 +2364,15 @@ def _draft(
                 "provenance": DERIVED,
                 "override": False,
             }
+        current_writes = frozenset(
+            name
+            for name in entry["fields"]
+            if directions[f"{raw}.{name}"]["direction"] == "write"
+            and _current_field(views[raw], name)
+        )
+        for name in entry["fields"]:
             entry["fields"][name]["signal"] = _draft_signal(
-                views[raw], name, directions[f"{raw}.{name}"]["direction"]
+                views[raw], name, directions[f"{raw}.{name}"]["direction"], current_writes
             )
 
     document: dict[str, Any] = {}

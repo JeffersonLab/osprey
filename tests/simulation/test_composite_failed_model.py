@@ -11,26 +11,36 @@ solve is refused and leaves the model serving.
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import json
 import math
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from click.testing import CliRunner
 from lume.model import LUMEModel
 from lume.variables import ScalarVariable, StrVariable, Variable
 from lume_pyat.exceptions import OrbitSolveError
 
+from osprey.cli.sim import sim_group
 from osprey.connectors.control_system.base import WriteOutcome
-from osprey.connectors.control_system.mock_connector import MockConnector, simulation_state_dir
+from osprey.connectors.control_system.va_in_process_connector import (
+    VAInProcessConnector,
+    simulation_state_dir,
+)
 from osprey_connectors.simulation import composite as composite_module
 from osprey_connectors.simulation import model_status
 from osprey_connectors.simulation.composite import ENGINE_GROUP, STATUS_MAX_BYTES, Composite
 from osprey_connectors.simulation.view import SCHEMAS
+from tests.simulation.conftest import stage_built_simulator_view
 
 if TYPE_CHECKING:
+    from types import ModuleType
+
     from tests._builds import BuiltProject
 
 T0 = 1_760_000_000.0
@@ -55,8 +65,8 @@ def _no_model_log_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
 
 
-async def _connected(view: Path) -> MockConnector:
-    connector = MockConnector()
+async def _connected(view: Path) -> VAInProcessConnector:
+    connector = VAInProcessConnector()
     await connector.connect({"simulator_view": str(view), "response_delay_ms": 0})
     return connector
 
@@ -202,7 +212,7 @@ async def test_a_live_quadrupole_write_that_destabilises_the_orbit_is_refused(
     assert composite is not None
     setpoints = _sr_setpoints(demo_view)
     before = composite.held(setpoints)
-    journal = simulation_state_dir(demo_view) / "mock" / "writes.json"
+    journal = simulation_state_dir(demo_view) / "inprocess" / "writes.json"
 
     result = await connector.write_channel(QUADRUPOLE, UNSTABLE_CURRENT)
 
@@ -213,6 +223,79 @@ async def test_a_live_quadrupole_write_that_destabilises_the_orbit_is_refused(
     assert model_status(connector, "SR") == "ok"
     assert not journal.exists()
     await connector.disconnect()
+
+
+# -- the demo's LINE -----------------------------------------------------------
+
+LINE_SOURCE = Path(__file__).resolve().parents[2] / "scripts" / "facility_demo" / "_line.py"
+
+#: A single-pass loss: the element index, its ``FamName`` and the turn.
+LOST = re.compile(r"^lost at element \d+ \(\w+\) turn 0: ")
+
+
+def _line_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_line", LINE_SOURCE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LINE = _line_module()
+
+
+def _line_corrector() -> str:
+    """The first horizontal corrector's current setpoint on the line."""
+    return next(
+        row["id"]
+        for row in LINE.channels()
+        if row.get("role") == "setpoint" and ":HCM:" in row["id"]
+    )
+
+
+@pytest.mark.slow
+async def test_a_live_line_corrector_write_that_loses_the_beam_is_refused(
+    demo_view: Path,
+) -> None:
+    corrector = _line_corrector()
+    connector = await _connected(demo_view)
+    composite = connector._composite
+    assert composite is not None
+    before = composite.held([corrector])
+
+    result = await connector.write_channel(corrector, LINE.LOSING_KICK)
+
+    assert result.outcome is WriteOutcome.REFUSED
+    assert result.error_message is not None
+    assert LOST.match(result.error_message), result.error_message
+    assert composite.held([corrector]) == before
+    assert model_status(connector, "LINE") == "ok"
+    await connector.disconnect()
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("contain_env_written_by_the_cli")
+def test_an_applied_line_fault_that_loses_the_beam_fails_line(
+    built_control_assistant: BuiltProject, tmp_path: Path
+) -> None:
+    repo, view = stage_built_simulator_view(built_control_assistant, tmp_path)
+    _with_scenario(
+        view,
+        {
+            "name": "line-loss",
+            "faults": {"LINE": {"writes": {_line_corrector(): LINE.LOSING_KICK}}},
+        },
+    )
+    assert _composite(view).status("LINE") == "ok"
+
+    result = CliRunner().invoke(
+        sim_group, ["apply", "--repo", str(repo), "line-loss", "--no-seed", "--yes"]
+    )
+    failed = _composite(view)
+
+    assert result.exit_code == 0, result.output
+    assert LOST.match(failed.status("LINE")), failed.status("LINE")
+    assert failed.status("SR") == "ok"
 
 
 # -- a stub engine ---------------------------------------------------------------
@@ -381,7 +464,7 @@ def test_a_stub_that_never_built_reads_its_bool_and_enum_as_zero(tmp_path: Path)
 
 
 @pytest.mark.usefixtures("stub_engine")
-async def test_a_2kb_non_ascii_engine_text_is_capped_alike_in_the_composite_and_the_mock(
+async def test_a_2kb_non_ascii_engine_text_is_capped_alike_in_the_composite_and_in_process(
     tmp_path: Path,
 ) -> None:
     message = "Ä" * 1024
@@ -410,5 +493,5 @@ async def test_an_unknown_model_is_refused_naming_the_served_ones(tmp_path: Path
 
 
 def test_a_connector_without_an_in_process_simulator_is_refused() -> None:
-    with pytest.raises(ValueError, match="MockConnector serves no simulator in process"):
-        model_status(MockConnector(), "SR")
+    with pytest.raises(ValueError, match="VAInProcessConnector serves no simulator in process"):
+        model_status(VAInProcessConnector(), "SR")

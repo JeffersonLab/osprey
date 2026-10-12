@@ -12,9 +12,9 @@ NARAD-convention Turtle corpus with ``applyNeo4jNaming`` on, which is what
   plus ``:ChannelBinding``, ``:Class``, and one device-class label per device;
 * relationship types are UPPERCASED — ``:HASBINDING``, ``:READSSIGNAL``,
   ``:WRITESSIGNAL``, ``:SUBCLASSOF``, ``:TYPE``;
-* property names keep their ``narad_p:`` local spelling — ``.uri``, ``.fullPv``,
-  ``.sourceName``, ``.sectionCode``, ``.rawType``, ``.sPositionM``,
-  ``.ordinalInPlace``;
+* property names keep their ``narad_p:`` local spelling — ``.uri``,
+  ``.deviceId``, ``.fullPv``, ``.sourceName``, ``.sectionCode``, ``.rawType``,
+  ``.sPositionM``, ``.ordinalInPlace``;
 * a place that channels sit on is a ``:Resource`` with ``HASBINDING`` edges
   too, so a query that means devices keeps the rows whose ``.rawType`` is set,
   which only a device carries.
@@ -141,7 +141,7 @@ MATCH (cls:Class)-[:SUBCLASSOF*0..]->(:Class {uri: $class_uri})
 MATCH (d:Resource)-[:TYPE]->(cls)
 RETURN [l IN labels(d) WHERE l <> "Resource"][0] AS device_class,
        d.sectionCode AS section,
-       d.sourceName AS device
+       d.deviceId AS device
 ORDER BY device_class, section, device
 LIMIT 500
 """.strip(),
@@ -167,7 +167,7 @@ _Q2 = ExampleQuery(
 // The place itself carries the section code too; only a device carries rawType.
 MATCH (d:Resource)
 WHERE d.sectionCode = $section AND d.rawType IS NOT NULL
-RETURN d.sourceName AS device,
+RETURN d.deviceId AS device,
        [l IN labels(d) WHERE l <> "Resource"][0] AS device_class,
        d.sPositionM AS s_m,
        d.ordinalInPlace AS ordinal
@@ -186,12 +186,10 @@ _Q3 = ExampleQuery(
         "it is read or written. Use it to go from a device an operator named to the addresses a control-system "
         "connector can actually talk to.\n"
         "\n"
-        "$name — the device's source name as the corpus records it.\n"
-        "$section — the section that device sits in. Both are needed because a "
-        "source name can repeat across sections."
+        "$device — the device's id as the corpus records it in ``deviceId``."
     ),
     cypher="""
-MATCH (d:Resource {sourceName: $name, sectionCode: $section})-[:HASBINDING]->(b:ChannelBinding)
+MATCH (d:Resource {deviceId: $device})-[:HASBINDING]->(b:ChannelBinding)
 OPTIONAL MATCH (b)-[:READSSIGNAL]->(rs)
 OPTIONAL MATCH (b)-[:WRITESSIGNAL]->(ws)
 RETURN b.fullPv AS pv,
@@ -200,7 +198,7 @@ RETURN b.fullPv AS pv,
 ORDER BY pv
 LIMIT 200
 """.strip(),
-    parameters={"name": "DIPOLE01", "section": "SECT1"},
+    parameters={"device": "SR/DIPOLE01"},
 )
 
 _Q4B = ExampleQuery(
@@ -297,7 +295,7 @@ MATCH (d:Resource)-[:HASBINDING]->(b:ChannelBinding {fullPv: $pv})
 WHERE d.rawType IS NOT NULL
 RETURN b.fullPv AS pv,
        collect(DISTINCT d.sectionCode) AS sections,
-       collect(DISTINCT d.sourceName) AS devices,
+       collect(DISTINCT d.deviceId) AS devices,
        count(DISTINCT d) AS device_count
 LIMIT 5
 """.strip(),

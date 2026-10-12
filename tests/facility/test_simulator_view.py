@@ -3,8 +3,8 @@
 ``render_facility_outputs`` writes ``served_models.json`` (the models the
 render's ``simulation.models`` serves, texture last), ``addresses.json`` (every
 channel address of the facility file and one status address per served physics
-model), ``decks/<model>.json`` (a byte copy of each deck-bearing model's deck,
-served or not), ``variables.json`` (every model with its wiring and every
+model), ``decks/<model><suffix>`` (a byte copy of each deck-bearing model's
+deck under its own suffix, served or not), ``variables.json`` (every model with its wiring and every
 channel with its write facts), ``seeds.json`` (each channel's seed record) and
 ``scenarios.json`` (every scenario's writes, with a byte copy of each file
 its logbook entries attach under ``scenarios/<name>/``) into each render's
@@ -28,6 +28,7 @@ from osprey.facility import TEXTURE
 from osprey.facility.errors import FacilityBuildError
 from osprey.facility.render import FACILITY_FILE, render_facility_outputs
 from osprey.utils.workspace import BUILD_DIR_NAME
+from osprey_connectors.simulation.view import SCENARIOS_SCHEMA, SEEDS_SCHEMA
 
 if TYPE_CHECKING:
     from tests.facility.conftest import BuiltProject
@@ -37,6 +38,7 @@ pytestmark = [pytest.mark.slow]
 SERVED = "data/simulator/served_models.json"
 ADDRESSES = "data/simulator/addresses.json"
 DECK = "data/simulator/decks/SR.json"
+LINE_DECK = "data/simulator/decks/LINE.json"
 VARIABLES = "data/simulator/variables.json"
 SEEDS = "data/simulator/seeds.json"
 SCENARIOS = "data/simulator/scenarios.json"
@@ -75,6 +77,7 @@ def test_every_render_writes_the_simulator_files_beside_the_limits(
                 FACILITY_FILE,
                 ADDRESSES,
                 DECK,
+                LINE_DECK,
                 SCENARIOS,
                 *SCENARIO_FILES,
                 SEEDS,
@@ -98,13 +101,16 @@ def test_addresses_are_the_facility_file_channels_and_the_served_status(
 
     assert addresses["schema"] == "osprey.facility.addresses/1"
     assert addresses["channels"] == sorted(channel["id"] for channel in facility["channels"])
-    assert addresses["status"] == ["ca:SIM:SR:STATUS"]
+    assert addresses["status"] == ["ca:SIM:LINE:STATUS", "ca:SIM:SR:STATUS"]
 
 
-def test_the_demo_serves_sr_then_texture(built_control_assistant: BuiltProject) -> None:
+def test_the_demo_serves_line_and_sr_then_texture(built_control_assistant: BuiltProject) -> None:
     served = json.loads((built_control_assistant.build_dir / SERVED).read_bytes())
 
-    assert served == {"schema": "osprey.facility.served_models/1", "models": ["SR", TEXTURE]}
+    assert served == {
+        "schema": "osprey.facility.served_models/1",
+        "models": ["LINE", "SR", TEXTURE],
+    }
 
 
 def test_the_deck_is_a_byte_copy_that_pyat_loads(built_control_assistant: BuiltProject) -> None:
@@ -147,7 +153,7 @@ def test_render_writes_are_sorted_and_deterministic(
         ).read_bytes()
 
 
-def test_two_mock_personas_differing_only_in_the_key_render_different_lists(
+def test_two_in_process_personas_differing_only_in_the_key_render_different_lists(
     tmp_path: Path, built_control_assistant: BuiltProject
 ) -> None:
     from osprey.cli.build_profile_archiver import _expand_dotted
@@ -156,7 +162,9 @@ def test_two_mock_personas_differing_only_in_the_key_render_different_lists(
     repo = tmp_path / "repo"
     (repo / "data").mkdir(parents=True)
     (repo / "profile.yml").write_text(
-        "name: demo\ndata: data\nconfig:\n  control_system.type: mock\n  simulation.models: null\n"
+        "name: demo\ndata: data\nconfig:\n  control_system.type: virtual_accelerator\n"
+        "  control_system.connector.virtual_accelerator.serving: in_process\n"
+        "  simulation.models: null\n"
     )
     (repo / "personas").mkdir()
     for name, models in (("physics", "[SR]"), ("plain", "[texture]")):
@@ -168,7 +176,7 @@ def test_two_mock_personas_differing_only_in_the_key_render_different_lists(
     for name in ("physics", "plain"):
         document = load_profile_document(repo / "personas" / f"{name}.yml")
         config = _expand_dotted(document.profile.config)
-        assert config["control_system"]["type"] == "mock"
+        assert config["control_system"]["type"] == "virtual_accelerator"
         render_dir = _render(tmp_path, built_control_assistant, config, name)
         rendered[name] = (render_dir / SERVED).read_bytes()
 
@@ -242,7 +250,12 @@ CHANNEL_KEYS = {
     "on",
 }
 CHANNEL_OPTIONAL = {"options", "shape", "precision"}
-SCENARIO_SLOTS = ("description", "drivers", "couple", "noise")
+SCENARIO_SLOTS = ("description", "drivers", "couple", "noise", "still", "channel_faults")
+BUILT_IN_STILL = {
+    "name": "still",
+    "description": "Every reading serves without drift, couplings or noise.",
+    "still": "all",
+}
 UNLISTED_SETPOINT = "SR:MAG:HCM:02:CURRENT:SP"
 
 
@@ -349,11 +362,11 @@ def test_a_description_contradicting_the_facility_stops_the_build(
 
     stop = _render_stop(tmp_path, built_control_assistant)
 
-    assert (stop.kind, stop.record_id, stop.record_kind) == ("engine-invalid", "SR", "model")
+    assert (stop.kind, stop.record_id, stop.record_kind) == ("engine-invalid", "LINE", "model")
     first_write = next(
         record["address"]
         for model in built_control_assistant.facility["models"]
-        if model["name"] == "SR"
+        if model["name"] == "LINE"
         for record in model["wiring"]
         if record["direction"] == "write"
     )
@@ -370,7 +383,7 @@ def test_an_engine_without_describe_stops_the_build(
 
     stop = _render_stop(tmp_path, built_control_assistant)
 
-    assert (stop.kind, stop.record_id, stop.record_kind) == ("engine-invalid", "SR", "model")
+    assert (stop.kind, stop.record_id, stop.record_kind) == ("engine-invalid", "LINE", "model")
     assert stop.remedy == "add describe() to the engine plug-in"
 
 
@@ -396,6 +409,25 @@ def test_an_unserved_model_is_listed_as_not_served(
     assert models[TEXTURE]["served"] is True
 
 
+def test_a_deck_keeps_its_suffix(tmp_path: Path, built_control_assistant: BuiltProject) -> None:
+    facility_dir = tmp_path / "facility"
+    shutil.copytree(built_control_assistant.facility_dir, facility_dir)
+    source = facility_dir / "decks" / "SR.mat"
+    source.write_bytes((facility_dir / "decks" / "SR.json").read_bytes())
+    facility = copy.deepcopy(built_control_assistant.facility)
+    (sr,) = [model for model in facility["models"] if model["name"] == "SR"]
+    sr["deck"] = "decks/SR.mat"
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    render_facility_outputs(render_dir, facility, {}, facility_dir)
+
+    served = render_dir / "data" / "simulator" / "decks"
+    assert sorted(path.name for path in served.iterdir()) == ["LINE.json", "SR.mat"]
+    assert (served / "SR.mat").read_bytes() == source.read_bytes()
+    models = {m["name"]: m for m in _view(render_dir, VARIABLES)["models"]}
+    assert models["SR"]["deck"] == "decks/SR.mat"
+
+
 def test_channel_owner_is_the_wiring_model_else_texture(
     built_control_assistant: BuiltProject,
 ) -> None:
@@ -408,7 +440,7 @@ def test_channel_owner_is_the_wiring_model_else_texture(
 
     for channel in variables["channels"]:
         assert channel["owner"] == wired.get(channel["address"], TEXTURE), channel["address"]
-    assert {channel["owner"] for channel in variables["channels"]} == {"SR", TEXTURE}
+    assert {channel["owner"] for channel in variables["channels"]} == {"LINE", "SR", TEXTURE}
 
 
 def test_channel_on_is_the_facility_records_on(built_control_assistant: BuiltProject) -> None:
@@ -487,9 +519,14 @@ def test_a_per_type_limits_block_decides_for_the_simulated_target(
 ) -> None:
     config = {
         "control_system": {
-            "type": "mock",
+            "type": "virtual_accelerator",
             "limits_checking": {"enabled": True, "mode": "optional"},
-            "connector": {"mock": {"limits_checking": {"enabled": True, "mode": "exclusive"}}},
+            "connector": {
+                "virtual_accelerator": {
+                    "serving": "in_process",
+                    "limits_checking": {"enabled": True, "mode": "exclusive"},
+                }
+            },
         }
     }
     render_dir = _render(tmp_path, built_control_assistant, config)
@@ -506,7 +543,7 @@ def test_seeds_are_each_channel_seed_record(built_control_assistant: BuiltProjec
     }
 
     assert set(seeds) == {"schema", "seeds"}
-    assert seeds["schema"] == "osprey.facility.seeds/1"
+    assert seeds["schema"] == SEEDS_SCHEMA
     assert seeds["seeds"] == expected
     assert list(seeds["seeds"]) == sorted(expected)
 
@@ -516,15 +553,26 @@ def test_scenarios_carry_every_scenario_and_its_blocks(
 ) -> None:
     scenarios = _view(built_control_assistant.build_dir, SCENARIOS)
     source = built_control_assistant.facility_dir / "scenarios"
-    names = sorted(path.stem for path in source.glob("*.yaml"))
+    names = sorted([*(path.stem for path in source.glob("*.yaml")), "still"])
 
     assert set(scenarios) == {"schema", "scenarios"}
-    assert scenarios["schema"] == "osprey.facility.scenarios/1"
+    assert scenarios["schema"] == SCENARIOS_SCHEMA
     assert [entry["name"] for entry in scenarios["scenarios"]] == names
     for entry in scenarios["scenarios"]:
+        if entry["name"] == "still":
+            assert entry == BUILT_IN_STILL
+            continue
         authored = yaml.safe_load((source / f"{entry['name']}.yaml").read_text())
         assert entry["description"] == authored["description"], entry["name"]
-        for block in ("overrides", "archiver", "logbook", "drivers", "couple", "noise"):
+        for block in (
+            "overrides",
+            "archiver",
+            "logbook",
+            "drivers",
+            "couple",
+            "noise",
+            "channel_faults",
+        ):
             assert entry.get(block) == authored.get(block), (entry["name"], block)
         faults = {model: fault["writes"] for model, fault in entry.get("faults", {}).items()}
         assert faults == authored.get("faults", {}), entry["name"]
@@ -655,9 +703,56 @@ def test_a_scenario_stating_none_of_the_optional_slots_carries_none_of_them(
     render_dir.mkdir()
     render_facility_outputs(render_dir, facility, {}, built_control_assistant.facility_dir)
 
-    (entry,) = _view(render_dir, SCENARIOS)["scenarios"]
+    (entry,) = [e for e in _view(render_dir, SCENARIOS)["scenarios"] if e["name"] == "bare"]
     assert entry == {"name": "bare", "overrides": {UNLISTED_SETPOINT: 1.0}}
     assert not set(SCENARIO_SLOTS) & set(entry)
+
+
+def _rendered_scenarios(
+    tmp_path: Path, built: BuiltProject, scenarios: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    facility = copy.deepcopy(built.facility)
+    facility["scenarios"] = scenarios
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    render_facility_outputs(render_dir, facility, {}, built.facility_dir)
+    return _view(render_dir, SCENARIOS)["scenarios"]
+
+
+def test_the_built_in_still_is_listed_when_no_file_defines_one(
+    tmp_path: Path, built_control_assistant: BuiltProject
+) -> None:
+    scenarios = _rendered_scenarios(
+        tmp_path, built_control_assistant, [{"name": "zeta"}, {"name": "alpha"}]
+    )
+
+    assert scenarios == [{"name": "alpha"}, BUILT_IN_STILL, {"name": "zeta"}]
+
+
+def test_channel_faults_are_carried_verbatim_on_a_texture_address(
+    tmp_path: Path, built_control_assistant: BuiltProject
+) -> None:
+    texture = next(
+        record["address"]
+        for record in _view(built_control_assistant.build_dir, VARIABLES)["channels"]
+        if record["owner"] == TEXTURE and record["role"] == "readback"
+    )
+    scenario = {"name": "cut", "channel_faults": {texture: "disconnected"}}
+
+    (entry,) = [
+        e
+        for e in _rendered_scenarios(tmp_path, built_control_assistant, [scenario])
+        if e["name"] == "cut"
+    ]
+    assert entry == scenario
+
+
+def test_a_files_still_replaces_the_built_in(
+    tmp_path: Path, built_control_assistant: BuiltProject
+) -> None:
+    own = {"name": "still", "description": "Monitors only.", "still": ["SR:DIAG:BPM:01:POSITION"]}
+
+    assert _rendered_scenarios(tmp_path, built_control_assistant, [own]) == [own]
 
 
 def _render_channels(

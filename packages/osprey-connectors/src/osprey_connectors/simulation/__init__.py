@@ -1,4 +1,4 @@
-"""The simulated machine behind OSPREY's mock connectors.
+"""The simulated machine behind OSPREY's simulator connectors.
 
 The package root holds only what every reader needs without loading a model:
 the tick period, value coercion, char-waveform decoding, the active-scenario
@@ -14,6 +14,7 @@ from osprey_connectors.simulation.state import (
     ACTIVE_SCENARIOS_FILENAME,
     DEFAULT_SCENARIO,
     OVERLAP_EVENT,
+    STILL_SCENARIO,
     Overlap,
     composed_set,
     format_overlap_record,
@@ -33,6 +34,7 @@ __all__ = [
     "DEFAULT_SCENARIO",
     "DEFAULT_TICK_S",
     "OVERLAP_EVENT",
+    "STILL_SCENARIO",
     "Overlap",
     "TICK_KEY",
     "coerce",

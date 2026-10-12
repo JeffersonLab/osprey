@@ -166,8 +166,12 @@ search a channel database file; ``graph`` searches the graph store named by
 a database file.
 
 One shorthand stands in for a longer key path: ``connector=`` writes
-``config.control_system.type``. (Control systems beyond the bundled ones are
-reachable through custom connector packages — see
+``config.control_system.type``. It takes the built-in types ``epics``,
+``virtual_accelerator``, ``doocs``, ``tango`` and ``live_standin``; whether the
+simulator runs in process is set by
+``config.control_system.connector.virtual_accelerator.serving``. (Control
+systems beyond the bundled ones are reachable through custom connector
+packages — see
 :doc:`/how-to/control-systems/use-connectors`.) An EPICS gateway is written by
 its own dotted keys, which is the only spelling: OSPREY ships no table of
 facilities' gateway addresses.
@@ -973,6 +977,10 @@ an export into it. See :doc:`/how-to/import-mml-export` for the import end to en
    left out and the count per reason (unwired, no width, unsolved, table
    calibration); it does not change the verdict or the exit code:
    ``response check <model>: left out <n> rows (<k> unwired, <j> no width, <u> unsolved, <t> table calibration)``.
+   A device whose stated ``s`` lies outside its periodic model's deck is placed
+   modulo the deck's length, and both ``osprey build`` and this command print
+   one ``facility: place-wrapped: device <id> — …; fix: …`` warning per device
+   on stderr; the exit code is unchanged.
    The check converts a monitor reading to position with one slope, taken at
    the centred beam; that is exact for a straight-line (gain and offset)
    calibration, and a table-calibrated monitor is left out of the check and
@@ -980,7 +988,9 @@ an export into it. See :doc:`/how-to/import-mml-export` for the import end to en
    in the check, open an issue. A tree that is not clean prints every error of
    the first failing stage on stderr, one line each and sorted, and the command
    exits 1. A stale
-   fix's line carries the block to paste in its place. ``--repo`` names the
+   fix's line carries the block to paste in its place. A settle-tolerance
+   warning the build would print is printed on stderr and does not change the
+   exit code. ``--repo`` names the
    deployment repo; without it, the nearest ``profile.yml`` at or above the
    current directory is used.
 
@@ -1009,7 +1019,7 @@ an export into it. See :doc:`/how-to/import-mml-export` for the import end to en
 
 ``osprey facility import``
    Group for the importers that write an export as sources under
-   ``data/facility/imported/``; ``mml`` is the one importer.
+   ``data/facility/imported/``; the importers are ``mml`` and ``list``.
 
 ``osprey facility import mml EXPORT... [--repo DIRECTORY]``
    Write MML exports as the mml layer's sources under
@@ -1046,6 +1056,29 @@ an export into it. See :doc:`/how-to/import-mml-export` for the import end to en
    Print the MATLAB exporter the mml layer ships. Needs neither a repo nor an
    export.
 
+``osprey facility import list FILE [--repo DIRECTORY]``
+   Write a CSV channel list as the list layer's sources,
+   ``data/facility/imported/list/channels.yaml``, one channel record per row;
+   no authored file is seeded. ``FILE`` is UTF-8 CSV whose header row names
+   ``address``, required, and any of the optional columns ``role`` (empty
+   means readback), ``pair``, ``device``, ``place``, ``unit``,
+   ``description``, ``tags`` (``;``-separated), ``s`` (metres, a number) and
+   ``model`` (the model whose deck ``s`` is measured in), in any order. A file
+   whose first row names no ``address`` column holds one address per line.
+   ``s`` and ``model`` are the position of the row's device: for each device a
+   row states ``s`` for, the import writes ``{id, s}``, plus ``model`` when
+   stated, to ``data/facility/imported/list/devices.yaml``, and no other
+   device field, so the device merges with one another source declares, or is
+   created holding only its position. ``osprey build`` places it by the span
+   of its model containing ``s``. A row that names both a device and a place,
+   states a role other than ``setpoint``, ``readback`` or ``none``, has no
+   address or repeats one, states ``s`` or ``model`` with no device, or
+   states an ``s`` that is not a finite number, a row with more cells than
+   the header, two rows stating different ``s`` or ``model`` for one device, a
+   ``model`` for a device no row states ``s`` for, and an unknown or repeated
+   column each print one ``facility: source-invalid:`` line; the import
+   writes nothing and exits 1.
+
 .. _cli-osprey-sim:
 
 osprey sim
@@ -1074,8 +1107,8 @@ the current directory is used.
    simulator appends to under ``var/simulator/``, each followed by any
    scenario-overlap records from that log. ``--target`` selects the control
    target to report on and defaults to the deployment's own; a target the
-   deployment does not configure exits 1. On a mock target the status comes
-   from the simulator the connector serves in process; on any other target it
+   deployment does not configure exits 1. With the simulator served in process
+   the status comes from the composite this process holds; on any other target it
    is read from the model's status channel, ``<code>:SIM:<model>:STATUS``,
    through that target's connector.
 
@@ -1231,7 +1264,7 @@ Launch the Web Terminal interface. See :doc:`/how-to/web-terminal/operate`.
 
    ``--shell TEXT`` — Shell command to run (default: ``claude``).
 
-   ``--repo PATH`` — Deployment repo to act on (default: nearest ``profile.yml`` at or above cwd).
+   ``--repo DIRECTORY`` — Deployment repo to act on (default: nearest ``profile.yml`` at or above cwd).
 
    ``--detach`` — Run in background (PID written to ``var/osprey-web.pid``). The
    login token is held only in memory; if the printed URL is lost, stop and
@@ -1423,13 +1456,13 @@ All subcommands accept a common flag:
    Group for the two verbs that check and render the deployment's
    ``modules.web_terminals`` stanza.
 
-``osprey scaffold web-terminals lint [--repo PATH]``
+``osprey scaffold web-terminals lint [--repo DIRECTORY]``
    Validate the deployment's ``modules.web_terminals`` stanza (port-family
    allocation, reserved service names, duplicate users, persona references).
    Exits non-zero on error-severity findings; warnings do not fail the check,
    so it is safe to wire into a CI gate.
 
-``osprey scaffold web-terminals render [--repo PATH] -o DIRECTORY``
+``osprey scaffold web-terminals render [--repo DIRECTORY] -o DIRECTORY``
    Render the multi-user deployment artifacts (docker-compose overlay, nginx
    routing fragment, static landing page) into ``-o/--output``. Lints first by
    default and aborts on errors; ``--no-lint`` skips the pre-check.

@@ -1,7 +1,7 @@
-"""The virtual accelerator serves what the mock serves, channel for channel.
+"""The virtual accelerator serves the same values in both venues, channel for channel.
 
-Both substrates serve one simulator view through one composite: the mock
-in-process, the virtual accelerator over Channel Access from its container.
+Both venues serve one simulator view through one composite: in process, and
+over Channel Access from the container.
 This module holds the container to the in-process composite over the same
 rendered view, on every served channel:
 
@@ -152,9 +152,11 @@ from statistics import NormalDist  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
+import yaml  # noqa: E402
 
-from osprey_connectors.control_system.mock_connector import UDF_SEVERITY  # noqa: E402
+from osprey_connectors.control_system.va_in_process_connector import UDF_SEVERITY  # noqa: E402
 from osprey_connectors.simulation import decode_char_waveform  # noqa: E402
+from osprey_connectors.simulation.envelope import declares_motion, noise_sigma  # noqa: E402
 from osprey_connectors.simulation.view import (  # noqa: E402
     TEXTURE,
     VIEW_RELPATH,
@@ -184,15 +186,16 @@ CHROMATICITY_TOL = 1e-5
 CHROMATICITY = frozenset({"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y"})
 
 #: The noisy served channels of the demo: every served address whose seed
-#: declares noise or drift.
+#: declares noise or drift. The transfer line adds none: it carries no seeds.
 EXPECTED_NOISY_CHANNELS = 626
+#: The example facility's seeds, keyed by address.
+DEMO_SEEDS = REPO_ROOT / "src" / "osprey" / "templates" / "facilities" / "example" / "seeds.yaml"
+#: The address prefix of the demo's transfer line, the physics model solved single-pass.
+LINE_PREFIX = "LINE:"
 #: Reads per substrate per noisy channel.
 SAMPLES = 200
 #: The family-wise false-alarm rate the noise bounds are set for.
 FAMILY_ALPHA = 1e-4
-
-#: The seed keys that move a reading on its own.
-MOTION_KEYS = ("noise", "drift")
 
 #: The noise container's runner tick, so :data:`SAMPLES` reads take a minute.
 NOISE_TICK_S = 0.25
@@ -237,6 +240,23 @@ NOMINAL_ADDITIONS: dict[str, frozenset[str]] = {
         {"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y", "SR:DIAG:TUNE:X", "SR:DIAG:TUNE:Y"}
     ),
     "the physics model's status channel": frozenset({"ca:SIM:SR:STATUS"}),
+    # The golden captures the demo before it carried the transfer line.
+    "the transfer line: its model's status and every channel it owns": frozenset(
+        {
+            "ca:SIM:LINE:STATUS",
+            *(
+                f"LINE:DIAG:BPM:{index:02d}:POSITION:{plane}"
+                for index in range(1, 5)
+                for plane in ("X", "Y")
+            ),
+            *(
+                f"LINE:MAG:{family}:{index:02d}:CURRENT:{suffix}"
+                for family in ("HCM", "VCM", "QF", "QD")
+                for index in range(1, 5)
+                for suffix in ("RB", "SP")
+            ),
+        }
+    ),
     "the suite's synthetic string channel": frozenset({e2e_conftest.STRING_CHANNEL}),
 }
 #: The physics model's status channel: ``ok`` while it solves, its error text
@@ -289,14 +309,14 @@ class View:
         return self.reader.seed(address) or {}
 
     def moving(self, address: str) -> bool:
-        seed = self.seed(address)
-        return any(seed.get(key) for key in MOTION_KEYS)
+        return declares_motion(self.seed(address))
 
     def motion_band(self, address: str, z: float) -> float:
         """How far a served read may sit from the held value: z noise sigmas plus the drift."""
         seed = self.seed(address)
         drift = seed.get("drift") or {}
-        return z * float(seed.get("noise") or 0.0) + abs(float(drift.get("amplitude") or 0.0))
+        sigma = noise_sigma(seed.get("noise"), seed.get("nominal"))
+        return z * sigma + abs(float(drift.get("amplitude") or 0.0))
 
     def labels(self, address: str) -> list[str]:
         return list(self.channel(address).options or ("FALSE", "TRUE"))
@@ -457,7 +477,15 @@ def test_every_channel_without_motion_agrees_at_the_operating_point(
         )
     }
 
+    line_monitors = [
+        address
+        for address in session_view.served
+        if address.startswith(f"{LINE_PREFIX}DIAG:BPM:") and ":POSITION:" in address
+    ]
+
     assert len(still) > len(session_view.addresses) // 2
+    assert line_monitors
+    assert set(line_monitors) <= set(still)
     assert differing == {}
 
 
@@ -748,6 +776,14 @@ def test_the_unstilled_render_serves_the_demos_noisy_channels(noisy_va: NoisyVa)
     noisy = [address for address in noisy_va.view.served if noisy_va.view.moving(address)]
 
     assert len(noisy) == EXPECTED_NOISY_CHANNELS
+
+
+def test_the_transfer_line_carries_no_seeds() -> None:
+    """The noisy count holds with the transfer line served: no seed names it."""
+    seeds = yaml.safe_load(DEMO_SEEDS.read_text(encoding="utf-8"))
+
+    assert seeds
+    assert sorted(address for address in seeds if address.startswith(LINE_PREFIX)) == []
 
 
 @pytest.fixture(scope="module")

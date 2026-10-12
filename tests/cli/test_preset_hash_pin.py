@@ -275,7 +275,14 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # the build derives every persona's `project`/`project_path` from the
     # profile's `project_name`. The five `extends` children inherit the
     # catalog; the other three stand still.
-    # The thirty-eighth move, and four presets: control-assistant lists the
+    # The thirty-eighth move, and hello-world alone: its control system is the
+    # simulator served in process, `control_system.type: virtual_accelerator`
+    # with `control_system.connector.virtual_accelerator.serving: in_process`,
+    # in place of the retired `mock` type, which the build now refuses. A
+    # rebuilt project serves the same channels in process and baselines on
+    # `va`, so the staleness advisory firing on already-deployed projects is
+    # the correct signal. Every other preset stands still.
+    # The thirty-ninth move, and four presets: control-assistant lists the
     # `pyaml-tools` skill, which renders only where the build has a pyAML view,
     # and the readonly, readwrite and admin children inherit it. The knowledge
     # and logbook children exclude the skill, so their resolved content and
@@ -302,7 +309,7 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     "control-assistant-readwrite": (
         "sha256:f0adcad57b48e7f020497e79231035b9364160c9bfa79cf03c061534f431972a"
     ),
-    "hello-world": ("sha256:d9328877c94d4e066e6bb98e54f38f9bb2918025928ed37f598141c91082c5d7"),
+    "hello-world": ("sha256:274f48f804eea7f86fb14d30673e9935cf325bd5236f9de2361d4a07a34c275d"),
 }
 
 

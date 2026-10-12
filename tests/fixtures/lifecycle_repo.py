@@ -347,10 +347,11 @@ config:
   # simulator, and this deployment's baseline: it is the one machine here where
   # a write is harmless, while "live_standin", the stand-in declared above, is
   # a target the operator switches to on purpose. "epics" is your own control
-  # system, "mock" needs no containers but cannot complete a plan. "doocs" and
-  # "tango" reach those control systems in place of Channel Access. Those five
-  # are every type `osprey init` will materialize; `osprey config --defaults`
-  # lists them too.
+  # system. "doocs" and "tango" reach those control systems in place of
+  # Channel Access. Those four are every type `osprey init` will materialize;
+  # `osprey config --defaults` lists them too.
+  # `control_system.connector.virtual_accelerator.serving: in_process` runs the
+  # same simulator without containers, but cannot complete a plan.
   # `control_target_set live` moves a session onto the machine authored under
   # `epics:`. The template ships that block unconfigured — author its
   # `gateways` and `probe_channel` first — then the switch probes that target
@@ -407,9 +408,6 @@ config:
   # control_system.patterns.write: ['my_custom_cs_lib\.write\(']
   # control_system.patterns.read: ['my_custom_cs_lib\.read\(']
   #
-  # Mock connector: serves the build's simulator view in-process, with no
-  # container. Its one setting is how long each read and write takes.
-  # control_system.connector.mock.response_delay_ms: 10
   # Virtual-accelerator connector: a containerized PyAT-backed soft IOC
   # reached over real EPICS Channel Access, with the same gateway shape as the
   # `epics` block. Deployed by the `virtual_accelerator:` section above.
@@ -421,6 +419,10 @@ config:
   # `control-assistant-readwrite` and `control-assistant-admin` personas write
   # this key.
   # control_system.connector.virtual_accelerator.writes_enabled: true
+  # Where the simulator runs: `served` is its container over Channel Access; `in_process` is inside this process, with no container.
+  # control_system.connector.virtual_accelerator.serving: served
+  # Milliseconds each read and write takes when the simulator is served in process; unread when served.
+  # control_system.connector.virtual_accelerator.response_delay_ms: 10
   # Channel the target switch reads to prove this target is reachable before
   # making it active. The simulator serves it from the built facility.
   control_system.connector.virtual_accelerator.probe_channel: SR:VAC:GAUGE:SR01:PRESSURE:RB
@@ -521,7 +523,7 @@ config:
   # channel returns about this many points. The agent is told which bin it got.
   archiver.auto_bin_points: 10000
   # Mock archiver: replays history from the build's simulator view, the same
-  # view the mock connector serves; it takes no file setting.
+  # view the simulator serves; it takes no file setting.
   # archiver.type: mock_archiver
   # archiver.settings.sample_rate_hz: 1.0
   # EPICS Archiver Appliance: ships unconfigured on purpose, for the same
@@ -713,9 +715,10 @@ config:
   # 503, MCP server refuses to start). Check edits with
   # `osprey ariel vocab-check data/ariel/vocabulary.yml`.
   ariel.vocabulary.enabled: true
-  # A twenty-concept EXAMPLE covering what most storage-ring facilities share
-  # (a linac or FEL should delete the orbit-and-ring group). A starting point,
-  # not your vocabulary: edit it. Relative to the project root.
+  # A twenty-concept EXAMPLE covering what most circular-accelerator facilities
+  # share (a linac or FEL should delete the group the file's header marks for
+  # it). A starting point, not your vocabulary: edit it. Relative to the
+  # project root.
   ariel.vocabulary.path: data/ariel/vocabulary.yml
   # Whether a search that expresses no preference gets expansion. The
   # per-request `expand_query` argument overrides it either way.

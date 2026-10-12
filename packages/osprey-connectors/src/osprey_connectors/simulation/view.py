@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -65,9 +65,9 @@ ADDRESSES_SCHEMA = "osprey.facility.addresses/1"
 VARIABLES_FILE = "variables.json"
 VARIABLES_SCHEMA = "osprey.facility.simulator/2"
 SEEDS_FILE = "seeds.json"
-SEEDS_SCHEMA = "osprey.facility.seeds/1"
+SEEDS_SCHEMA = "osprey.facility.seeds/2"
 SCENARIOS_FILE = "scenarios.json"
-SCENARIOS_SCHEMA = "osprey.facility.scenarios/1"
+SCENARIOS_SCHEMA = "osprey.facility.scenarios/2"
 #: The directory holding a byte copy of each deck-bearing model's deck.
 DECKS_DIR = "decks"
 #: The directory holding each scenario's attached files, ``scenarios/<name>/``,
@@ -293,6 +293,7 @@ class SimulatorView:
         self._documents: dict[str, Mapping[str, Any]] = {}
         self._models: tuple[Model, ...] | None = None
         self._channel_records: Mapping[str, Channel] | None = None
+        self._envelopes: dict[tuple[str, ...], dict[str, float]] = {}
         if not (self.path / ADDRESSES_FILE).is_file():
             raise NoSimulatorView(NO_VIEW_MESSAGE.format(path=self.path))
         self.document(ADDRESSES_FILE)
@@ -501,21 +502,35 @@ class SimulatorView:
         seed: Mapping[str, Any] | None = self.document(SEEDS_FILE)["seeds"].get(address)
         return seed
 
-    def moving(self) -> tuple[str, ...]:
-        """The addresses whose seed states a ``noise`` or a ``drift``, sorted."""
-        seeds = self.document(SEEDS_FILE)["seeds"]
-        return tuple(
-            sorted(
-                str(address)
-                for address, seed in seeds.items()
-                if seed and (seed.get("noise") or seed.get("drift"))
-            )
-        )
-
     def scenarios(self) -> tuple[Mapping[str, Any], ...]:
         """Every scenario of ``scenarios.json``, sorted by name."""
         scenarios: tuple[Mapping[str, Any], ...] = self.document(SCENARIOS_FILE)["scenarios"]
         return scenarios
+
+    def motion_envelope(self, address: str, active: Sequence[str] = ()) -> float:
+        """The band ``address``'s served motion keeps it within around its held value.
+
+        Args:
+            address: A channel address.
+            active: The active scenario names, in order; ``nominal`` always
+                counts, as the composite counts it.
+
+        Returns:
+            The channel's envelope under ``active``
+            (:func:`osprey_connectors.simulation.envelope.active_envelopes`);
+            0.0 for a channel that declares no motion.
+        """
+        from osprey_connectors.simulation.envelope import active_envelopes
+        from osprey_connectors.simulation.state import resolve_active_scenarios
+
+        key = tuple(resolve_active_scenarios(active))
+        if key not in self._envelopes:
+            self._envelopes[key] = active_envelopes(
+                self.document(SEEDS_FILE)["seeds"],
+                {str(scenario["name"]): scenario for scenario in self.scenarios()},
+                key,
+            )
+        return self._envelopes[key].get(address, 0.0)
 
     def scenario_dir(self, name: str) -> Path:
         """The view's copy of a scenario's attached files, ``scenarios/<name>/``."""

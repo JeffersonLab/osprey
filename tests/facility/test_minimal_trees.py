@@ -2,7 +2,10 @@
 
 A project whose ``data/facility/`` holds only two authored channel addresses
 builds a facility file with those two channels and nothing else, each a
-readback by default. A project whose ``data/facility/`` is empty builds one
+readback by default; the same two addresses imported as a header-less channel
+list build the same channels. A channel list that states the position of a
+device the tree declares nowhere else creates that device at its position, and
+the span containing it places it. A project whose ``data/facility/`` is empty builds one
 with no records at all: only the built-in ``texture`` model, no classes, and an
 identity folded from the project name. Both render a simulator view that serves
 texture alone, with no status address. The mock connector serving a minimal
@@ -10,23 +13,26 @@ tree serves exactly the facility file's addresses, spelled as authored, and
 refuses any other. Under a profile with a mock control
 system and a ``bluesky:`` block the render carries the Bluesky devices view and
 stages no copy of it. The empty tree under a profile that selects the
-channel-finder agent with ``channel_finder_mode: in_context`` has no tagged
-channel for the in_context index, so the build stops.
+channel-finder agent with ``channel_finder_mode: in_context`` has no channel
+for the in_context index, so the build stops.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
-from click.testing import Result
+from click.testing import CliRunner, Result
 
 from osprey.facility import TEXTURE
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tests.facility.conftest import BuiltProject
 
 Build = Callable[..., tuple["BuiltProject", Result]]
@@ -44,7 +50,12 @@ SIMULATOR_FILES = (
 )
 
 #: A mock control system, the profile the served minimal trees are built under.
-MOCK_PROFILE: dict[str, Any] = {"config": {"control_system.type": "mock"}}
+MOCK_PROFILE: dict[str, Any] = {
+    "config": {
+        "control_system.type": "virtual_accelerator",
+        "control_system.connector.virtual_accelerator.serving": "in_process",
+    }
+}
 
 #: Two separator conventions in one namespace: setpoints paired with their
 #: readbacks by ``pair``, each seeded with a nominal value.
@@ -80,7 +91,10 @@ MIXED_NAMESPACE: dict[str, Any] = {
 CRITERION_7_PROFILE: dict[str, Any] = {
     "bluesky": {},
     "channel_finder_mode": "hierarchical",
-    "config": {"control_system.type": "mock"},
+    "config": {
+        "control_system.type": "virtual_accelerator",
+        "control_system.connector.virtual_accelerator.serving": "in_process",
+    },
 }
 
 
@@ -97,6 +111,106 @@ def test_two_authored_addresses_build_two_readbacks(build_project: Build) -> Non
     for channel in facility["channels"]:
         assert "tags" not in channel
         assert "role" in channel["provenance"]["defaults"]
+
+
+def _import_list(
+    tmp_path: Path, text: str, tree: dict[str, Any] | None = None
+) -> tuple[BuiltProject, Result]:
+    """Init a repo whose ``data/facility/`` holds ``tree``, import a channel list and build."""
+    from osprey.cli.main import cli
+    from tests._builds import init_project, run_build
+    from tests.facility._synthetic_trees import write_tree
+    from tests.facility.conftest import BuiltProject
+
+    repo = init_project(tmp_path, "hello-world", "demo")
+    shutil.rmtree(repo / "data" / "facility")
+    if tree is not None:
+        write_tree(repo / "data" / "facility", tree)
+    listing = tmp_path / "two.csv"
+    listing.write_text(text, encoding="utf-8")
+    imported = CliRunner().invoke(
+        cli, ["facility", "import", "list", str(listing), "--repo", str(repo)]
+    )
+    assert imported.exit_code == 0, imported.output
+    return BuiltProject(repo), run_build(repo)
+
+
+def test_two_listed_addresses_build_the_same_two_readbacks(
+    tmp_path: Path, build_project: Build
+) -> None:
+    authored, authored_result = build_project(TWO_CHANNELS)
+    listed, result = _import_list(tmp_path / "listed", "LAB:TEMP:01\nLAB:TEMP:02\n")
+
+    assert (authored_result.exit_code, result.exit_code) == (0, 0), result.output
+    assert sorted(p.name for p in (listed.facility_dir / "imported" / "list").iterdir()) == [
+        "channels.yaml"
+    ]
+    facility = listed.facility
+    assert (facility["devices"], facility["places"]) == ([], [])
+    for channel in facility["channels"]:
+        assert channel["provenance"]["sources"] == [
+            {"layer": "list", "file": "imported/list/channels.yaml", "fields": []}
+        ]
+    unsourced = [
+        {**channel, "provenance": {**channel["provenance"], "sources": []}}
+        for channel in facility["channels"]
+    ]
+    assert unsourced == [
+        {**channel, "provenance": {**channel["provenance"], "sources": []}}
+        for channel in authored.facility["channels"]
+    ]
+
+
+def _line_with_a_span() -> dict[str, Any]:
+    """Model LINE on a single-pass deck whose place LINE/G spans [M0, M1), M1 at 4.2 m."""
+    from tests.facility._synthetic_trees import LINE_TWISS, SETTING, Deck
+
+    return {
+        "records/places.yaml": [
+            {"id": "LINE", "span": {"model": "LINE", "from_marker": "M0"}},
+            {"id": "LINE/G", "span": {"model": "LINE", "from_marker": "M0", "to_marker": "M1"}},
+        ],
+        "records/devices.yaml": [{"id": "LINE/Q1", "class": "Quadrupole"}],
+        "records/channels.yaml": [{"id": "LQ:SP", "role": "setpoint", "on": {"device": "LINE/Q1"}}],
+        "models.yaml": [
+            {
+                "name": "LINE",
+                "engine": "pyat",
+                "deck": "decks/line.json",
+                "settings": {"pyat": {"solve": "single_pass", "twiss_in": dict(LINE_TWISS)}},
+                "wiring": [{"address": "LQ:SP", "element": "Q1", "engine": dict(SETTING)}],
+            }
+        ],
+        "decks/line.json": Deck(
+            lambda at: [
+                at.Marker("M0"),
+                at.Drift("DL", 2.0),
+                at.Quadrupole("Q1", 0.2, 0.9),
+                at.Drift("DL2", 2.0),
+                at.Marker("M1"),
+                at.Drift("DL3", 1.0),
+            ]
+        ),
+    }
+
+
+def test_a_listed_position_places_a_device_declared_nowhere_else(tmp_path: Path) -> None:
+    pytest.importorskip("at")
+    project, result = _import_list(
+        tmp_path,
+        "address,role,device,s,model\nL:G1:SP,setpoint,L/G1,3.5,LINE\nL:G1:RB,,L/G1,3.5,LINE\n",
+        _line_with_a_span(),
+    )
+
+    assert result.exit_code == 0, result.output
+    device = next(d for d in project.facility["devices"] if d["id"] == "L/G1")
+    assert (device["s"], device["model"], device["place"]) == (3.5, "LINE", "LINE/G")
+    provenance = device["provenance"]
+    assert provenance["place_from"] == "span"
+    assert provenance["sources"] == [
+        {"layer": "list", "file": "imported/list/devices.yaml", "fields": ["model", "s"]}
+    ]
+    assert "s" not in provenance["defaults"]
 
 
 def test_zero_sources_build_the_texture_model_alone(build_project: Build) -> None:
@@ -178,8 +292,8 @@ def test_zero_sources_under_in_context_stop_with_view_unsupported(build_project:
     assert result.stderr == (
         "  view pyaml not written: no served model names a deck\n"
         "facility: view-unsupported: path channel_finder.pipeline_mode — selects in_context "
-        "and no channel is tagged `in_context`; fix: tag at least one channel `in_context`, "
-        "or select another channel_finder_mode\n"
+        "and the facility has no channel; fix: add a channel, or select another "
+        "channel_finder_mode\n"
     )
 
 
@@ -212,7 +326,13 @@ def test_zero_sources_write_the_same_view_set_with_no_channel(build_project: Bui
     assert (view["addresses.json"]["channels"], view["addresses.json"]["status"]) == ([], [])
     assert view["variables.json"]["channels"] == []
     assert view["seeds.json"]["seeds"] == {}
-    assert view["scenarios.json"]["scenarios"] == []
+    assert view["scenarios.json"]["scenarios"] == [
+        {
+            "name": "still",
+            "description": "Every reading serves without drift, couplings or noise.",
+            "still": "all",
+        }
+    ]
 
 
 def _writes_enabled(key: str, default: Any = None) -> Any:
@@ -221,16 +341,16 @@ def _writes_enabled(key: str, default: Any = None) -> Any:
 
 
 async def _served(project: BuiltProject) -> Any:
-    from osprey_connectors.control_system.mock_connector import MockConnector
-    from tests.facility.served_tree import mock_config
+    from osprey_connectors.control_system.va_in_process_connector import VAInProcessConnector
+    from tests.facility.served_tree import in_process_config
 
-    connector = MockConnector()
+    connector = VAInProcessConnector()
     view = project.build_dir / "data" / "simulator"
-    await connector.connect(mock_config(view, response_delay_ms=0))
+    await connector.connect(in_process_config(view, response_delay_ms=0))
     return connector
 
 
-async def test_the_mock_refuses_an_address_outside_the_facility_file(
+async def test_the_in_process_simulator_refuses_an_address_outside_the_facility_file(
     build_project: Build,
 ) -> None:
     project, result = build_project(TWO_CHANNELS, profile=MOCK_PROFILE)

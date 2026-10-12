@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from osprey.facility.validate import FACILITY_HEADER
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "osprey" / "facility" / "schema"
 GENERATED_DIR = SCHEMA_DIR / "_generated"
@@ -115,7 +117,7 @@ def _limits(addresses: list[str]) -> dict[str, Any]:
 def _zero_source() -> dict[str, Any]:
     """The facility file a tree without sources builds."""
     return {
-        "schema": "osprey.facility.facility/1",
+        "schema": FACILITY_HEADER,
         "identity": {"code": "my_proj", "name": "my proj"},
         "classes": [],
         "places": [],
@@ -157,7 +159,14 @@ def _two_channel_scenario_measurement() -> dict[str, Any]:
         {"name": "texture", "engine": "texture"},
     ]
     document["scenarios"] = [
-        {"name": "warm", "overrides": {"DEMO:ONE": 1.5}, "faults": {}, "logbook": []}
+        {
+            "name": "warm",
+            "overrides": {"DEMO:ONE": 1.5},
+            "faults": {},
+            "logbook": [],
+            "still": ["DEMO:TWO"],
+            "channel_faults": {"DEMO:ONE": "frozen"},
+        }
     ]
     return document
 

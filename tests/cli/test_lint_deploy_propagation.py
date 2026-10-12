@@ -47,7 +47,8 @@ DEPLOY_BLOCK: dict[str, Any] = {
 #: — the deploy/lint parity these tests are about is judged past them. The
 #: profiles select no approval hook, so they state that nobody is asked.
 POSTURE_FLOOR: dict[str, Any] = {
-    "control_system.type": "mock",
+    "control_system.type": "virtual_accelerator",
+    "control_system.connector.virtual_accelerator.serving": "in_process",
     "archiver.type": "mock_archiver",
     "approval.enabled": False,
     "claude_code.telemetry.enabled": False,

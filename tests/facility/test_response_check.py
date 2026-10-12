@@ -9,6 +9,7 @@ block's figures.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import math
@@ -17,14 +18,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from click.testing import CliRunner, Result
 
 from osprey.cli.main import cli
-from osprey.facility import response_check
 from osprey.facility.build import build_facility
+from osprey.facility.layers.mml import response_check
 from osprey.facility.layers.mml.importer import LAYER_DIR, import_mml
 from osprey.facility.layers.mml.mapping import MAPPING_FILE
-from osprey.facility.response_check import (
+from osprey.facility.layers.mml.response_check import (
     Block,
     Entry,
     LeftOut,
@@ -36,6 +38,7 @@ from osprey.facility.response_check import (
     judge,
     report,
 )
+from osprey.facility.layers.mml.rows import read_rows
 from tests.facility._mml_built import WIDENED, widen
 from tests.facility.test_mml_layer_seed_once import OUTSIDE
 
@@ -53,6 +56,17 @@ TREES: dict[str, tuple[str, ...]] = {
 
 SPEAR3_LINE = (
     "response check StorageRing: measured BPMx/HCM median ratio 0.922 (pass at 0.8 to 1.25)"
+)
+#: The spear3 export states two positions 14 µm past its periodic deck's end; a
+#: clean validate places them modulo the deck and prints one line per device
+#: before its response-check line.
+SPEAR3_WRAPPED_LINES = (
+    "facility: place-wrapped: device StorageRing/VG55_AM1 — layer mml states s 234.144"
+    " in periodic model StorageRing, outside its deck of length 234.143986; the device"
+    " is placed at s 1.35099997e-05; fix: state s 1.35099997e-05, or drop it",
+    "facility: place-wrapped: device StorageRing/VP28_AM1 — layer mml states s 234.144"
+    " in periodic model StorageRing, outside its deck of length 234.143986; the device"
+    " is placed at s 1.35099997e-05; fix: state s 1.35099997e-05, or drop it",
 )
 NSLS2_LINES = [
     "response check LTB: model BPMx/HCM inside band 1.000 (pass at 0.99)",
@@ -130,7 +144,7 @@ def spear3_blocks(spear3: Path) -> tuple[Block, ...]:
 # --- the verb -----------------------------------------------------------------------
 
 
-def test_a_measured_export_prints_one_line_and_exits_0(
+def test_a_measured_export_prints_its_wrapped_positions_then_one_line_and_exits_0(
     spear3: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     before = _snapshot(spear3)
@@ -138,7 +152,10 @@ def test_a_measured_export_prints_one_line_and_exits_0(
     result = _validate(spear3, monkeypatch)
 
     assert result.exit_code == 0, result.output
-    assert (result.stdout, result.stderr) == ("", SPEAR3_LINE + "\n")
+    assert (result.stdout, result.stderr) == (
+        "",
+        "\n".join((*SPEAR3_WRAPPED_LINES, SPEAR3_LINE)) + "\n",
+    )
     assert _snapshot(spear3) == before
 
 
@@ -224,6 +241,39 @@ def test_an_unreadable_export_exits_1_without_a_traceback(
     assert result.exit_code == 1
     assert "The response check cannot run." in result.stderr
     assert "Traceback" not in result.output
+
+
+def test_a_corrector_record_naming_no_element_stops_the_build_before_the_response_check(
+    synthetic: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A setpoint naming no element has no start value to read, so the build stops first."""
+    facility = _facility(synthetic)
+    document = build_facility(facility, project_name="scratch")
+    model = next(model for model in document["models"] if model["name"] == "SR")
+    corrector = next(
+        block for block in compare(facility, document, model) if block.name == "BPMx/HC"
+    )
+    address = corrector.entries[0].actuator_address
+    repo = tmp_path / "synthetic"
+    shutil.copytree(synthetic, repo)
+    path = _facility(repo) / LAYER_DIR / "models.yaml"
+    models = yaml.safe_load(path.read_text(encoding="utf-8"))
+    wiring = next(model for model in models if model["name"] == "SR")["wiring"]
+    record = next(record for record in wiring if record["address"] == address)
+    record.pop("element", None)
+    record.pop("slices", None)
+    path.write_text(yaml.safe_dump(models, sort_keys=False), encoding="utf-8")
+
+    result = _validate(repo, monkeypatch)
+
+    assert result.exit_code == 1, result.output
+    assert any(
+        "facility: engine-invalid: wiring " in line
+        and f"{address}: no element to read a start value from" in line
+        for line in result.stderr.splitlines()
+    ), result.stderr
+    assert "response check" not in result.stderr
+    assert "The response check cannot run." not in result.stderr
 
 
 # --- the figures on a real export -------------------------------------------------
@@ -483,3 +533,76 @@ def test_a_monitor_with_a_table_calibration_is_left_out_and_counted(synthetic: P
         "response check SR: left out 2 rows "
         "(0 unwired, 0 no width, 0 unsolved, 2 table calibration)"
     )
+
+
+def _with_a_deck_property_block(source: Path, root: Path) -> tuple[Path, int]:
+    """A copy of ``source`` whose SR export gains a block swept by the ``BEND`` family.
+
+    Returns:
+        The copy and the number of ``BEND`` rows the new block states.
+    """
+    shutil.copytree(source, root)
+    path = _facility(root) / LAYER_DIR / "SR.response.json"
+    response = json.loads(path.read_text(encoding="utf-8"))
+    block = copy.deepcopy(response["blocks"][0])
+    assert (block["monitor"]["family"], block["actuator"]["family"]) == ("BPMx", "HC")
+    rows = [list(key) for key in sorted(read_rows(_facility(root))[("SR", "BEND")])]
+    n = len(rows)
+    assert n > 0
+    block["actuator"]["family"] = "BEND"
+    block["actuator"]["device_list"] = rows
+    block["actuator"]["status"] = [1] * n
+    block["actuator"]["data"] = [0.0] * n
+    block["actuator_delta"] = 1.0
+    block["data"] = [[1.0e-3] * n for _ in block["monitor"]["device_list"]]
+    response["blocks"].append(block)
+    path.write_text(json.dumps(response), encoding="utf-8")
+    return root, n
+
+
+def test_a_corrector_record_naming_no_element_leaves_its_column_out_as_unwired(
+    synthetic: Path, tmp_path: Path
+) -> None:
+    """A record driving a property of the whole deck is no column the sweep can step."""
+    repo, n = _with_a_deck_property_block(synthetic, tmp_path / "synthetic")
+    facility = _facility(repo)
+    document = build_facility(facility, project_name="scratch")
+    model = next(model for model in document["models"] if model["name"] == "SR")
+    knobs = [
+        record
+        for record in model["wiring"]
+        if record.get("direction") == "write" and record.get("engine") == {"attribute": "energy"}
+    ]
+    assert knobs
+    assert all("element" not in record and "slices" not in record for record in knobs)
+    base_facility = _facility(synthetic)
+    base_document = build_facility(base_facility, project_name="scratch")
+    base_model = next(model for model in base_document["models"] if model["name"] == "SR")
+    baseline = compare(base_facility, base_document, base_model)
+
+    blocks = compare(facility, document, model)
+
+    assert [block.name for block in blocks] == [block.name for block in baseline] + ["BPMx/BEND"]
+    assert blocks[-1].entries == ()
+    assert blocks[-1].judged is False
+    assert blocks[-1].left_out == LeftOut(unwired=n)
+    for block, whole in zip(blocks[:-1], baseline, strict=True):
+        assert block.entries == whole.entries, block.name
+
+
+def test_a_deck_property_corrector_block_exits_0_and_counts_its_rows_unwired(
+    synthetic: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, n = _with_a_deck_property_block(synthetic, tmp_path / "synthetic")
+
+    result = _validate(repo, monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    assert (result.stdout, result.stderr) == (
+        "",
+        SYNTHETIC_LINE
+        + "\n"
+        + f"response check SR: left out {n} rows "
+        + f"({n} unwired, 0 no width, 0 unsolved, 0 table calibration)\n",
+    )
+    assert "The response check cannot run." not in result.stderr

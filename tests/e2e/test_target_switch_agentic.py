@@ -111,7 +111,7 @@ from tests.e2e.sdk_helpers import (
     _default_opus_model,
     _persist_mcp_sidecar,
     dump_agent_transcript,
-    e2e_budget_scale,
+    e2e_budget_cap,
     hook_attachments,
     is_claude_code_available,
     render_dir,
@@ -556,7 +556,7 @@ def _init_and_build(workspace: Path, *, bench_port: int, va_port: int) -> Path:
     """Render one switch-capable deployment repo, and return its ROOT.
 
     A bespoke pinned init rather than :func:`tests.e2e.sdk_helpers.init_project`:
-    that helper pins ``connector=mock`` and ``archiver=mock_archiver`` on purpose
+    that helper serves the simulator in process and pins ``archiver=mock_archiver`` on purpose
     (it builds containerless projects) and takes no overlay of its own. This
     module is the opposite case — the containers are the point.
 
@@ -1271,7 +1271,7 @@ async def run_switch_conversation(
         cwd=str(render),
         permission_mode="default",
         max_turns=max_turns,
-        max_budget_usd=max_budget_usd * e2e_budget_scale(),
+        max_budget_usd=e2e_budget_cap(max_budget_usd),
         env=sdk_env(render),
         stderr=lambda line: stderr_lines.append(line),
         setting_sources=["project"],

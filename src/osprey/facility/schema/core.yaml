@@ -201,7 +201,7 @@ classes:
       description:
       names:
         multivalued: true
-        list_elements_ordered: true
+        description: Other names a person at the facility uses for the record; a set, compared and written sorted.
       attributes:
         range: Any
         description: A free string to scalar or list map, carried verbatim.
@@ -233,9 +233,11 @@ classes:
         description: A vocabulary class or a facility-added class.
       place:
       description:
+      label:
+        description: The one name a person reads for the record; a view that shows one name takes it, else the id.
       names:
         multivalued: true
-        list_elements_ordered: true
+        description: Other names a person at the facility uses for the record; a set, compared and written sorted.
       properties:
         multivalued: true
         list_elements_ordered: true
@@ -244,13 +246,20 @@ classes:
         range: Any
         description: A free string to scalar or list map, carried verbatim.
       model:
-        description: Computed; the model whose deck gave `s` and `length`.
+        description: >-
+          The model whose deck `s` and `length` are measured in; computed when the
+          device is wired, else stated with `s`.
       s:
         range: float
-        description: Computed; the entrance of the device's wired elements, in metres.
+        description: >-
+          The entrance of the device in metres along its model; computed from the
+          deck when the device is wired, and a source may state it when not. On a
+          periodic deck of length L a stated s is read modulo L, and the device is
+          placed and numbered there; a stated s outside [0, L] builds with one
+          warning per device. On a single-pass deck it lies in [0, L].
       length:
         range: float
-        description: Computed; in metres.
+        description: In metres; computed when the device is wired, and a source may state it when not.
       ordinalInPlace:
         range: integer
         description: Computed; the device's ordinal among its class in its place.
@@ -280,7 +289,14 @@ classes:
         range: role_enum
         description: Absent means readback.
       pair:
-        description: The readback address of a setpoint; absent means the setpoint itself.
+        description: >-
+          The readback address of a setpoint. Absent, the build pairs the setpoint
+          with the one readback on the same device, place or nothing whose signal
+          names the same quantity, else with itself.
+      tolerance:
+        range: Tolerance
+        inlined: true
+        description: "On a float setpoint: how close its readback (its pair, else itself) must come."
       "on":
         range: OnTarget
         inlined: true
@@ -293,9 +309,15 @@ classes:
       unit:
         description: Free text.
       description:
+        description: >-
+          What this channel is. When a source states none and the channel names
+          a `signal`, the build composes one from its owner, its signal and its
+          unit, and records it in `provenance.defaults`.
+      label:
+        description: The one name a person reads for the record; a view that shows one name takes it, else the id.
       names:
         multivalued: true
-        list_elements_ordered: true
+        description: Other names a person at the facility uses for the record; a set, compared and written sorted.
       former_addresses:
         multivalued: true
       tags:
@@ -332,8 +354,8 @@ classes:
         range: Any
         description: The value at start, of the channel's value_type.
       noise:
-        range: float
-        description: Additive Gaussian sigma in the channel's unit.
+        range: Noise
+        inlined: true
       drift:
         range: Drift
         inlined: true
@@ -350,6 +372,33 @@ classes:
         inlined: true
         list_elements_ordered: true
         description: "The value as a weighted sum of other channels, `{<address>: <coefficient>}`."
+
+  Noise:
+    description: >-
+      Additive Gaussian noise, stating exactly one of `absolute`, `relative`.
+    attributes:
+      absolute:
+        range: float
+        minimum_value: 0
+        description: Gaussian sigma in the channel's unit.
+      relative:
+        range: float
+        minimum_value: 0
+        description: Gaussian sigma as a fraction of the reading.
+
+  Tolerance:
+    description: >-
+      How close a readback must come to its setpoint's demand, stating exactly
+      one of `absolute`, `relative`.
+    attributes:
+      absolute:
+        range: float
+        minimum_value: 0
+        description: Largest |readback − demand| at which a move counts as done, in the channel's unit.
+      relative:
+        range: float
+        minimum_value: 0
+        description: The same bound as a fraction of the demand.
 
   Drift:
     attributes:
@@ -369,36 +418,26 @@ classes:
         required: true
 
   Group:
-    description: A named set of devices.
+    description: >-
+      A named set of devices. A channel's meaning is on the channel: its
+      `signal` and its `description`.
     attributes:
       id:
         identifier: true
         required: true
       description:
+        description: What the set is, in the facility's words.
+      label:
+        description: The one name a person reads for the record; a view that shows one name takes it, else the id.
       names:
         multivalued: true
-        list_elements_ordered: true
+        description: Other names a person at the facility uses for the record; a set, compared and written sorted.
       members:
         multivalued: true
         description: Device ids.
-      signals:
-        range: SignalSentence
-        multivalued: true
-        inlined: true
-        list_elements_ordered: true
-        description: >-
-          One sentence per kind of signal the members carry,
-          `{<field or field/subfield>: <sentence>}`, carried verbatim.
       provenance:
         range: Provenance
         inlined: true
-
-  SignalSentence:
-    attributes:
-      key:
-        key: true
-      sentence:
-        required: true
 
   Model:
     description: One simulation model and how it is wired to channels.
@@ -618,7 +657,15 @@ classes:
         range: Any
         description: >-
           `{<model>: {<address or engine variable>: <value>}}`, where a value is a
-          scalar, the word `stuck`, or a map `{<fault field>: <value>}`.
+          scalar or a map `{<fault field>: <value>}`.
+      channel_faults:
+        range: Any
+        description: >-
+          `{<address>: stuck | frozen | disconnected}`: faults of the channel
+          itself while the scenario is active. `stuck` holds a setpoint's
+          writes; `frozen` holds a reading at the value it served when the
+          scenario became active; `disconnected` reads not-a-number with an
+          undefined alarm and holds writes.
       archiver:
         range: Any
         multivalued: true
@@ -656,8 +703,13 @@ classes:
       noise:
         range: Any
         description: >-
-          `{<address>: {noise, noise_abs}}`, the channel's noise while the
-          scenario is active, in place of its seed's.
+          `{<address>: {absolute: <sigma>} | {relative: <fraction>}}`, the
+          channel's noise while the scenario is active, in place of its seed's.
+      still:
+        range: Any
+        description: >-
+          `all`, or a list of addresses: while the scenario is active, those
+          readings serve without drift, couplings or noise.
 
   Any:
     class_uri: linkml:Any

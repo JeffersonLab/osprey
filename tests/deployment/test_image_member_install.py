@@ -30,6 +30,7 @@ import pytest
 
 import osprey
 from osprey.deployment.members import WORKSPACE_MEMBERS
+from tests.deployment._proxy_idiom import run_instructions
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONTAINERFILE = REPO_ROOT / "docker" / "virtual-accelerator" / "Containerfile"
@@ -47,9 +48,8 @@ OSPREY_VERSION = "2026.9.23.dev7"
 
 
 def _run_bodies(text: str) -> list[str]:
-    """Every RUN instruction's shell body, line-continuations joined."""
-    joined = re.sub(r"\\\n", " ", text)
-    return re.findall(r"^RUN (.+)$", joined, flags=re.MULTILINE)
+    """Every RUN instruction's shell body, as the shell receives it."""
+    return [instruction.removeprefix("RUN ") for instruction in run_instructions(text)]
 
 
 def _record_pip(tmp_path: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
@@ -194,7 +194,7 @@ def _wheel_name(dist: str) -> str:
 def _run_wheel_layer(service: str, tmp_path: pathlib.Path, staged: list[str]) -> list[list[str]]:
     ctx = tmp_path / "ctx"
     ctx.mkdir()
-    (ctx / ".dockerignore").write_text("")
+    (ctx / ".osprey-layer-anchor").write_text("")
     for dist in staged:
         (ctx / _wheel_name(dist)).write_text("")
     env, log = _record_pip(tmp_path)

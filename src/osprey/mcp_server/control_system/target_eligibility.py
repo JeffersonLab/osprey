@@ -115,7 +115,12 @@ from osprey.audit.posture import posture_session
 from osprey_connectors import posture_store
 from osprey_connectors.config import unresolved_placeholders
 from osprey_connectors.control_system.base import is_readonly_run
-from osprey_connectors.honesty import VA_MOCK_ARCHIVER_WHY, pairing_for_target
+from osprey_connectors.honesty import (
+    VA_MOCK_ARCHIVER_WHY,
+    _invents_history,
+    _target_section,
+    pairing_for_target,
+)
 from osprey_connectors.ipc.verification import (
     Endpoint,
     TargetDerivation,
@@ -133,10 +138,9 @@ from osprey_connectors.standin import (
     live_standin_active,
 )
 from osprey_connectors.types import (
-    CHANNEL_ACCESS_TYPES,
-    INVENTED_HISTORY_TYPES,
     TARGET_LIVE,
     TARGET_STANDIN,
+    speaks_channel_access,
 )
 
 # -- Config keys, spelled once ---------------------------------------------
@@ -177,8 +181,8 @@ REASON_GATEWAYS_MISSING = "gateways_missing"
 REASON_SELECTED_ROLE_MISSING = "selected_role_missing"
 REASON_PROBE_CHANNEL_MISSING = "probe_channel_missing"
 REASON_STANDIN_NOT_DEPLOYED = "standin_not_deployed"
-#: A target that is never the real machine — the virtual accelerator, the
-#: stand-in, the mock — selects an endpoint the live machine derives.
+#: A target that is never the real machine — the simulator or the stand-in —
+#: selects an endpoint the live machine derives.
 REASON_REACHES_LIVE_MACHINE = "reaches_live_machine"
 REASON_INVENTED_HISTORY = "invented_history"
 REASON_OPERATOR_ACK_MISSING = "operator_ack_missing"
@@ -455,8 +459,8 @@ def evaluate_eligibility(
        derives from the same config (:data:`REASON_REACHES_LIVE_MACHINE`);
     6. honesty: pointing a session at a machine this deployment stands up for
        itself — the virtual accelerator or the stand-in — while the archiver
-       resolves to the mock would pair an invented present with an invented
-       past;
+       synthesizes its history would pair an invented present with an
+       invented past;
     7. FR-8 posture, only for a switch *toward* ``live``: the operator
        acknowledgment. The stand-in's equivalent was said at build time by
        ``virtual_accelerator.live_standin``
@@ -518,6 +522,7 @@ def evaluate_eligibility(
         return Eligibility(False, REASON_TARGET_UNRESOLVABLE, str(exc))
 
     connector_type = derivation.connector_type
+    control_system_section = _section(config, "control_system")
     block_key = f"control_system.connector.{connector_type}"
     raw_block = connector_block(config, connector_type)
 
@@ -557,17 +562,17 @@ def evaluate_eligibility(
         # table. Judging such a block on its gateways would report the protocol
         # as a key nobody filled in, or worse, walk a deployment on another
         # control system through checks that read a Channel Access address.
-        if connector_type not in CHANNEL_ACCESS_TYPES:
-            speaks = ", ".join(repr(t) for t in CHANNEL_ACCESS_TYPES)
+        if not speaks_channel_access(control_system_section, connector_type):
+            transport = derivation.transport or "an unknown transport"
             return Eligibility(
                 False,
                 REASON_CONNECTOR_NOT_SWITCHABLE,
                 f"Target {target!r} resolves to connector type "
-                f"{connector_type!r}, which the switch has no way to dial: it "
-                f"points a connector host at a gateway named in "
-                f"'{block_key}.gateways', and only {speaks} are reached that "
-                f"way. The deployment still runs on {connector_type!r} — what "
-                "it cannot do is move a session onto it.",
+                f"{connector_type!r} over {transport}, which the switch has no way "
+                f"to dial: it points a connector host at a gateway named in "
+                f"'{block_key}.gateways', and only a Channel Access connector is "
+                f"reached that way. The deployment still runs on {connector_type!r} "
+                "— what it cannot do is move a session onto it.",
             )
 
         if not _sub(raw_block, "gateways"):
@@ -624,7 +629,7 @@ def evaluate_eligibility(
             f"'{block_key}.gateways' at its own server.",
         )
 
-    if connector_type in INVENTED_HISTORY_TYPES:
+    if _invents_history(_target_section(control_system_section, connector_type)):
         pairing = pairing_for_target(config, target)
         if pairing.is_invented_history:
             return Eligibility(

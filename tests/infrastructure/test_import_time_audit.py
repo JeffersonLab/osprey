@@ -42,11 +42,13 @@ WHITELIST: dict[str, set[str]] = {
     # registered in sys.modules so their dataclasses resolve cls.__module__.
     "benchmark/test_matrix.py": {"sys.modules"},
     "benchmark/test_matrix_dashboard.py": {"sys.modules"},
+    "benchmark/test_matrix_dashboard_tiers_latency.py": {"sys.modules"},
     "benchmark/test_matrix_lanes.py": {"sys.modules"},
     "scripts/test_config_key_guard.py": {"sys.modules"},
     "scripts/test_changelog_fragments.py": {"sys.modules"},
     "scripts/test_docs_publish.py": {"sys.modules"},
     "scripts/test_fusion_calibration.py": {"sys.modules"},
+    "scripts/test_bpm_polarity_picture.py": {"sys.modules"},
     # The Teams relay ships as a service template, not a package: its
     # validation.py is loaded by path the same way, and the module-level load
     # feeds a parametrize decorator, which is evaluated at import.

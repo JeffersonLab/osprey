@@ -963,7 +963,7 @@ async def test_archiver_read_dedupes_repeated_channel_name(archiver_read_tool):
     assert queried_channels == ["SR:CURRENT:RB"]
 
 
-class TestArchiverReadRealMockConnector:
+class TestArchiverReadRealInProcessConnector:
     """End-to-end coverage through the real ``MockArchiverConnector``.
 
     Every test above patches the connector factory, so only these exercise a
@@ -982,7 +982,7 @@ class TestArchiverReadRealMockConnector:
         project = served_tree(
             tmp_path,
             readings=["SR:DCCT"],
-            channels={"SR:DCCT": {"simulation": {"nominal": 500.0, "noise": 1.0}}},
+            channels={"SR:DCCT": {"simulation": {"nominal": 500.0, "noise": {"absolute": 1.0}}}},
         ).parent.parent
         return _wire_archiver_project(project, monkeypatch)
 

@@ -10,6 +10,7 @@ is byte-unchanged either way.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -70,6 +71,62 @@ def test_a_clean_repo_exits_0_and_prints_nothing(repo: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert (result.stdout, result.stderr) == ("", "")
+
+
+def test_a_wrapped_position_warns_in_validate_and_in_the_build(repo: Path) -> None:
+    """A stated s before the start of a periodic deck builds, with one warning per verb."""
+    devices = repo / "data" / "facility" / "records" / "devices.yaml"
+    records = yaml.safe_load(devices.read_text(encoding="utf-8"))
+    records.append({"id": "SR/SPARE", "class": "Quadrupole", "model": "SR", "s": -1.3e-05})
+    devices.write_text(yaml.safe_dump(records, sort_keys=False), encoding="utf-8")
+    fragment = "place-wrapped: device SR/SPARE"
+
+    validated = _validate(repo)
+    built = run_build(repo)
+
+    assert validated.exit_code == 0, validated.output
+    assert " ".join(validated.stderr.split()).count(fragment) == 1, validated.stderr
+    assert fragment not in validated.stdout
+    assert built.exit_code == 0, built.output
+    assert " ".join(built.stderr.split()).count(fragment) == 1, built.stderr
+
+
+def test_a_stock_build_prints_no_tolerance_warning(repo: Path) -> None:
+    built = run_build(repo)
+
+    assert built.exit_code == 0, built.output
+    assert "tolerance" not in built.stderr
+
+
+def test_a_scenario_beyond_a_tolerance_warns_in_the_build_and_in_validate(repo: Path) -> None:
+    built = run_build(repo)
+    assert built.exit_code == 0, built.output
+    document = json.loads((repo / BUILD_DIR_NAME / FACILITY_FILE).read_text(encoding="utf-8"))
+    channels = {channel["id"]: channel for channel in document["channels"]}
+    setpoint = next(
+        channel
+        for _, channel in sorted(channels.items())
+        if "absolute" in (channel.get("tolerance") or {})
+        and "simulation" in channels.get(channel.get("pair", ""), {})
+    )
+    readback = setpoint["pair"]
+    name = "settle-breach"
+    (repo / "data" / "facility" / "scenarios" / f"{name}.yaml").write_text(
+        yaml.safe_dump(
+            {"noise": {readback: {"absolute": setpoint["tolerance"]["absolute"]}}},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    warning = f"scenario {name} moves {readback}"
+
+    rebuilt = run_build(repo)
+    validated = _validate(repo)
+
+    assert rebuilt.exit_code == 0, rebuilt.output
+    assert warning in rebuilt.stderr
+    assert validated.exit_code == 0, validated.output
+    assert warning in validated.stderr
 
 
 def test_a_clean_run_leaves_the_repo_byte_unchanged(repo: Path) -> None:
@@ -156,6 +213,7 @@ def test_the_views_are_reached_only_through_render_facility_outputs(
             "data/pyaml/SR/lattice.json",
             "data/pyaml/SR/trm.json",
             "data/simulator/addresses.json",
+            "data/simulator/decks/LINE.json",
             "data/simulator/decks/SR.json",
             "data/simulator/scenarios/bpm-polarity/plots/corrector_bump_test.png",
             "data/simulator/scenarios/nominal/plots/orbit_rms.json",

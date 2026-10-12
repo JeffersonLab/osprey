@@ -80,10 +80,11 @@ embedded in the system prompt and the model returns the most relevant channels
 in one shot (no query-splitting or iterative-correction stage).
 
 ``osprey build`` writes the database from the facility description as
-``data/channel_finder/in_context.json``: one row per channel tagged
-``in_context``, with its name, address and description --- see
-:doc:`/reference/contracts/channel-finder` for the schema. A facility
-description with no tagged channel stops the build with ``view-unsupported``.
+``data/channel_finder/in_context.json``: one row per channel, or per channel
+of the subset the facility tags ``in_context``, with its name, address and
+description --- see :doc:`/reference/contracts/channel-finder` for the schema.
+A facility description with no channel stops the build with
+``view-unsupported``.
 
 Validate and preview:
 
@@ -96,16 +97,13 @@ Validate and preview:
 Hierarchical Pipeline
 =====================
 
-Navigates a nested hierarchy (system, family, device, field, subfield) using
-recursive LLM-guided selection at each level.
+Navigates a tree level by level, with LLM-guided selection at each level. The
+tree the build generates has the facility's place levels, then ``class``,
+``device``, and a leaf per channel keyed by its signal; the leaf holds the
+address.
 
-The database declares the levels the pipeline navigates and the naming pattern
-the addresses follow --- see :doc:`/reference/contracts/channel-finder` for the
-schema.
-
-Advanced features: navigation-only levels, friendly names via
-``_channel_part``, optional levels with ``_is_leaf``, and custom separators
-via ``_separator``.
+The database declares the levels the pipeline navigates --- see
+:doc:`/reference/contracts/channel-finder` for the schema.
 
 Validate and preview:
 
@@ -132,13 +130,15 @@ The database follows MATLAB Middle Layer (MML) functional organization
 writes it from the facility description as
 ``data/channel_finder/middle_layer.json``, with the DuckDB copy ``run_sql``
 reads beside it as ``data/channel_finder/middle_layer.duckdb``: a System is a
-top place, a Family is a group (every group of the facility is one), and a
-Field is the longest ``signals`` key a channel's address ends with, else the
-channel's ``signal``, else its address, one channel per member; a channel whose
-Field some member lacks or has twice is keyed by its address instead. A
-channel belongs to every Family whose group holds its device. A channel
+top place; a Family is a group (every group of the facility is one), and the
+devices of a class that no single-class group holds form a Family named by the
+class under their top place; a Field is a channel's signal, one channel per
+member, described by the vocabulary's sentence for that signal. A channel whose
+signal some member lacks or has twice, or that has no signal, is keyed by its
+address. A channel belongs to every Family that holds its device. A channel
 listed under several Fields of one Family is found under each of them. A
-facility description with no group stops the build with ``view-unsupported``.
+facility description with no group and no classed device stops the build with
+``view-unsupported``.
 A facility that runs a Middle Layer
 already has that structure: ``osprey facility import mml``
 (:doc:`/how-to/import-mml-export`) brings it into the facility description.
@@ -198,10 +198,10 @@ holds.
 
 **What the subagent can search** depends on the corpus. On the build's graph
 view a phrase can be matched against the description written for a single
-channel, against the prose for a device family or a system, and against the
-synonyms an operator would say out loud. A corpus the profile names in place of
-the view (``services.graphdb.ttl_path``) may carry less prose: there the way in
-is a name, an alternate name, a section or a device class.
+channel, against the prose for a group of devices or a top place, and against
+the synonyms an operator would say out loud. A corpus the profile names in
+place of the view (``services.graphdb.ttl_path``) may carry less prose: there
+the way in is a name, an alternate name, a section or a device class.
 
 ``validate`` and ``preview`` have no channel database to open on this pipeline,
 so both report what the store is and which commands act on it. Health reports

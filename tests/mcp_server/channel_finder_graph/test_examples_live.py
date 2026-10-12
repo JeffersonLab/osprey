@@ -15,7 +15,7 @@ text:
   the same predicate to a file-level test and opposite walks to the store.  One
   of them returns rows; the other returns none, silently.
 * **Composition.**  Two predicates that both exist can still never co-occur on
-  one subject.  ``by_family_role`` requires a family description on a device
+  one subject.  ``by_group_purpose`` requires a group's description on a device
   that also carries a binding; ``by_synonym`` requires a class with
   the synonym, a subclass chain down from it, a device typed into that chain and
   a binding hanging off the device — a four-way join whose emptiness no corpus
@@ -79,7 +79,7 @@ pytestmark = [pytest.mark.xdist_group("docker")]
 DEMO = "demo"
 
 #: The row cap this lane installs.  It sits above every example's own ``LIMIT``
-#: (all of which are at most 200) and below the corpus' 2912 channel bindings,
+#: (all of which are at most 200) and below the corpus' 2952 channel bindings,
 #: which is what gives ``truncated`` its meaning here: an example that
 #: reports truncation filled this cap, and the only way to do that is to have
 #: lost the ``LIMIT`` the catalogue says every query carries.  Under the shipped
