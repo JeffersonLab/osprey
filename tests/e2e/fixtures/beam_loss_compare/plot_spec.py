@@ -34,7 +34,10 @@ BASELINE_MA = 500.0
 RECENT_DIP_MA = 18.0
 
 #: The decay-mode sawtooth: current lost between refills, and how often they come.
-DECAY_PER_FILL_MA = 15.0
+#: Shallow on purpose: the loss can be sized from the step, from trough to
+#: trough, or from the nominal current down to the dip's bottom, and those
+#: readings differ by one tooth, so the tooth stays small beside the loss.
+DECAY_PER_FILL_MA = 5.0
 REFILL_PERIOD_H = 0.75
 
 #: The picture: its span, and the loss only it records.

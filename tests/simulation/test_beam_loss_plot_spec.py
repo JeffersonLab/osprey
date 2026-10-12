@@ -63,6 +63,23 @@ def test_dip_ends_on_a_refill_so_the_sawtooth_never_jumps_inside_it() -> None:
     assert refills_inside == []
 
 
+def test_every_honest_reading_of_the_loss_is_near_the_planted_depth() -> None:
+    # "How big was the loss" has three honest readings off the picture: the step
+    # at the loss instant, the dip's trough against a normal trough, and the
+    # nominal current down to the dip's bottom. The sawtooth makes the last one
+    # the largest; it must stay close enough to DIP_DEPTH_MA that an agent who
+    # reads it correctly is not graded as a misread.
+    hours = fixture.hours_axis()
+    values = _values()
+    low = min(
+        v
+        for h, v in zip(hours, values, strict=True)
+        if fixture.DIP_HOURS_BEFORE - fixture.DIP_DURATION_H < h <= fixture.DIP_HOURS_BEFORE
+    )
+    nominal_to_bottom = fixture.BASELINE_MA - low
+    assert nominal_to_bottom <= 1.15 * fixture.DIP_DEPTH_MA, (nominal_to_bottom, low)
+
+
 def test_build_is_deterministic() -> None:
     assert fixture.build_plot_spec() == fixture.build_plot_spec()
 

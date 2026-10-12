@@ -60,7 +60,7 @@ from tests.e2e.ariel_picture import assert_no_ariel_errors, assert_viewed_in_log
 from tests.e2e.fixtures.beam_loss_compare import plot_spec as fixture
 from tests.e2e.judge import LLMJudge, Reference, WorkflowResult, check_reported
 from tests.e2e.profile_edits import set_pairs
-from tests.e2e.provider import e2e_provider
+from tests.e2e.provider import build_model, e2e_provider
 from tests.e2e.sdk_helpers import (
     HAS_SDK,
     SCENARIO_INTEGRITY_DISALLOWED_TOOLS,
@@ -133,12 +133,14 @@ class Reported(BaseModel):
 
 EXTRACT_INSTRUCTIONS = (
     "recent_drop_ma: the size of the dip in the stored beam current during the last hour, "
-    "as a positive number of mA (a drop from 300 to 290 mA is 10). "
+    "as a positive number of mA. "
     "logged_drop_ma: the size of the partial beam loss shown on the logbook entry's plot, "
-    "as a positive number of mA; if the answer gives a range, use its midpoint. "
+    "as a positive number of mA. "
     "larger: 'logged' if the answer says the logbook's loss was the bigger one, 'recent' if "
     "the recent dip was, 'same' if it calls them alike; null if it does not say. "
-    "Copy what the answer states; compute nothing it does not state."
+    "A size counts as stated when the answer gives it directly, gives the two levels it "
+    "ran between (a fall from 300 to 290 mA is 10), or gives a range for it (use the "
+    "midpoint). Do no other arithmetic, and leave a field null when none of these holds."
 )
 
 JUDGE_EXPECTATIONS = (
@@ -208,17 +210,15 @@ def _run(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess
     )
 
 
-def _build_project(output_dir: Path) -> Path:
-    """``osprey init`` + ``osprey build`` out of process; the bundles go in between.
+def _init_args(repo: Path) -> list[str]:
+    """``osprey init`` arguments (after the verb) for the deployment at *repo*.
 
-    Its own two verbs rather than the plan-stack builder, which pins a bluesky
-    bridge this lane does not deploy.
+    The model is named at build, not only per query: the build writes it into
+    every subagent's definition, and the plot is read inside ``logbook-search``.
+    Left unnamed, the provider catalog's default would read it whatever model
+    the run asked for.
     """
-    osprey_bin = _orm_stack.find_osprey_console_script()
-    repo = output_dir / PROJECT_NAME
-    init = [
-        str(osprey_bin),
-        "init",
+    return [
         str(repo),
         "--preset",
         "control-assistant",
@@ -232,8 +232,20 @@ def _build_project(output_dir: Path) -> Path:
         f"port_base={PORT_BASE}",
         "--set",
         f"provider={e2e_provider()}",
+        "--set",
+        f"model={build_model(None)}",
     ]
-    result = _run(init, output_dir, BUILD_TIMEOUT_SEC)
+
+
+def _build_project(output_dir: Path) -> Path:
+    """``osprey init`` + ``osprey build`` out of process; the bundles go in between.
+
+    Its own two verbs rather than the plan-stack builder, which pins a bluesky
+    bridge this lane does not deploy.
+    """
+    osprey_bin = _orm_stack.find_osprey_console_script()
+    repo = output_dir / PROJECT_NAME
+    result = _run([str(osprey_bin), "init", *_init_args(repo)], output_dir, BUILD_TIMEOUT_SEC)
     assert result.returncode == 0, f"osprey init failed:\n{result.stdout}\n{result.stderr}"
 
     # Between the two verbs: the build copies <repo>/data into the render, so a
