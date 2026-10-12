@@ -79,7 +79,7 @@
       "reason": "Full-stack Docker deploy (VA + mongodb store + recorder) asserting seed duration, store size, a setpoint round-trip and document counts; no LLM call anywhere, so it measures nothing about the model-under-test. Also needs Docker, which the bench box lacks."
     },
     {
-      "path": "tests/e2e/tier2/test_beam_loss_compare.py",
+      "path": "tests/e2e/tier2/test_chart_value_reading.py",
       "reason": "A model benchmark, but one that deploys a full stack (VA + mongodb store + recorder + ARIEL Postgres + qmd) with `osprey up --dev`: it needs Docker, which the bench box lacks, a cold setup of ~40 min outruns the matrix's per-test timeout, and its fixed project name and port block would collide between cells run in parallel on one host. It runs in the tier2-model-benchmark CI job, with OSPREY_E2E_FORCE_MODEL naming the model to score."
     },
     {

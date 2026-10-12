@@ -1,4 +1,7 @@
-"""Tier 2 model benchmark: a recent beam-current dip against a loss only a logbook plot records.
+"""Tier 2 model benchmark: reading a value off a chart that no text states.
+
+The scenario: a recent beam-current dip in the archive against an older partial
+loss that only a logbook plot records.
 
 Tier 2 tests measure what a model can do in OSPREY rather than gate a change:
 the task is fair, but a capable model may still miss it. They run on demand
@@ -33,10 +36,10 @@ number check: the judge extracts the two magnitudes and the stated direction
 without seeing the references, and code compares them with tolerances. A prose
 check: the judge rules whether the answer compares the two events coherently.
 
-Every planted number comes from :mod:`tests.e2e.fixtures.beam_loss_compare.plot_spec`.
+Every planted number comes from :mod:`tests.e2e.fixtures.chart_value_reading.plot_spec`.
 
 Run locally (one container stack at a time on a host; ~40 min cold, ~5 warm):
-    OSPREY_E2E_PROVIDER=als-apg uv run pytest tests/e2e/tier2/test_beam_loss_compare.py -v -s
+    OSPREY_E2E_PROVIDER=als-apg uv run pytest tests/e2e/tier2/test_chart_value_reading.py -v -s
 """
 
 from __future__ import annotations
@@ -59,7 +62,7 @@ from tests.e2e import _orm_stack
 from tests.e2e._deploy_diagnostics import dead_container_logs
 from tests.e2e._volumes import remove_project_volumes
 from tests.e2e.ariel_picture import assert_no_ariel_errors, assert_viewed_in_logbook_turn
-from tests.e2e.fixtures.beam_loss_compare import plot_spec as fixture
+from tests.e2e.fixtures.chart_value_reading import plot_spec as fixture
 from tests.e2e.judge import LLMJudge, Reference, WorkflowResult, check_reported
 from tests.e2e.profile_edits import set_pairs
 from tests.e2e.provider import build_model, e2e_provider
@@ -81,7 +84,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="docker not available"),
 ]
 
-PROJECT_NAME = "beam-loss-compare"
+PROJECT_NAME = "chart-value-reading"
 JUDGE_PROVIDER = "als-apg"
 
 # This module's own ports, away from the default 10000 block and from the other
@@ -356,7 +359,7 @@ def _seed_world(repo: Path) -> str:
 @pytest.fixture(scope="module")
 def deployed_world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeployedWorld]:
     """Build, deploy, seed and conceal once; tear everything down after."""
-    base = tmp_path_factory.mktemp("beam_loss_compare_build")
+    base = tmp_path_factory.mktemp("chart_value_reading_build")
     repo = _build_project(base)
     _orm_stack.seed_repo_env(repo)
     _orm_stack.force_image_rebuild(_orm_stack.va_image(PROJECT_NAME))
@@ -421,7 +424,7 @@ def _workflow_result(result: Any, final: str) -> WorkflowResult:
 
 
 @pytest.mark.asyncio
-async def test_agent_sizes_the_logged_loss_from_its_plot(
+async def test_agent_reads_a_loss_off_a_logbook_chart(
     deployed_world: DeployedWorld, tmp_path: Path
 ) -> None:
     """Asked to compare, the agent reads the archive for today and the plot for last year."""

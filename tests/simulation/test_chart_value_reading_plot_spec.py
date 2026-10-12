@@ -1,6 +1,6 @@
 """The beam-loss comparison fixture: the picture's numbers come from one module.
 
-The tier-2 benchmark in ``tests/e2e/tier2/test_beam_loss_compare.py`` grades an
+The tier-2 benchmark in ``tests/e2e/tier2/test_chart_value_reading.py`` grades an
 agent's reading of a plot against ``DIP_DEPTH_MA``. These tests pin the
 picture to that constant without a deploy: the spec parses, the drop at the
 loss instant is the constant, the dip ends on a refill so the sawtooth never
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.fixtures.beam_loss_compare import plot_spec as fixture
+from tests.e2e.fixtures.chart_value_reading import plot_spec as fixture
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 

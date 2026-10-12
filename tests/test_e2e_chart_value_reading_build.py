@@ -1,7 +1,7 @@
 """The beam-loss benchmark builds with the model the run names, subagents included.
 
 A subagent runs the model id the build wrote into its definition, and the plot
-in ``tests/e2e/tier2/test_beam_loss_compare.py`` is read inside the
+in ``tests/e2e/tier2/test_chart_value_reading.py`` is read inside the
 ``logbook-search`` subagent. A build that names no model takes the provider
 catalog's default, and the benchmark then scores that model whatever the lane
 or the matrix cell asked for. Pinned here without a deploy.
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.provider import E2E_MODEL, FORCE_MODEL_ENV
-from tests.e2e.tier2 import test_beam_loss_compare as benchmark
+from tests.e2e.tier2 import test_chart_value_reading as benchmark
 
 
 def _model_edits(args: list[str]) -> list[str]:
