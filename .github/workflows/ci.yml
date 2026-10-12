@@ -1896,10 +1896,9 @@ jobs:
     # benchmarks (`gh workflow run ci.yml -f run_benchmarks=true`). No rerun
     # marker: every attempt is scored. Deliberately NOT in
     # all-checks-passed's needs — a dispatch-gated job has no result on PR
-    # runs. The cap is a deployed stack's: one benchmark here builds the
-    # virtual-accelerator image and brings up the archiver and ARIEL.
+    # runs.
     if: github.event_name == 'workflow_dispatch' && inputs.run_benchmarks
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     steps:
     - name: Checkout repository
@@ -1914,9 +1913,6 @@ jobs:
 
     - name: Set up Python
       run: uv python install 3.11
-
-    - name: Set up Docker Compose
-      uses: docker/setup-compose-action@v2
 
     - name: Install dependencies
       run: uv sync --extra dev
@@ -1951,18 +1947,13 @@ jobs:
       uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run Tier 2 model benchmarks
-      timeout-minutes: 85
       env:
         ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
       run: |
-        uv run pytest tests/e2e/tier2/ -v --tb=short
-
-    - name: Capture failure diagnostics
-      if: failure()
-      uses: ./.github/actions/capture-ci-diagnostics
-      with:
-        name: tier2-model-benchmark
-        engine: docker
+        # The chart-value-reading benchmark deploys a full stack and runs on the
+        # benchmark board only; this job carries the stack-free tier-2 tests.
+        uv run pytest tests/e2e/tier2/ --ignore=tests/e2e/tier2/test_chart_value_reading.py \
+          -v --tb=short
 
   deploy-e2e:
     name: Deploy E2E Test (build + deploy pipeline)
