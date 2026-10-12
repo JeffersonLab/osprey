@@ -14,6 +14,8 @@ depth is exact. The older loss is a year old, long outside the archive's
 retention, and exists only as a strip-chart export attached to one entry: a
 decay-mode sawtooth on a 0-600 mA axis with one refill cycle sitting lower than
 the rest. Nothing states its size; the agent has to read it against the axes.
+The recent dip is the larger of the two, so an agent that assumes the logged
+event must be the bigger one, or over-reads the plot, reverses the comparison.
 
 The world is a real deployment (``osprey up --dev``): the virtual accelerator,
 the MongoDB archiver with its recorder, ARIEL's Postgres and the qmd sidecar. A
@@ -33,7 +35,7 @@ check: the judge rules whether the answer compares the two events coherently.
 
 Every planted number comes from :mod:`tests.e2e.fixtures.beam_loss_compare.plot_spec`.
 
-Run locally (one container stack at a time on a host; ~20 min cold):
+Run locally (one container stack at a time on a host; ~40 min cold, ~5 warm):
     OSPREY_E2E_PROVIDER=als-apg uv run pytest tests/e2e/tier2/test_beam_loss_compare.py -v -s
 """
 
@@ -109,10 +111,14 @@ PROMPT = (
 CHANNEL_FINDER_PREFIX = "mcp__channel-finder__"
 ARCHIVER_TOOL = "mcp__controls__archiver_read"
 
-#: The archive-read value is exact to the sample; the plot-read value is a
-#: 24-pixel feature on a 350-pixel axis, so a quarter either way separates a
-#: reading from a guess.
-RECENT_TOLERANCE = 0.10
+#: The archive holds the planted depth exactly, under sample noise of about
+#: 0.05 mA (one sigma): plateau means give the depth itself, and max minus min
+#: over the samples overshoots it by a few tenths at most. So the archive value
+#: gets an absolute allowance for that noise and nothing for reading.
+RECENT_TOLERANCE_MA = 0.5
+
+#: The plot-read value is a 24-pixel feature on a 350-pixel axis, so a quarter
+#: either way separates a reading from a guess.
 LOGGED_TOLERANCE = 0.25
 
 
@@ -143,14 +149,19 @@ EXTRACT_INSTRUCTIONS = (
     "midpoint). Do no other arithmetic, and leave a field null when none of these holds."
 )
 
+_LARGER_PHRASE = {
+    "recent": "the recent dip in the archive",
+    "logged": "the older loss on the logbook plot",
+}[fixture.LARGER_LOSS]
+
 JUDGE_EXPECTATIONS = (
     "Method and magnitudes were already checked in code; do not re-judge them. Judge the prose: "
     "the answer must compare the two events coherently, as one recent dip read from the "
     "archive and one older partial loss read from a plot attached to a logbook entry, and "
-    "state plainly that the logged loss was the larger of the two. It must not invent a "
+    f"state plainly that {_LARGER_PHRASE} was the larger of the two. It must not invent a "
     "cause for the recent dip, must not claim the archive holds the older event, and must "
-    "not report 'no similar entry' or refuse to commit. A hedge that still names the "
-    "logged loss as larger passes; an answer that reverses the comparison fails."
+    "not report 'no similar entry' or refuse to commit. A hedge that still names "
+    f"{_LARGER_PHRASE} as larger passes; an answer that reverses the comparison fails."
 )
 
 
@@ -448,13 +459,14 @@ async def test_agent_sizes_the_logged_loss_from_its_plot(
     misses = check_reported(
         {"recent_drop_ma": reported.recent_drop_ma, "logged_drop_ma": reported.logged_drop_ma},
         {
-            "recent_drop_ma": Reference(fixture.RECENT_DIP_MA, RECENT_TOLERANCE, relative=True),
+            "recent_drop_ma": Reference(fixture.RECENT_DIP_MA, RECENT_TOLERANCE_MA),
             "logged_drop_ma": Reference(fixture.DIP_DEPTH_MA, LOGGED_TOLERANCE, relative=True),
         },
     )
     assert not misses, "; ".join(misses) + f"\nanswer: {final!r}"
-    assert reported.larger == "logged", (
-        f"the answer must say the logged loss was larger; extracted {reported.larger!r}: {final!r}"
+    assert reported.larger == fixture.LARGER_LOSS, (
+        f"the answer must say the {fixture.LARGER_LOSS} loss was larger; "
+        f"extracted {reported.larger!r}: {final!r}"
     )
 
     # --- Prose: the comparison holds together ------------------------------------

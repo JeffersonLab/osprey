@@ -98,8 +98,8 @@ brings up the virtual accelerator, the MongoDB archiver and ARIEL with `osprey u
 plants a recent beam-current dip in the archive and a year-old partial loss as a plot on one
 logbook entry (the bundles under `fixtures/beam_loss_compare/`), and asks the agent to compare
 the two: the older loss is beyond the archive's retention, so its size can only be read off
-the picture. Expect ~20 minutes cold for the image build and deploy; `E2E_REUSE_IMAGES=1`
-keeps the VA image between local runs.
+the picture. Expect ~40 minutes cold for the image build and deploy and ~5 warm;
+`E2E_REUSE_IMAGES=1` keeps the images between local runs.
 
 ## Test Categories
 

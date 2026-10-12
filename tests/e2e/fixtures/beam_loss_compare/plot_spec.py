@@ -30,8 +30,11 @@ TARGET_ENTRY_ID = "BLC-DECAY-001"
 DCCT_CHANNEL = "SR:DIAG:DCCT:01:CURRENT:RB"
 
 #: Stored current right after a refill, and the recent dip the archive holds.
+#: The recent dip is the larger of the two losses, so an agent that assumes the
+#: logged event must be the bigger one, or reads the plot as larger than it is,
+#: gets the comparison backwards.
 BASELINE_MA = 500.0
-RECENT_DIP_MA = 18.0
+RECENT_DIP_MA = 60.0
 
 #: The decay-mode sawtooth: current lost between refills, and how often they come.
 #: Shallow on purpose: the loss can be sized from the step, from trough to
@@ -48,6 +51,10 @@ DIP_HOURS_BEFORE = 2.1
 #: multiple of the refill period, so no refill falls inside it.
 DIP_DURATION_H = 0.6
 YLIM = (0.0, 600.0)
+
+#: Which loss a correct answer names as the larger: ``"recent"`` (the archive's
+#: dip) or ``"logged"`` (the plot's), derived so the two depths decide it.
+LARGER_LOSS = "recent" if RECENT_DIP_MA > DIP_DEPTH_MA else "logged"
 
 STEP_MIN = 1.0
 NOISE_MA = 0.3

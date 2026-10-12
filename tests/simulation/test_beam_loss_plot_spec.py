@@ -80,6 +80,24 @@ def test_every_honest_reading_of_the_loss_is_near_the_planted_depth() -> None:
     assert nominal_to_bottom <= 1.15 * fixture.DIP_DEPTH_MA, (nominal_to_bottom, low)
 
 
+def test_the_larger_loss_follows_from_the_constants_by_a_clear_margin() -> None:
+    hours = fixture.hours_axis()
+    values = _values()
+    low = min(
+        v
+        for h, v in zip(hours, values, strict=True)
+        if fixture.DIP_HOURS_BEFORE - fixture.DIP_DURATION_H < h <= fixture.DIP_HOURS_BEFORE
+    )
+    readings = (fixture.DIP_DEPTH_MA, fixture.BASELINE_MA - low)
+    expected = "recent" if fixture.RECENT_DIP_MA > fixture.DIP_DEPTH_MA else "logged"
+    assert fixture.LARGER_LOSS == expected
+    # Every honest reading of the plot sits on the same side of the recent dip,
+    # at least a tenth away, so the comparison never hinges on reading precision.
+    for reading in readings:
+        assert abs(fixture.RECENT_DIP_MA - reading) >= 0.10 * fixture.RECENT_DIP_MA, readings
+        assert (fixture.RECENT_DIP_MA > reading) == (expected == "recent"), readings
+
+
 def test_build_is_deterministic() -> None:
     assert fixture.build_plot_spec() == fixture.build_plot_spec()
 
