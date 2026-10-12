@@ -1896,9 +1896,10 @@ jobs:
     # benchmarks (`gh workflow run ci.yml -f run_benchmarks=true`). No rerun
     # marker: every attempt is scored. Deliberately NOT in
     # all-checks-passed's needs — a dispatch-gated job has no result on PR
-    # runs.
+    # runs. The cap is a deployed stack's: one benchmark here builds the
+    # virtual-accelerator image and brings up the archiver and ARIEL.
     if: github.event_name == 'workflow_dispatch' && inputs.run_benchmarks
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
     - name: Checkout repository
@@ -1913,6 +1914,9 @@ jobs:
 
     - name: Set up Python
       run: uv python install 3.11
+
+    - name: Set up Docker Compose
+      uses: docker/setup-compose-action@v2
 
     - name: Install dependencies
       run: uv sync --extra dev
@@ -1947,10 +1951,18 @@ jobs:
       uses: ./.github/actions/install-pinned-claude-code
 
     - name: Run Tier 2 model benchmarks
+      timeout-minutes: 85
       env:
         ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
       run: |
         uv run pytest tests/e2e/tier2/ -v --tb=short
+
+    - name: Capture failure diagnostics
+      if: failure()
+      uses: ./.github/actions/capture-ci-diagnostics
+      with:
+        name: tier2-model-benchmark
+        engine: docker
 
   deploy-e2e:
     name: Deploy E2E Test (build + deploy pipeline)

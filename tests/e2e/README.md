@@ -93,6 +93,14 @@ build-and-boot checks (Tier 1) and the per-preset agentic lanes (Tier 3) in the 
 pyramid; the benchmark dashboard's own "Tier 0/1" labels for the two matrix lanes
 are a separate numbering.
 
+Tier 2 tests may deploy the real stack when the task needs it. `tier2/test_beam_loss_compare.py`
+brings up the virtual accelerator, the MongoDB archiver and ARIEL with `osprey up --dev`,
+plants a recent beam-current dip in the archive and a year-old partial loss as a plot on one
+logbook entry (the bundles under `fixtures/beam_loss_compare/`), and asks the agent to compare
+the two: the older loss is beyond the archive's retention, so its size can only be read off
+the picture. Expect ~20 minutes cold for the image build and deploy; `E2E_REUSE_IMAGES=1`
+keeps the VA image between local runs.
+
 ## Test Categories
 
 ### Tutorial Workflows (`test_tutorials.py`)
