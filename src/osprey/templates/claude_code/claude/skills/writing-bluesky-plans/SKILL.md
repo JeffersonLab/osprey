@@ -103,10 +103,15 @@ working_point = float((yield from bps.rd(device)))   # before the try
 try:
     for step in steps:                               # steps are OFFSETS
         yield from bps.mv(device, working_point + step)
-        yield from bps.trigger_and_read(all_devices)
+        yield from bps.trigger_and_read([device, *readables])  # moved + read
 finally:
     yield from bps.mv(device, working_point)         # never a literal
 ```
+
+The read bundle holds the moved device **and** the channels it reads. A
+reading only means something next to the setting it was taken at, so a run
+that records only the read channels has no independent variable — the
+validator refuses it (see *The gates a plan must clear*).
 
 Read **before** the `try`, not inside it, so a device whose read fails is
 never entered and the `finally` can never run without a target. Your range
@@ -316,10 +321,11 @@ wrong.
 
 ---
 
-## The two gates a `writes: true` plan must clear
+## The gates a plan must clear
 
 A plan that declares `writes: true` promises two things about itself, and both
-are enforced rather than trusted. Neither gate fires for a read-only plan.
+are enforced rather than trusted. Neither gate fires for a read-only plan. A
+third gate holds every plan to what its dry run actually did.
 
 **1. It must declare at least one movable channel field.** Otherwise the plan
 is quarantined at load — it never reaches the catalog, and the log carries:
@@ -350,6 +356,20 @@ channel with nothing recording it leaves nothing to watch live and nothing to
 read afterwards. The gate reads the run, not your source, so a plan delegating
 to a stock bluesky plan passes it without calling `scan_metadata` — the stock
 plan already stamped a count.
+
+**3. It must record every channel it moves.** The dry run notes each device
+the plan sets and each device an event of its run records; a device that was
+moved but never recorded rejects the plan:
+
+```
+Dry-run gate: plan 'X' moves 'A' but no event of its run records it; read
+every moved device in the same trigger_and_read as the channels it reads, so
+each point carries the value it was taken at.
+```
+
+The fix is the read bundle, not the metadata: pass the moved device to
+`trigger_and_read` alongside the channels it reads. A plan that delegates to a
+stock bluesky plan passes without effort — stock plans record their motors.
 
 ---
 

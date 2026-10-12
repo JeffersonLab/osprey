@@ -3392,9 +3392,13 @@ def clean_queue(request: pytest.FixtureRequest) -> None:
        test's arming step rather than merely dirty the queue. Removal goes
        through the bridge's own ``DELETE /queue/items/{uid}`` — never into
        Redis, which is a different path from the one an operator has.
-    5. ``DELETE /plans/session/{name}`` for every plan ``GET /plans`` reports
-       at ``session`` provenance — retire whatever a previous attempt
-       authored. Same class of leak as the draft above, and it bites HARDER,
+    5. ``DELETE /plans/session/{name}`` for every plan ``GET /plans/session``
+       lists — retire whatever a previous attempt authored. The listing is
+       the session directory itself, not the registry: ``GET /plans`` hides a
+       session plan whose validation is still in flight, and a dry run the
+       previous attempt's client gave up on can still pass after this
+       cleanup, so a cleanup that read the registry would retire nothing and
+       hand this attempt a ready-made validated plan. Same class of leak as the draft above, and it bites HARDER,
        because it inverts what a rerun means for the authoring test: attempt 1
        writes and validates a plan, that plan outlives the attempt (the
        session directory is bridge state, dropped only on a container
@@ -3433,23 +3437,21 @@ def clean_queue(request: pytest.FixtureRequest) -> None:
     )
 
     # Session plans are bridge state like the draft, so they are retired here
-    # rather than in the queue drain below. Filtered on provenance rather than
-    # deleting every listed name: the route is scoped to the session directory
-    # and would answer `deleted: false` for a shipped/preset/facility plan
-    # anyway, but asking only for what this fixture is entitled to remove
-    # keeps the intent legible and the request count to the leak's real size
-    # (normally zero).
-    status, plans = _queue_drive.request(BRIDGE_URL, "/plans", "GET")
+    # rather than in the queue drain below. The listing is scoped to the
+    # session directory, so every name it returns is one this fixture is
+    # entitled to remove — validated or not, which is the point: the registry
+    # would hide a plan whose validation is still in flight.
+    status, plans = _queue_drive.request(BRIDGE_URL, "/plans/session", "GET")
     assert status == 200 and isinstance(plans, list), (
-        f"GET /plans answered {status}: {plans}. The session-tier plans a "
-        "previous attempt authored cannot be retired without reading the "
-        "catalog, and leaving them standing lets this test's agent satisfy an "
-        "authoring floor with someone else's plan"
+        f"GET /plans/session answered {status}: {plans}. The session-tier plans "
+        "a previous attempt authored cannot be retired without listing them, "
+        "and leaving them standing lets this test's agent satisfy an authoring "
+        "floor with someone else's plan"
     )
-    for spec in plans:
-        if not isinstance(spec, dict) or spec.get("provenance") != "session":
+    for entry in plans:
+        if not isinstance(entry, dict):
             continue
-        name = spec.get("name")
+        name = entry.get("name")
         if not isinstance(name, str):
             continue
         status, body = _queue_drive.request(BRIDGE_URL, f"/plans/session/{name}", "DELETE")

@@ -3,9 +3,11 @@
 Two simultaneously active scenarios must touch disjoint channel sets — archiver
 step/ramp events overwrite the synthesized series (and overrides collide on
 point reads), so overlapping scenarios would compose order-dependently and
-silently wrong. These tests pin both halves: (1) the disjoint target combo
-(vacuum-burst + rf-thermal) yields *both* fault signatures at once, and
-(2) ``validate_composition`` hard-errors on a hand-built same-channel collision.
+silently wrong. These tests pin both halves: (1) disjoint scenarios on a
+hand-built machine compose and yield *both* signatures at once, and
+(2) overlapping scenarios are rejected — on a hand-built same-channel collision
+and on the shipped pair vacuum-burst + rf-thermal, which both script the beam
+current. Each shipped fault scenario composes cleanly with ``nominal``.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -15,62 +17,77 @@ import pytest
 
 from osprey.simulation import SimulationEngine
 
-GAUGE07 = "SR:VAC:GAUGE:SR07:PRESSURE:RB"
-CAVITY01_TEMP = "SR:RF:CAVITY:01:TEMPERATURE:RB"
-RF_SERIES_N = 2016  # 7-day window at 5-minute resolution
+DCCT = "SR:DIAG:DCCT:01:CURRENT:RB"
 
 
-def _yesterday_1432_window(minutes: int = 10) -> list[datetime]:
-    """Per-second window straddling yesterday 14:32:08 (the vacuum at_time anchor)."""
-    center = (datetime.now(UTC) - timedelta(days=1)).replace(
-        hour=14, minute=32, second=8, microsecond=0
-    )
-    start = center - timedelta(minutes=minutes / 2)
-    return [start + timedelta(seconds=i) for i in range(minutes * 60)]
-
-
-def _seven_day_window() -> list[datetime]:
-    """A 7-day window ending now.
-
-    rf-thermal's excursions are anchored (``at_when``, days and clock times
-    before the scenario-activation anchor T0), not window fractions, so this
-    window must *end at now* for them to appear in it: the fixture writes
-    ``active_scenarios`` as it builds the engine, which puts T0 within a second
-    of now, and the trip four days back always falls inside the week.
-    """
-    now = datetime.now()
-    step = timedelta(days=7) / RF_SERIES_N
-    return [now - timedelta(days=7) + step * i for i in range(RF_SERIES_N)]
-
-
-def _vacuum_spike_present(engine: SimulationEngine) -> bool:
-    series = np.array(engine.synthesize_series(GAUGE07, _yesterday_1432_window()))
-    # Baseline SR07 pressure is ~5e-8; the burst spikes it well above baseline.
-    return series.max() > 2.0 * np.median(series)
-
-
-def _rf_excursion_present(engine: SimulationEngine) -> bool:
-    series = np.array(engine.synthesize_series(CAVITY01_TEMP, _seven_day_window()))
-    # Nominal cavity body temp ~27 degC; excursions exceed 31 degC.
-    return series.max() > 31.0
+def _window(n: int = 100) -> list[datetime]:
+    """A one-hour window ending now; ``at`` fractions place events inside it."""
+    now = datetime.now(UTC)
+    step = timedelta(hours=1) / n
+    return [now - timedelta(hours=1) + step * i for i in range(n)]
 
 
 class TestDisjointComposition:
-    def test_nominal_alone_shows_neither_fault(self, engine_factory):
-        engine = engine_factory("nominal")
-        assert not _vacuum_spike_present(engine)
-        assert not _rf_excursion_present(engine)
+    """A hand-built machine where two scenarios touch different channels."""
 
-    def test_composed_pair_shows_both_faults(self, engine_factory):
-        engine = engine_factory("vacuum-burst", "rf-thermal")
-        assert engine.active_scenarios() == ("nominal", "vacuum-burst", "rf-thermal")
+    DISJOINT = {
+        "name": "compose",
+        "channels": {"A": {"value": 1.0}, "B": {"value": 2.0}},
+        "scenarios": {
+            "nominal": {"description": "n"},
+            "fault-a": {
+                "description": "a",
+                "archiver": [{"channel": "A", "events": [{"shape": "step", "at": 0.5, "to": 7.0}]}],
+            },
+            "fault-b": {
+                "description": "b",
+                "archiver": [{"channel": "B", "events": [{"shape": "step", "at": 0.5, "to": 9.0}]}],
+            },
+        },
+    }
+
+    def _engine(self, make_machine_file) -> SimulationEngine:
+        return SimulationEngine.from_file(make_machine_file(self.DISJOINT))
+
+    @staticmethod
+    def _stepped(engine: SimulationEngine, pv: str, to: float) -> bool:
+        return float(np.array(engine.synthesize_series(pv, _window()))[-1]) == to
+
+    def test_nominal_alone_shows_neither_fault(self, make_machine_file):
+        engine = self._engine(make_machine_file)
+        engine.set_active_scenarios(["nominal"])
+        assert not self._stepped(engine, "A", 7.0)
+        assert not self._stepped(engine, "B", 9.0)
+
+    def test_composed_pair_shows_both_faults(self, make_machine_file):
+        engine = self._engine(make_machine_file)
+        assert engine.validate_composition(["nominal", "fault-a", "fault-b"]) == []
+        engine.set_active_scenarios(["fault-a", "fault-b"])
+        assert engine.active_scenarios() == ("nominal", "fault-a", "fault-b")
         # Both overlays are live at once on their disjoint channels.
-        assert _vacuum_spike_present(engine), "vacuum burst signature missing under composition"
-        assert _rf_excursion_present(engine), "rf-thermal signature missing under composition"
+        assert self._stepped(engine, "A", 7.0), "fault-a signature missing under composition"
+        assert self._stepped(engine, "B", 9.0), "fault-b signature missing under composition"
 
-    def test_validate_composition_accepts_disjoint_trio(self, engine_factory):
+
+class TestShippedScenarios:
+    """The shipped fault scenarios each compose with nominal, not with each other."""
+
+    def test_each_fault_composes_with_nominal(self, engine_factory):
         engine = engine_factory("nominal")
-        assert engine.validate_composition(["nominal", "vacuum-burst", "rf-thermal"]) == []
+        assert engine.validate_composition(["nominal", "rf-thermal"]) == []
+        assert engine.validate_composition(["nominal", "vacuum-burst"]) == []
+
+    def test_vacuum_burst_and_rf_thermal_collide_on_the_beam_current(self, engine_factory):
+        engine = engine_factory("nominal")
+        problems = engine.validate_composition(["vacuum-burst", "rf-thermal"])
+        assert len(problems) == 1
+        assert repr(DCCT) in problems[0]
+        assert "vacuum-burst" in problems[0] and "rf-thermal" in problems[0]
+
+    def test_set_active_scenarios_refuses_the_pair(self, engine_factory):
+        engine = engine_factory("nominal")
+        with pytest.raises(ValueError, match="disjoint channel sets"):
+            engine.set_active_scenarios(["vacuum-burst", "rf-thermal"])
 
 
 class TestCollisionRejected:

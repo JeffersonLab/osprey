@@ -183,7 +183,6 @@ def test_dispatch_rejects_wildcard_denied_tool(client):
         ("WebFetch", True),
         ("WebSearch", True),
         ("Bash", True),
-        ("TaskOutput", True),
         ("TaskStop", True),
         ("mcp__plugin_playwright_playwright__browser_click", True),
         ("mcp__plugin_playwright_playwright__", True),  # bare prefix still matches

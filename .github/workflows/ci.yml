@@ -148,6 +148,10 @@ env:
   # not a vars. lookup: a fork that has not set the variable would get an empty
   # value and refuse every e2e lane rather than run them.
   OSPREY_E2E_PROVIDER: als-apg
+  # Every lane runs one model: the main model, each agent's model and the
+  # three alias models collapse onto it, and the judge grades with it too.
+  OSPREY_E2E_FORCE_MODEL: claude-haiku-5-5
+  OSPREY_E2E_JUDGE_MODEL: claude-haiku-5-5
   # Every pytest step writes its diagnostics here (tests/ci_diagnostics.py): the
   # per-worker event log, the stack samples, and the container snapshot a test's
   # first failure in a module takes while its stack is still up. The capture
@@ -1374,7 +1378,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           echo "   Body (first 500 chars):"
@@ -1480,7 +1484,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -1839,7 +1843,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -1929,7 +1933,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -2012,7 +2016,7 @@ jobs:
         # an alias word such as haiku. It is the smallest model the gateway
         # serves, and the lane makes no model call.
         uv run osprey init hello-world-test --preset hello-world \
-          --set provider=als-apg --set model=claude-haiku-4-5-20251001
+          --set provider=als-apg --set model=claude-haiku-5-5
         cd hello-world-test
         uv run osprey build --skip-deps --skip-lifecycle
         ls -la
@@ -2109,7 +2113,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -2201,7 +2205,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -2295,7 +2299,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -2733,7 +2737,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -3155,7 +3159,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -3284,7 +3288,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
@@ -5313,7 +5317,7 @@ jobs:
           -H "Content-Type: application/json" \
           -H "anthropic-version: 2023-06-01" \
           -H "Authorization: Bearer $ALS_APG_API_KEY" \
-          -d '{"model":"claude-haiku-4-5-20251001","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
+          -d '{"model":"claude-haiku-5-5","max_tokens":4,"messages":[{"role":"user","content":"ping"}]}')
         if [ "$HTTP_CODE" != "200" ]; then
           echo "❌ ALS-APG endpoint probe failed (HTTP $HTTP_CODE)"
           head -c 500 /tmp/probe.txt; echo
