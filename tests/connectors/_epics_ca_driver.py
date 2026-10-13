@@ -76,9 +76,15 @@ async def contract(prefix: str) -> dict[str, Any]:
         "not_sent": (f"{prefix}:NOPE", 1.0, {"timeout": 0.5}),
         "unacknowledged": (f"{prefix}:SLOW", 1.0, {"timeout": 1.0}),
         "access_denied": (f"{prefix}:RO", 5.0, {}),
+        "text_hex_to_long": (f"{prefix}:LONG", "0x10", {}),
+        "text_exponent_to_long": (f"{prefix}:LONG", "1e3", {}),
+        "text_exponent_to_ao": (f"{prefix}:AO", "2.5e0", {}),
+        "text_to_char_waveform": (f"{prefix}:WF", "/data/run42", {}),
+        "disabled_record": (f"{prefix}:DISABLED", 1.0, {}),
     }
     for name, (address, value, kwargs) in cases.items():
         out["writes"][name] = _write(await connector.write_channel(address, value, **kwargs))
+    out["long_after_refusal"] = (await connector.read_channel(f"{prefix}:LONG")).value
 
     updates: list[float] = []
     sub_id = await connector.subscribe(f"{prefix}:AO", lambda v: updates.append(v.value))

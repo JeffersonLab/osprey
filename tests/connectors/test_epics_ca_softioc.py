@@ -68,6 +68,8 @@ record(ao, "{prefix}:SLOW") {{ field(FLNK, "{prefix}:SLOWCALC") }}
 record(calcout, "{prefix}:SLOWCALC") {{ field(CALC, "A") field(INPA, "{prefix}:SLOW")
     field(ODLY, "3") }}
 record(ao, "{prefix}:RO") {{ field(ASG, "RO") field(VAL, "2") }}
+record(waveform, "{prefix}:WF") {{ field(FTVL, "CHAR") field(NELM, "64") }}
+record(ao, "{prefix}:DISABLED") {{ field(DISV, "1") field(DISA, "1") field(DISP, "1") }}
 """
 
 
@@ -179,6 +181,19 @@ def test_reads_writes_and_monitors_over_the_wire(ioc, prefix):
     assert writes["unacknowledged"]["outcome"] == "UNCONFIRMED"
     assert writes["access_denied"]["outcome"] == "REFUSED"
     assert writes["access_denied"]["refusal_reason"] == "CONTROL_SYSTEM_REFUSED"
+
+    # Text is read by the rule for the channel's own field type before it is
+    # sent, never left to the IOC, which would store "1e3" in a longout as 1.
+    assert writes["text_hex_to_long"]["outcome"] == "CONFIRMED"
+    assert writes["text_hex_to_long"]["observed"] == 16
+    assert writes["text_exponent_to_long"]["outcome"] == "REFUSED"
+    assert writes["text_exponent_to_long"]["refusal_reason"] == "VALIDATION_ERROR"
+    assert result["long_after_refusal"] == 16
+    assert writes["text_exponent_to_ao"]["outcome"] == "CONFIRMED"
+    assert writes["text_exponent_to_ao"]["observed"] == 2.5
+    assert writes["text_to_char_waveform"]["outcome"] == "CONFIRMED"
+    assert writes["text_to_char_waveform"]["observed"] == "/data/run42"
+    assert writes["disabled_record"]["outcome"] == "FAILED"
 
     # The monitor saw the write made while it was open, and nothing after close.
     assert 4.5 in result["monitor"]

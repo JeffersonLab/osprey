@@ -27,6 +27,7 @@ from osprey_connectors.control_system.ca_loop import get_ca_loop
 from osprey_connectors.control_system.call_timeout import call_timeout_s
 from osprey_connectors.control_system.limits_validator import (
     DEFAULT_STEP_READ_TIMEOUT_SECONDS,
+    c_numeral,
     step_read_timeout_seconds,
 )
 from osprey_connectors.logger import get_logger
@@ -47,6 +48,7 @@ _CA_ENV_KEYS = (
 # epicscorelibs' cadef names only some of them, so they are spelled out here.
 _ECA_TIMEOUT = 80  # "User specified timeout on IO operation expired"
 _ECA_NOWTACCESS = 376  # "Write access denied"
+_ECA_PUTFAIL = 160  # "Channel write request failed": the IOC did not take the put
 
 # EPICS alarm status names, indexed by the code Channel Access reports
 # (EPICS base alarm.h; the same table pyepics' AlarmStatus carried).
@@ -77,6 +79,9 @@ _ALARM_NAMES = (
 
 # Channel Access field types, indexed by DBF code (db_access.h).
 _DBF_NAMES = ("string", "short", "float", "enum", "char", "long", "double")
+_DBF_SHORT, _DBF_FLOAT, _DBF_CHAR, _DBF_LONG, _DBF_DOUBLE = 1, 2, 4, 5, 6
+_DBF_INTEGER = (_DBF_SHORT, _DBF_CHAR, _DBF_LONG)
+_DBF_REAL = (_DBF_FLOAT, _DBF_DOUBLE)
 
 
 def _alarm_name(code: Any) -> str:
@@ -141,6 +146,53 @@ def _ca_plain(value: Any) -> Any:
         import numpy
 
         return numpy.asarray(value)
+    return value
+
+
+class _UnwritableText(ValueError):
+    """A string the channel's field type cannot hold; nothing was sent."""
+
+
+def _ca_put_form(value: Any, field_type: Any, count: Any) -> tuple[Any, bool]:
+    """``value`` as it is put to a field of ``field_type``, and whether it goes as text.
+
+    Left to itself, aioca sends any ``str`` as ``DBR_STRING`` and the IOC
+    converts it, stopping at the first character it cannot read: ``"1e3"``
+    lands in an integer field as 1 and ``"12.7"`` as 12. So text bound for a
+    numeric field is read here, by the rule for that field (:func:`c_numeral`),
+    and sent as the number it spells; text the rule cannot read is refused.
+    Text bound for a char array is sent as its characters with a terminating
+    NUL, which is how a char waveform holds a string. String and enum fields
+    take the text as it is: the IOC reads an enum's label itself.
+
+    Raises :class:`_UnwritableText` when the text cannot be written.
+    """
+    if not isinstance(value, str):
+        return value, False
+    if field_type == _DBF_CHAR and isinstance(count, int) and count > 1:
+        encoded = value.encode()
+        if len(encoded) >= count:
+            raise _UnwritableText(
+                f"text of {len(encoded)} bytes does not fit a {count}-element char array "
+                "with its terminating NUL"
+            )
+        return value + "\0", True
+    if field_type in _DBF_INTEGER or field_type in _DBF_REAL:
+        number = c_numeral(value, integer_field=field_type in _DBF_INTEGER)
+        if number is None:
+            kind = "an integer" if field_type in _DBF_INTEGER else "a floating-point"
+            raise _UnwritableText(f"{value!r} is not a numeral {kind} field reads")
+        return number, False
+    return value, False
+
+
+def _char_text(value: Any) -> Any:
+    """A char array read back as the text it holds, up to its first NUL."""
+    if hasattr(value, "__array__") and not isinstance(value, str):
+        import numpy
+
+        raw = numpy.asarray(value).astype(numpy.uint8).tobytes()
+        return raw.split(b"\0", 1)[0].decode(errors="replace")
     return value
 
 
@@ -786,8 +838,15 @@ class EPICSConnector(ControlSystemConnector):
         - ``("unacknowledged", failure)``: the put went out and its callback did
           not arrive in time. aioca reports this and a connect timeout with the
           same code, which is why connecting is a step of its own here.
+        - ``("unwritable", reason)``: the value is text the channel's field
+          type cannot hold (see :func:`_ca_put_form`), so nothing was sent.
         - ``("cs_refused", failure)``: the IOC's access security denied it.
-        - ``("sent", None)``: sent, and, when ``wait``, acknowledged.
+        - ``("put_failed", failure)``: the IOC answered the put and did not
+          take it (a disabled record, a value it could not convert).
+        - ``("sent", (sent, as_text))``: sent, and, when ``wait``,
+          acknowledged. ``sent`` is the value as it went out (text read into a
+          number for a numeric field), the one a confirming read is compared
+          with; ``as_text`` says it went to a char array as text.
 
         Any other failure is raised: it leaves the outcome genuinely unknown,
         and every answer above claims to know it.
@@ -796,14 +855,34 @@ class EPICSConnector(ControlSystemConnector):
         connected = await aioca.connect(channel_address, timeout=timeout, throw=False)
         if not connected:
             return "not_sent", connected
-        done = await aioca.caput(channel_address, value, wait=wait, timeout=timeout, throw=False)
+        datatype = None
+        sent, as_text = value, False
+        if isinstance(value, str):
+            info = await aioca.cainfo(channel_address, timeout=timeout, throw=False)
+            if isinstance(info, aioca.CANothing):
+                return "not_sent", info
+            try:
+                put_value, as_text = _ca_put_form(value, info.datatype, info.count)
+            except _UnwritableText as reason:
+                return "unwritable", reason
+            if as_text:
+                datatype = aioca.DBR_CHAR_STR
+            else:
+                sent = put_value
+        else:
+            put_value = value
+        done = await aioca.caput(
+            channel_address, put_value, datatype=datatype, wait=wait, timeout=timeout, throw=False
+        )
         if done:
-            return "sent", None
+            return "sent", (sent, as_text)
         code = getattr(done, "errorcode", None)
         if code == _ECA_TIMEOUT:
             return "unacknowledged", done
         if code == _ECA_NOWTACCESS:
             return "cs_refused", done
+        if code == _ECA_PUTFAIL:
+            return "put_failed", done
         raise ConnectionError(f"Write to '{channel_address}' failed: {done}")
 
     # ------------------------------------------------------------------
@@ -1194,6 +1273,29 @@ class EPICSConnector(ControlSystemConnector):
                 ),
             )
 
+        if put_result == "unwritable":
+            return ChannelWriteResult(
+                channel_address=channel_address,
+                value_written=value,
+                outcome=WriteOutcome.REFUSED,
+                refusal_reason="VALIDATION_ERROR",
+                error_message=(
+                    f"Write to '{channel_address}' refused: {payload}. No value was sent."
+                ),
+            )
+
+        if put_result == "put_failed":
+            logger.warning(f"IOC did not take the put to {channel_address}: {payload}")
+            return ChannelWriteResult(
+                channel_address=channel_address,
+                value_written=value,
+                outcome=WriteOutcome.FAILED,
+                error_message=(
+                    f"Write to '{channel_address}' failed: the IOC answered the put and "
+                    f"did not take it: {payload}"
+                ),
+            )
+
         if put_result == "not_sent":
             return ChannelWriteResult(
                 channel_address=channel_address,
@@ -1230,11 +1332,16 @@ class EPICSConnector(ControlSystemConnector):
                 ),
             )
 
+        sent, as_text = payload
+        if as_text:
+            # Written to a char array as text, so it is read back as text.
+            observed.value = _char_text(observed.value)
+
         alarm_status, alarm_severity = _readback_alarm_fields(observed)
         metadata = getattr(observed, "metadata", None)
         enum_label = getattr(metadata, "enum_label", None) if metadata is not None else None
 
-        if values_match(value, observed.value, enum_label=enum_label):
+        if values_match(sent, observed.value, enum_label=enum_label):
             logger.debug(f"EPICS write confirmed: {channel_address} = {observed.value}")
             return ChannelWriteResult(
                 channel_address=channel_address,
