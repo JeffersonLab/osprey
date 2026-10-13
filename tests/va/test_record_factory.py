@@ -2,7 +2,7 @@
 
 Everything here runs in **one process**: a real ``pcaspy`` server hosting the
 real serving database, the real write path deciding what each write means, and
-a real ``pyepics`` client driving it from the pytest thread. No subprocess
+a real ``aioca`` client driving it from the pytest thread. No subprocess
 split, no fake driver -- the assertions are made from the far side of the wire,
 which is the only place the properties this file exists to pin are observable
 at all. ``tests/va/test_serving_pvdb.py`` and ``tests/va/test_serving_runner.py``
@@ -20,11 +20,21 @@ in this file that does not need a server -- the drive-limit derivation, the
 collection floor -- runs everywhere and is not gated.
 
 **The client and the server share a process.** ``pcaspy``'s compiled extension
-links EPICS statically and globally exports the ``ca_*`` client symbols, so
-whichever EPICS stack binds first wins. ``epics.ca.initialize_libca()`` is
-therefore called *before* pcaspy is imported, so the client's calls bind to
-pyepics' own libca and not to the copy buried in the server extension. That
-ordering is the whole reason these can be plain in-process tests.
+links EPICS statically and exports those symbols, so whichever EPICS stack is
+loaded first wins. ``import aioca`` loads epicscorelibs' libca and libCom with
+``RTLD_GLOBAL``; a pcaspy extension loaded *after* that resolves its own EPICS
+symbols against those global copies (``LD_DEBUG=bindings`` shows some 1600
+such bindings), and the result is a server that answers every read and kills
+the client's circuit on every write ("unexpected problem with client's input -
+forcing disconnect"), then dies of heap corruption at exit. Loaded first, the
+extension keeps its own copies and both ends work. So pcaspy is imported at the
+very top of this module, before anything can load aioca, and the fixture fails
+loudly if aioca got there first. (pyepics needed the opposite order: its libca
+had to initialise before pcaspy loaded.)
+
+aioca is asyncio-only, so every client call runs on the process's one Channel
+Access loop (``get_ca_loop()``, the same one the connector uses) and the pytest
+thread blocks on its result.
 
 The run loop is stood in for by :class:`_RunLoop`, which reproduces the one
 property of the real loop the write path depends on: the model is touched from
@@ -33,11 +43,14 @@ one thread that is never the server's, and the write is completed from there.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
+import sys
 import threading
 import time
+from collections.abc import Coroutine, Iterator
 from queue import Queue
 from typing import Any
 
@@ -52,8 +65,8 @@ def _free_port() -> str:
 
 
 # import-time required because libca latches the EPICS_CA_* environment when
-# the C library initialises, which happens on the first `import epics` anywhere
-# in the process -- earlier than any fixture can run.
+# the CA context is created, which happens on the first Channel Access call
+# anywhere in the process -- possibly earlier than any fixture here can run.
 #
 # Loopback only, and on an ephemeral port unless the environment already pins
 # one: this worktree is shared by concurrent test runs and by the operator's
@@ -66,6 +79,14 @@ os.environ.setdefault("EPICS_CA_AUTO_ADDR_LIST", "NO")
 os.environ.setdefault("EPICS_CA_SERVER_PORT", _free_port())
 os.environ.setdefault("EPICS_CAS_SERVER_PORT", os.environ["EPICS_CA_SERVER_PORT"])
 os.environ.setdefault("EPICS_CA_REPEATER_PORT", _free_port())
+
+# import-time required, and ahead of every import below: pcaspy has to be
+# loaded before anything in this process loads aioca. See the module docstring.
+_AIOCA_LOADED_FIRST = "epicscorelibs.ca.cadef" in sys.modules and "pcaspy" not in sys.modules
+try:
+    import pcaspy  # noqa: F401
+except ImportError:  # no loadable wheel on this host; the live fixture skips
+    pass
 
 from osprey.services.virtual_accelerator.entrypoint import (  # noqa: E402
     _load_drive_limits,
@@ -380,14 +401,11 @@ def _build_namespace(pcaspy: Any) -> LiveNamespace:
 def live() -> Any:
     """A live Channel Access server over the real serving layer.
 
-    ``initialize_libca()`` runs before pcaspy is imported, so the client's
-    ``ca_*`` calls bind to pyepics' libca rather than to the second, unset-up
-    copy the pcaspy extension exports. Import order is the mitigation; see the
-    module docstring.
+    pcaspy was imported before anything loaded aioca, so the server extension
+    keeps its own EPICS symbols rather than binding to the libca and libCom
+    aioca loads globally. Import order is the mitigation; see the module
+    docstring.
     """
-    import epics
-
-    epics.ca.initialize_libca()
     pcaspy = pytest.importorskip(
         "pcaspy",
         reason=(
@@ -395,6 +413,12 @@ def live() -> Any:
             "macOS arm64 wheel; run this suite in a linux container or on CI"
         ),
     )
+    if _AIOCA_LOADED_FIRST:
+        pytest.fail(
+            "aioca's libca was loaded before pcaspy, so the server extension is "
+            "bound to it and every write would kill the client's circuit; import "
+            "pcaspy first (see the module docstring)"
+        )
 
     namespace = _build_namespace(pcaspy)
     if not _wait_until(lambda: _caget(TELEMETRY) is not None):
@@ -415,33 +439,91 @@ def _wait_until(predicate, *, timeout: float = SETTLE_TIMEOUT_S) -> Any:
     return predicate()
 
 
-def _caget(address: str) -> Any:
-    """Read one value over the wire, never from pyepics' monitor cache.
+def _on_ca_loop(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run one aioca coroutine on the process's CA loop; block for its result."""
+    from osprey_connectors.control_system.ca_loop import get_ca_loop
 
-    ``use_monitor=False`` is load-bearing, not stylistic. pyepics' ``caget``
-    defaults to returning whatever its monitor subscription last cached, which
-    after a write is whatever arrived BEFORE the write did. Most reads in this
-    module poll through ``_wait_until`` and so retry the stale value away, but
-    the put-completion test deliberately reads once with no settle poll -- that
-    is the property it exists to assert -- and it read back a previous test's
-    0.75 instead of its own -6.5. A fresh one-shot read is also the only kind
-    put-completion actually guarantees anything about.
+    return get_ca_loop().run_sync(coro, timeout=CA_TIMEOUT_S + 5.0)
 
-    Same reasoning, and the same fix, as every read in
-    ``scripts/va/build_and_boot_check.sh``.
+
+def _caget(address: str, *, form: int | None = None) -> Any:
+    """Read one value over the wire, or ``None`` if none arrived.
+
+    Always a fresh one-shot read: aioca's ``caget`` keeps no monitor cache, so
+    there is no stale value for it to hand back. That matters here. The
+    put-completion test deliberately reads once with no settle poll -- that is
+    the property it exists to assert -- and a client answering from a cache
+    once read back a previous test's 0.75 instead of its own -6.5. A fresh
+    one-shot read is also the only kind put-completion actually guarantees
+    anything about.
+
+    ``form`` asks for a richer reading (``aioca.FORMAT_TIME`` for the alarm
+    severity, ``aioca.FORMAT_CTRL`` for the control limits).
     """
-    import epics
+    import aioca
 
-    return epics.caget(
-        address, timeout=CA_TIMEOUT_S, connection_timeout=CA_TIMEOUT_S, use_monitor=False
+    reading = _on_ca_loop(
+        aioca.caget(
+            address,
+            format=aioca.FORMAT_RAW if form is None else form,
+            timeout=CA_TIMEOUT_S,
+            throw=False,
+        )
     )
+    return None if isinstance(reading, aioca.CANothing) else reading
 
 
-def _caput(address: str, value: float) -> Any:
-    """Write with put-completion: the client stays blocked until the write ends."""
-    import epics
+def _caput(address: str, value: float) -> bool:
+    """Write with put-completion: the client stays blocked until the write ends.
 
-    return epics.caput(address, value, wait=True, timeout=CA_TIMEOUT_S)
+    True once the server has completed the write; False if it refused it or
+    never completed it in time.
+    """
+    import aioca
+
+    done = _on_ca_loop(aioca.caput(address, value, wait=True, timeout=CA_TIMEOUT_S, throw=False))
+    return bool(done.ok)
+
+
+def _severity(address: str) -> Any:
+    """The alarm severity ``address`` is served with, or ``None`` if unread."""
+    import aioca
+
+    reading = _caget(address, form=aioca.FORMAT_TIME)
+    return None if reading is None else reading.severity
+
+
+@contextlib.contextmanager
+def _monitor(address: str) -> Iterator[list[float]]:
+    """Subscribe to ``address``; yield the list every later update lands in.
+
+    Opened on the CA loop, because aioca binds a monitor to the loop it is
+    opened on, and closed there, explicitly and in a ``finally``, rather than
+    left for the garbage collector. The first update is the value at
+    connection, so waiting for it is the wait for the connection; it is kept
+    out of the yielded list, which holds only what arrived afterwards.
+    """
+    import aioca
+
+    from osprey_connectors.control_system.ca_loop import get_ca_loop
+
+    connected: list[float] = []
+    seen: list[float] = []
+
+    def on_update(value: float) -> None:
+        (seen if connected else connected).append(value)
+
+    async def subscribe() -> Any:
+        return aioca.camonitor(address, on_update)
+
+    subscription = _on_ca_loop(subscribe())
+    try:
+        assert _wait_until(lambda: connected, timeout=CA_TIMEOUT_S), (
+            f"the monitor on {address} never connected"
+        )
+        yield seen
+    finally:
+        get_ca_loop().call_soon(subscription.close)
 
 
 def _settle(address: str, expected: float) -> Any:
@@ -503,12 +585,12 @@ class TestPhysicsRoundTrip:
 
     @pytest.mark.usefixtures("live")
     def test_the_readback_follows_the_setpoint(self) -> None:
-        assert _caput(BAND_SP, 2.0) == 1
+        assert _caput(BAND_SP, 2.0)
         assert _settle(BAND_RB, 2.0) == pytest.approx(2.0)
 
     @pytest.mark.usefixtures("live")
     def test_the_setpoint_carries_the_written_value_too(self) -> None:
-        assert _caput(BAND_SP, 1.5) == 1
+        assert _caput(BAND_SP, 1.5)
         assert _settle(BAND_SP, 1.5) == pytest.approx(1.5)
 
     @pytest.mark.usefixtures("live")
@@ -520,27 +602,16 @@ class TestPhysicsRoundTrip:
         path that committed the echo and never posted it would hang the scan
         exactly as a missing echo would.
         """
-        import epics
-
-        seen: list[float] = []
-        readback = epics.PV(BAND_RB, auto_monitor=True)
-        try:
-            assert readback.wait_for_connection(timeout=CA_TIMEOUT_S)
-            readback.add_callback(lambda value=None, **_: seen.append(value))
-
-            assert _caput(BAND_SP, -4.25) == 1
+        with _monitor(BAND_RB) as seen:
+            assert _caput(BAND_SP, -4.25)
             _wait_until(lambda: any(abs(value + 4.25) < 1e-9 for value in seen))
-        finally:
-            # Explicit, in a finally: a PV finalised by the garbage collector
-            # tears libca down from the wrong thread.
-            readback.disconnect()
 
         assert seen, "no monitor event ever reached the subscriber"
         assert seen[-1] == pytest.approx(-4.25)
 
     def test_the_hook_is_handed_the_written_value(self, live: Any) -> None:
         live.hook.calls.clear()
-        assert _caput(BAND_SP, 3.0) == 1
+        assert _caput(BAND_SP, 3.0)
         _wait_until(lambda: live.hook.calls)
 
         assert live.hook.calls == [(BAND_SP, pytest.approx(3.0))]
@@ -550,13 +621,13 @@ class TestPhysicsRoundTrip:
         """Never a value read back out of the model: a BPM reading carries its
         own seeded readout error, and republishing the model's own view would
         overwrite the reading with the truth it exists to differ from."""
-        assert _caput(BAND_SP, 0.5) == 1
+        assert _caput(BAND_SP, 0.5)
 
         assert _settle(BPM, BPM_READING) == pytest.approx(BPM_READING)
 
     def test_the_model_is_never_touched_from_the_server_thread(self, live: Any) -> None:
         live.hook.threads.clear()
-        assert _caput(BAND_SP, 0.75) == 1
+        assert _caput(BAND_SP, 0.75)
         _wait_until(lambda: live.hook.threads)
 
         assert live.hook.threads == {live.loop.thread.name}
@@ -569,7 +640,7 @@ class TestPhysicsRoundTrip:
         only after the write path has committed the setpoint and its echo, so
         the read below is answered from a store that already holds them.
         """
-        assert _caput(BAND_SP, -6.5) == 1
+        assert _caput(BAND_SP, -6.5)
 
         assert _caget(BAND_SP) == pytest.approx(-6.5)
         assert _caget(BAND_RB) == pytest.approx(-6.5)
@@ -587,14 +658,14 @@ class TestDriveLimitClamp:
 
     @pytest.mark.usefixtures("live")
     def test_a_write_above_the_band_lands_at_the_top_of_it(self) -> None:
-        assert _caput(BAND_SP, 50.0) == 1
+        assert _caput(BAND_SP, 50.0)
 
         assert _settle(BAND_SP, BAND_HIGH) == pytest.approx(BAND_HIGH)
         assert _settle(BAND_RB, BAND_HIGH) == pytest.approx(BAND_HIGH)
 
     @pytest.mark.usefixtures("live")
     def test_a_write_below_the_band_lands_at_the_bottom_of_it(self) -> None:
-        assert _caput(BAND_SP, -50.0) == 1
+        assert _caput(BAND_SP, -50.0)
 
         assert _settle(BAND_SP, BAND_LOW) == pytest.approx(BAND_LOW)
         assert _settle(BAND_RB, BAND_LOW) == pytest.approx(BAND_LOW)
@@ -603,14 +674,14 @@ class TestDriveLimitClamp:
         """Otherwise the lattice and the wire would disagree about what the
         machine was set to."""
         live.hook.calls.clear()
-        assert _caput(BAND_SP, 99.0) == 1
+        assert _caput(BAND_SP, 99.0)
         _wait_until(lambda: live.hook.calls)
 
         assert live.hook.calls == [(BAND_SP, pytest.approx(BAND_HIGH))]
 
     @pytest.mark.usefixtures("live")
     def test_an_in_band_write_is_served_untouched(self) -> None:
-        assert _caput(BAND_SP, -11.875) == 1
+        assert _caput(BAND_SP, -11.875)
 
         assert _settle(BAND_SP, -11.875) == pytest.approx(-11.875)
 
@@ -618,23 +689,19 @@ class TestDriveLimitClamp:
     def test_the_band_is_published_as_the_control_limits(self) -> None:
         """A client reads the same band the write path enforces, so it can
         refuse the write itself rather than discover the clamp afterwards."""
-        import epics
+        import aioca
 
-        setpoint = epics.PV(BAND_SP)
-        try:
-            assert setpoint.wait_for_connection(timeout=CA_TIMEOUT_S)
-            control = setpoint.get_ctrlvars()
-        finally:
-            setpoint.disconnect()
+        control = _caget(BAND_SP, form=aioca.FORMAT_CTRL)
 
-        assert control["lower_ctrl_limit"] == pytest.approx(BAND_LOW)
-        assert control["upper_ctrl_limit"] == pytest.approx(BAND_HIGH)
+        assert control is not None
+        assert control.lower_ctrl_limit == pytest.approx(BAND_LOW)
+        assert control.upper_ctrl_limit == pytest.approx(BAND_HIGH)
 
     @pytest.mark.usefixtures("live")
     def test_an_echo_setpoint_with_no_model_behind_it_is_clamped_too(self) -> None:
         """The clamp is a property of the write path, not of the physics
         hand-off, so a write that never reaches a model is bounded as well."""
-        assert _caput(ECHO_SP, 40.0) == 1
+        assert _caput(ECHO_SP, 40.0)
 
         assert _settle(ECHO_SP, ECHO_HIGH) == pytest.approx(ECHO_HIGH)
         assert _settle(ECHO_RB, ECHO_HIGH) == pytest.approx(ECHO_HIGH)
@@ -645,13 +712,13 @@ class TestEchoWithoutPhysics:
 
     @pytest.mark.usefixtures("live")
     def test_the_readback_follows_immediately(self) -> None:
-        assert _caput(ECHO_SP, 2.5) == 1
+        assert _caput(ECHO_SP, 2.5)
 
         assert _settle(ECHO_RB, 2.5) == pytest.approx(2.5)
 
     def test_no_write_reaches_the_hook(self, live: Any) -> None:
         live.hook.calls.clear()
-        assert _caput(ECHO_SP, 1.0) == 1
+        assert _caput(ECHO_SP, 1.0)
         _settle(ECHO_RB, 1.0)
 
         assert live.hook.calls == []
@@ -668,14 +735,14 @@ class TestStuckSetpointFreeze:
 
     @pytest.mark.usefixtures("live")
     def test_the_setpoint_latches_the_written_value(self) -> None:
-        assert _caput(STUCK_SP, 7.5) == 1
+        assert _caput(STUCK_SP, 7.5)
 
         assert _settle(STUCK_SP, 7.5) == pytest.approx(7.5)
 
     @pytest.mark.usefixtures("live")
     def test_the_readback_never_moves(self) -> None:
         before = _caget(STUCK_RB)
-        assert _caput(STUCK_SP, 4.0) == 1
+        assert _caput(STUCK_SP, 4.0)
         _settle(STUCK_SP, 4.0)
 
         assert _caget(STUCK_RB) == pytest.approx(before)
@@ -684,7 +751,7 @@ class TestStuckSetpointFreeze:
         """The fault suppresses the physics hand-off, not just the echo:
         a frozen magnet's current must not reach the lattice."""
         live.hook.calls.clear()
-        assert _caput(STUCK_SP, 5.5) == 1
+        assert _caput(STUCK_SP, 5.5)
         _settle(STUCK_SP, 5.5)
 
         assert live.hook.calls == []
@@ -694,15 +761,15 @@ class TestStuckSetpointFreeze:
         """A setpoint whose asynchronous write is never completed has every
         later write to it postponed by the server library, which would turn a
         frozen readback into a frozen setpoint as well."""
-        assert _caput(STUCK_SP, 1.0) == 1
-        assert _caput(STUCK_SP, 2.0) == 1
+        assert _caput(STUCK_SP, 1.0)
+        assert _caput(STUCK_SP, 2.0)
 
         assert _settle(STUCK_SP, 2.0) == pytest.approx(2.0)
 
     @pytest.mark.usefixtures("live")
     def test_an_unfaulted_sibling_still_echoes(self) -> None:
         """The fault is per channel, not a partition-wide switch."""
-        assert _caput(SEEDED_SP, 6.25) == 1
+        assert _caput(SEEDED_SP, 6.25)
 
         assert _settle(SEEDED_RB, 6.25) == pytest.approx(6.25)
 
@@ -718,10 +785,10 @@ class TestRefusedWrite:
 
     @pytest.mark.usefixtures("live")
     def test_a_one_shot_reader_sees_no_movement(self) -> None:
-        assert _caput(BAND_SP, 1.25) == 1
+        assert _caput(BAND_SP, 1.25)
         _settle(BAND_SP, 1.25)
 
-        assert _caput(BAND_SP, REFUSED_VALUE) == 1
+        assert _caput(BAND_SP, REFUSED_VALUE)
         time.sleep(0.5)
 
         assert _caget(BAND_SP) == pytest.approx(1.25)
@@ -729,37 +796,21 @@ class TestRefusedWrite:
 
     @pytest.mark.usefixtures("live")
     def test_a_monitoring_reader_sees_no_movement_either(self) -> None:
-        import epics
-
-        assert _caput(BAND_SP, 2.75) == 1
+        assert _caput(BAND_SP, 2.75)
         _settle(BAND_RB, 2.75)
 
-        seen: list[float] = []
-        readback = epics.PV(BAND_RB, auto_monitor=True)
-        try:
-            assert readback.wait_for_connection(timeout=CA_TIMEOUT_S)
-            assert readback.get(use_monitor=False) == pytest.approx(2.75)
-            readback.add_callback(lambda value=None, **_: seen.append(value))
+        with _monitor(BAND_RB) as seen:
+            assert _caget(BAND_RB) == pytest.approx(2.75)
 
-            assert _caput(BAND_SP, REFUSED_VALUE) == 1
+            assert _caput(BAND_SP, REFUSED_VALUE)
             time.sleep(0.5)
-        finally:
-            readback.disconnect()
 
         assert [value for value in seen if abs(value - 2.75) > 1e-9] == []
 
     def test_the_refusal_raises_an_alarm(self, live: Any) -> None:
         """The only trace a refusal can leave for a Channel Access client."""
-        import epics
-
-        setpoint = epics.PV(BAND_SP)
-        try:
-            assert setpoint.wait_for_connection(timeout=CA_TIMEOUT_S)
-            assert _caput(BAND_SP, REFUSED_VALUE) == 1
-            _wait_until(lambda: setpoint.get(use_monitor=False) is not None and setpoint.severity)
-            severity = setpoint.severity
-        finally:
-            setpoint.disconnect()
+        assert _caput(BAND_SP, REFUSED_VALUE)
+        severity = _wait_until(lambda: _severity(BAND_SP))
 
         assert severity == live.refusal_alarm[1]
 
@@ -767,8 +818,8 @@ class TestRefusedWrite:
     def test_a_later_write_still_lands(self) -> None:
         """Completion is signalled on a refusal too, so the setpoint is not
         left with an asynchronous write in flight forever."""
-        assert _caput(BAND_SP, REFUSED_VALUE) == 1
-        assert _caput(BAND_SP, 8.5) == 1
+        assert _caput(BAND_SP, REFUSED_VALUE)
+        assert _caput(BAND_SP, 8.5)
 
         assert _settle(BAND_SP, 8.5) == pytest.approx(8.5)
         assert _settle(BAND_RB, 8.5) == pytest.approx(8.5)
@@ -779,19 +830,11 @@ class TestRefusedWrite:
         the next accepted write's ``setParam`` recomputes the condition from the
         value, and with nothing to compare against it always lands on
         NO_ALARM."""
-        import epics
-
-        setpoint = epics.PV(BAND_SP)
-        try:
-            assert setpoint.wait_for_connection(timeout=CA_TIMEOUT_S)
-            assert _caput(BAND_SP, REFUSED_VALUE) == 1
-            _wait_until(lambda: setpoint.get(use_monitor=False) is not None and setpoint.severity)
-            assert _caput(BAND_SP, 0.25) == 1
-            _settle(BAND_SP, 0.25)
-            _wait_until(lambda: setpoint.get(use_monitor=False) is not None)
-            severity = setpoint.severity
-        finally:
-            setpoint.disconnect()
+        assert _caput(BAND_SP, REFUSED_VALUE)
+        _wait_until(lambda: _severity(BAND_SP))
+        assert _caput(BAND_SP, 0.25)
+        _settle(BAND_SP, 0.25)
+        severity = _severity(BAND_SP)
 
         assert severity == 0  # NO_ALARM
 
@@ -810,17 +853,17 @@ class TestPerWriteIsolation:
         bystanders = (SEEDED_SP, SEEDED_RB, STUCK_SP, STUCK_RB, ECHO_SP, ECHO_RB, TELEMETRY)
         before = _snapshot(*bystanders)
 
-        assert _caput(BAND_SP, -2.5) == 1
+        assert _caput(BAND_SP, -2.5)
         _settle(BAND_RB, -2.5)
 
         assert _snapshot(*bystanders) == pytest.approx(before)
 
     @pytest.mark.usefixtures("live")
     def test_writing_one_magnet_leaves_the_others_readback_alone(self) -> None:
-        assert _caput(SEEDED_SP, 1.0) == 1
+        assert _caput(SEEDED_SP, 1.0)
         _settle(SEEDED_RB, 1.0)
 
-        assert _caput(BAND_SP, 9.0) == 1
+        assert _caput(BAND_SP, 9.0)
         _settle(BAND_RB, 9.0)
 
         assert _caget(SEEDED_RB) == pytest.approx(1.0)
@@ -839,7 +882,7 @@ class TestNonWritableChannels:
 
     @pytest.mark.usefixtures("live")
     def test_a_readback_of_a_setpoint_pair_refuses_the_write(self) -> None:
-        assert _caput(ECHO_SP, 3.5) == 1
+        assert _caput(ECHO_SP, 3.5)
         _settle(ECHO_RB, 3.5)
 
         _caput(ECHO_RB, 42.0)

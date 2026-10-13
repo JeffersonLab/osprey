@@ -10,9 +10,10 @@ this file is.
 
 The venue and the in-process topology are the ones
 ``tests/va/test_record_factory.py`` documents: one process, a real ``pcaspy``
-server, a real ``pyepics`` client, and ``epics.ca.initialize_libca()`` before
-the pcaspy import so the client binds its own libca rather than the second copy
-the server extension exports. pcaspy has no loadable macOS arm64 wheel, so the
+server, a real ``aioca`` client on the process's one Channel Access loop, and
+pcaspy imported before anything loads aioca, because a pcaspy extension loaded
+after aioca's global libca binds its EPICS symbols to it and then drops the
+client's circuit on every write. pcaspy has no loadable macOS arm64 wheel, so the
 live classes skip on a developer host and are proven in a linux container and
 on CI; the route-table tests need no server and run everywhere.
 
@@ -28,10 +29,13 @@ bridge serves whatever the model holds now, and keeps no copy of its own.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
+import sys
 import threading
 import time
+from collections.abc import Coroutine, Iterator
 from queue import Queue
 from typing import Any
 
@@ -46,8 +50,8 @@ def _free_port() -> str:
 
 
 # import-time required because libca latches the EPICS_CA_* environment when
-# the C library initialises, which happens on the first `import epics` anywhere
-# in the process. Loopback only, on an ephemeral port unless the environment pins one,
+# the CA context is created, which happens on the first Channel Access call
+# anywhere in the process. Loopback only, on an ephemeral port unless the environment pins one,
 # with the server and CAS ports equal -- a search reply carries the server's own
 # port, so a server listening anywhere else hands clients a dead address.
 os.environ.setdefault("EPICS_CA_ADDR_LIST", "127.0.0.1")
@@ -55,6 +59,15 @@ os.environ.setdefault("EPICS_CA_AUTO_ADDR_LIST", "NO")
 os.environ.setdefault("EPICS_CA_SERVER_PORT", _free_port())
 os.environ.setdefault("EPICS_CAS_SERVER_PORT", os.environ["EPICS_CA_SERVER_PORT"])
 os.environ.setdefault("EPICS_CA_REPEATER_PORT", _free_port())
+
+# import-time required, and ahead of every import below: pcaspy has to be
+# loaded before anything in this process loads aioca. See
+# ``tests/va/test_record_factory.py``'s module docstring.
+_AIOCA_LOADED_FIRST = "epicscorelibs.ca.cadef" in sys.modules and "pcaspy" not in sys.modules
+try:
+    import pcaspy  # noqa: F401
+except ImportError:  # no loadable wheel on this host; the live fixture skips
+    pass
 
 from osprey.services.virtual_accelerator.bindings import (  # noqa: E402
     Binding,
@@ -240,9 +253,6 @@ class LiveNamespace:
 @pytest.fixture(scope="module")
 def live() -> Any:
     """A live Channel Access server serving a faulted namespace."""
-    import epics
-
-    epics.ca.initialize_libca()
     pcaspy = pytest.importorskip(
         "pcaspy",
         reason=(
@@ -250,6 +260,12 @@ def live() -> Any:
             "macOS arm64 wheel; run this suite in a linux container or on CI"
         ),
     )
+    if _AIOCA_LOADED_FIRST:
+        pytest.fail(
+            "aioca's libca was loaded before pcaspy, so the server extension is "
+            "bound to it and every write would kill the client's circuit; import "
+            "pcaspy first (see the module docstring)"
+        )
 
     records = _build_records()
     hook = _PhysicsHook()
@@ -303,31 +319,67 @@ def _wait_until(predicate, *, timeout: float = SETTLE_TIMEOUT_S) -> Any:
     return predicate()
 
 
+def _on_ca_loop(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run one aioca coroutine on the process's CA loop; block for its result."""
+    from osprey_connectors.control_system.ca_loop import get_ca_loop
+
+    return get_ca_loop().run_sync(coro, timeout=CA_TIMEOUT_S + 5.0)
+
+
 def _caget(address: str) -> Any:
-    """Read one value over the wire, never from pyepics' monitor cache.
+    """Read one value over the wire, or ``None`` if none arrived.
 
-    ``use_monitor=False`` is load-bearing, not stylistic: pyepics' ``caget``
-    otherwise returns whatever its monitor subscription last cached, which
-    after a write is whatever arrived BEFORE the write did. This suite asserts
-    what a client sees over a real wire, including that a refused write moved
-    NOTHING -- and a stale cache never moves, so that assertion would pass for
-    free. The sibling live suite was observed reading back a previous test's
-    value for exactly this reason.
-
-    Same reasoning, and the same fix, as every read in
-    ``scripts/va/build_and_boot_check.sh``.
+    Always a fresh one-shot read: aioca's ``caget`` keeps no monitor cache.
+    That is load-bearing here. This suite asserts what a client sees over a
+    real wire, including that a refused write moved NOTHING -- and a stale
+    cache never moves, so that assertion would pass for free. The sibling live
+    suite was once observed reading back a previous test's value for exactly
+    this reason.
     """
-    import epics
+    import aioca
 
-    return epics.caget(
-        address, timeout=CA_TIMEOUT_S, connection_timeout=CA_TIMEOUT_S, use_monitor=False
-    )
+    reading = _on_ca_loop(aioca.caget(address, timeout=CA_TIMEOUT_S, throw=False))
+    return None if isinstance(reading, aioca.CANothing) else reading
 
 
-def _caput(address: str, value: float) -> Any:
-    import epics
+def _caput(address: str, value: float) -> bool:
+    """Write with put-completion; True once the server has completed it."""
+    import aioca
 
-    return epics.caput(address, value, wait=True, timeout=CA_TIMEOUT_S)
+    done = _on_ca_loop(aioca.caput(address, value, wait=True, timeout=CA_TIMEOUT_S, throw=False))
+    return bool(done.ok)
+
+
+@contextlib.contextmanager
+def _monitor(address: str) -> Iterator[list[float]]:
+    """Subscribe to ``address``; yield the list every later update lands in.
+
+    Opened on the CA loop, because aioca binds a monitor to the loop it is
+    opened on, and closed there in a ``finally``. The first update is the value
+    at connection, so waiting for it is the wait for the connection; it is kept
+    out of the yielded list, which holds only what arrived afterwards.
+    """
+    import aioca
+
+    from osprey_connectors.control_system.ca_loop import get_ca_loop
+
+    connected: list[float] = []
+    seen: list[float] = []
+
+    def on_update(value: float) -> None:
+        (seen if connected else connected).append(value)
+
+    async def subscribe() -> Any:
+        return aioca.camonitor(address, on_update)
+
+    subscription = _on_ca_loop(subscribe())
+    try:
+        assert _wait_until(lambda: connected, timeout=CA_TIMEOUT_S), (
+            f"the monitor on {address} never connected"
+        )
+        yield seen
+    finally:
+        get_ca_loop().call_soon(subscription.close)
 
 
 def _settle(address: str, expected: float) -> Any:
@@ -609,13 +661,13 @@ class TestLiveStuckEchoPair:
 
     @pytest.mark.usefixtures("live")
     def test_the_setpoint_latches_the_written_value(self) -> None:
-        assert _caput(STUCK_SP, 7.25) == 1
+        assert _caput(STUCK_SP, 7.25)
 
         assert _settle(STUCK_SP, 7.25) == pytest.approx(7.25)
 
     @pytest.mark.usefixtures("live")
     def test_the_readback_stays_at_its_boot_value(self) -> None:
-        assert _caput(STUCK_SP, 4.0) == 1
+        assert _caput(STUCK_SP, 4.0)
         _settle(STUCK_SP, 4.0)
 
         assert _caget(STUCK_RB) == pytest.approx(STUCK_BOOT)
@@ -624,7 +676,7 @@ class TestLiveStuckEchoPair:
     def test_repeated_writes_never_move_it(self) -> None:
         """Frozen means frozen, not merely lagging by one write."""
         for value in (1.0, -3.0, 11.5):
-            assert _caput(STUCK_SP, value) == 1
+            assert _caput(STUCK_SP, value)
             _settle(STUCK_SP, value)
 
         assert _caget(STUCK_RB) == pytest.approx(STUCK_BOOT)
@@ -634,22 +686,12 @@ class TestLiveStuckEchoPair:
         """The freeze is in the served value, so there is no monitor event to
         deliver either -- a subscriber sees a device that simply never moves,
         not one that reports a value identical to the last."""
-        import epics
+        with _monitor(STUCK_RB) as seen:
+            assert _caget(STUCK_RB) == pytest.approx(STUCK_BOOT)
 
-        seen: list[float] = []
-        readback = epics.PV(STUCK_RB, auto_monitor=True)
-        try:
-            assert readback.wait_for_connection(timeout=CA_TIMEOUT_S)
-            assert readback.get(use_monitor=False) == pytest.approx(STUCK_BOOT)
-            readback.add_callback(lambda value=None, **_: seen.append(value))
-
-            assert _caput(STUCK_SP, 6.0) == 1
+            assert _caput(STUCK_SP, 6.0)
             _settle(STUCK_SP, 6.0)
             time.sleep(0.5)
-        finally:
-            # Explicit, in a finally: a PV finalised by the garbage collector
-            # tears libca down from the wrong thread.
-            readback.disconnect()
 
         assert [value for value in seen if abs(value - STUCK_BOOT) > 1e-9] == []
 
@@ -659,23 +701,23 @@ class TestLiveStuckEchoPair:
         asynchronous write never completed, so a fault that skipped completion
         would freeze the setpoint as well as the readback -- and the client
         would hang rather than be told a lie it could detect."""
-        assert _caput(STUCK_SP, 1.0) == 1
-        assert _caput(STUCK_SP, 2.0) == 1
+        assert _caput(STUCK_SP, 1.0)
+        assert _caput(STUCK_SP, 2.0)
 
         assert _settle(STUCK_SP, 2.0) == pytest.approx(2.0)
 
     @pytest.mark.usefixtures("live")
     def test_the_unfaulted_sibling_still_echoes(self) -> None:
-        assert _caput(LIVE_SP, 4.5) == 1
+        assert _caput(LIVE_SP, 4.5)
 
         assert _settle(LIVE_RB, 4.5) == pytest.approx(4.5)
 
     @pytest.mark.usefixtures("live")
     def test_faulting_one_channel_leaves_its_sibling_alone(self) -> None:
-        assert _caput(LIVE_SP, 3.0) == 1
+        assert _caput(LIVE_SP, 3.0)
         _settle(LIVE_RB, 3.0)
 
-        assert _caput(STUCK_SP, 8.0) == 1
+        assert _caput(STUCK_SP, 8.0)
         _settle(STUCK_SP, 8.0)
 
         assert _caget(LIVE_RB) == pytest.approx(3.0)
@@ -691,27 +733,27 @@ class TestLiveStuckMagnet:
 
     @pytest.mark.usefixtures("live")
     def test_the_setpoint_latches_the_written_value(self) -> None:
-        assert _caput(STUCK_MAGNET_SP, 5.5) == 1
+        assert _caput(STUCK_MAGNET_SP, 5.5)
 
         assert _settle(STUCK_MAGNET_SP, 5.5) == pytest.approx(5.5)
 
     @pytest.mark.usefixtures("live")
     def test_the_readback_stays_at_its_boot_value(self) -> None:
-        assert _caput(STUCK_MAGNET_SP, -2.0) == 1
+        assert _caput(STUCK_MAGNET_SP, -2.0)
         _settle(STUCK_MAGNET_SP, -2.0)
 
         assert _caget(STUCK_MAGNET_RB) == pytest.approx(STUCK_BOOT)
 
     def test_the_write_never_reaches_the_model(self, live: Any) -> None:
         live.hook.calls.clear()
-        assert _caput(STUCK_MAGNET_SP, 3.5) == 1
+        assert _caput(STUCK_MAGNET_SP, 3.5)
         _settle(STUCK_MAGNET_SP, 3.5)
 
         assert live.hook.calls == []
 
     def test_an_unfaulted_magnet_still_reaches_the_model_and_echoes(self, live: Any) -> None:
         live.hook.calls.clear()
-        assert _caput(LIVE_MAGNET_SP, 1.75) == 1
+        assert _caput(LIVE_MAGNET_SP, 1.75)
         _wait_until(lambda: live.hook.calls)
 
         assert live.hook.calls == [(LIVE_MAGNET_SP, pytest.approx(1.75))]
