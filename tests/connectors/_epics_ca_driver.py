@@ -21,6 +21,7 @@ import threading
 from typing import Any
 from unittest.mock import patch
 
+from osprey_connectors.control_system.ca_loop import get_ca_loop
 from osprey_connectors.control_system.epics_connector import EPICSConnector
 
 RESULT_MARKER = "__RESULT__"
@@ -289,6 +290,46 @@ async def dispatch_repoint(prefix: str) -> dict[str, Any]:
     return {"fired": fired}
 
 
+def recorder(prefix: str) -> dict[str, Any]:
+    """The archiver recorder's sampling, each sample on a loop of its own.
+
+    Sampled from fresh loops on purpose: the recorder's loop is never the CA
+    loop, and its channels must still be cached on the CA loop alone.
+    """
+    import time
+
+    from aioca._catools import _Context
+
+    from osprey.services.archiver_recorder.config import RecorderSettings
+    from osprey.services.archiver_recorder.recorder import channel_access_reader
+
+    settings = RecorderSettings(
+        host="archiver-mongodb",
+        port=27017,
+        database="osprey_archiver",
+        collection="pv_history",
+        auth_source="admin",
+        username="osprey",
+        password_env="MONGO_ROOT_PASSWORD",
+        timeout_s=5,
+        cadence_sec=1,
+        tail_cadence_sec=60,
+        poll_sec=30,
+        hot_span_hours=48,
+        retention_days=30,
+    )
+    read = channel_access_reader(settings)
+    addresses = [f"{prefix}:{record}" for record in ("AO", "LONG", "MBBO", "NOPE")]
+    samples, elapsed = [], []
+    for _ in range(2):
+        started = time.monotonic()
+        sample = asyncio.run(read(addresses))
+        elapsed.append(time.monotonic() - started)
+        samples.append({name.split(":", 1)[1]: value for name, value in sample.items()})
+    ca_loop_caches = [loop is get_ca_loop().loop for loop in _Context._channel_caches]
+    return {"samples": samples, "elapsed": elapsed, "ca_loop_caches": ca_loop_caches}
+
+
 SCENARIOS = {
     "contract": contract,
     "runtime_style": runtime_style,
@@ -299,6 +340,7 @@ SCENARIOS = {
     "unreachable_name_server": unreachable_name_server,
     "repoint": repoint,
     "dispatch_repoint": dispatch_repoint,
+    "recorder": recorder,
 }
 
 

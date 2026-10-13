@@ -21,9 +21,12 @@ connector can read" is not a claim a fake can settle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import ssl
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -487,22 +490,139 @@ async def test_a_failed_write_does_not_end_the_loop(tmp_path: Path) -> None:
 async def test_the_channel_access_reader_drops_channels_that_did_not_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """aioca reports a failed read as a falsy ``CANothing`` in the results list
-    rather than raising, which is what makes ``throw=False`` safe: one
-    unreachable channel must not cost the whole sample. Dropping those here is
+    """The reader samples through the real EPICS connector, here over a fake aioca.
+    A channel that never connects fails its own read and nothing else's: one
+    unreachable channel must not cost the whole sample. Dropping it here is
     what turns "did not answer" into an absent field downstream."""
-    import aioca
-
     from osprey.services.archiver_recorder.recorder import channel_access_reader
+    from tests.connectors._epics_fakes import FakeChannel, ca_reading, install_fake_aioca
 
-    async def fake_caget(pvs, **kwargs):
-        return [1.5, aioca.CANothing(pvs[1], -1)]
-
-    monkeypatch.setattr(aioca, "caget", fake_caget)
+    install_fake_aioca(monkeypatch, {"SR:BPM01:X": FakeChannel(ca_reading(1.5))})
 
     values = await channel_access_reader(_settings())(["SR:BPM01:X", "SR:BPM02:X"])
 
     assert values == {"SR:BPM01:X": 1.5}
+
+
+async def test_each_sample_costs_one_read_per_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The connector fetches a channel's units and labels on its first read and
+    reuses them, so after the first sample each channel is one round trip."""
+    import aioca
+
+    from osprey.services.archiver_recorder.recorder import channel_access_reader
+    from tests.connectors._epics_fakes import FakeChannel, ca_reading, install_fake_aioca
+
+    addresses = ["SR:BPM01:X", "SR:BPM02:X"]
+    fake = install_fake_aioca(monkeypatch, {a: FakeChannel(ca_reading(1.5)) for a in addresses})
+    read = channel_access_reader(_settings())
+
+    for _ in range(3):
+        assert await read(addresses) == dict.fromkeys(addresses, 1.5)
+
+    gets = [(name, kwargs["format"]) for call, name, kwargs in fake.calls if call == "caget"]
+    for address in addresses:
+        assert gets.count((address, aioca.FORMAT_TIME)) == 3
+        assert gets.count((address, aioca.FORMAT_CTRL)) == 1
+
+
+async def test_the_recorders_ca_environment_is_left_as_it_stands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compose entry hands the recorder its gateway in ``EPICS_CA_*``; the
+    connector it samples through must not rewrite that with a gateway block
+    written for the agent's side of the network."""
+    from osprey.connectors.control_system.epics_connector import EPICSConnector
+    from osprey.services.archiver_recorder import recorder
+    from tests.connectors._epics_fakes import install_fake_aioca
+
+    install_fake_aioca(monkeypatch)
+    monkeypatch.setenv("EPICS_CA_NAME_SERVERS", "virtual-accelerator:5064")
+    monkeypatch.setenv("EPICS_CA_AUTO_ADDR_LIST", "NO")
+
+    connector = await recorder._connect()
+
+    assert isinstance(connector, EPICSConnector)
+    assert connector._connector_type == "epics"
+    assert os.environ["EPICS_CA_NAME_SERVERS"] == "virtual-accelerator:5064"
+    assert os.environ["EPICS_CA_AUTO_ADDR_LIST"] == "NO"
+
+
+class _StallingConnector:
+    """Answers every channel at once except those in ``stalled``, which never answer."""
+
+    def __init__(self, stalled: tuple[str, ...] = ()) -> None:
+        self.stalled = stalled
+        self.cancelled: list[str] = []
+        self.timeouts: list[float | None] = []
+
+    async def read_channel(self, address: str, timeout: float | None = None):
+        from osprey.connectors.control_system.base import ChannelValue
+
+        self.timeouts.append(timeout)
+        if address in self.stalled:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.append(address)
+                raise
+        if address.endswith(":BROKEN"):
+            raise ConnectionError(f"Failed to connect to PV '{address}'")
+        return ChannelValue(value=2.5, timestamp=datetime.now(UTC))
+
+
+async def test_a_channel_that_never_answers_does_not_hold_the_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every read shares one deadline, the sample cadence. What answered by
+    then is kept, a failed read and a read still outstanding contribute
+    nothing, and the outstanding one is cancelled rather than left running."""
+    from osprey.services.archiver_recorder import recorder
+
+    connector = _StallingConnector(stalled=("SR:BPM02:X",))
+    connects: list[int] = []
+
+    async def connect():
+        connects.append(1)
+        return connector
+
+    monkeypatch.setattr(recorder, "_connect", connect)
+    # A fractional cadence keeps the test short; the deadline arithmetic is the same.
+    read = recorder.channel_access_reader(_settings(cadence_sec=0.2))
+    addresses = ["SR:BPM01:X", "SR:BPM02:X", "SR:BPM03:BROKEN"]
+
+    started = time.monotonic()
+    values = await read(addresses)
+    elapsed = time.monotonic() - started
+    await asyncio.sleep(0)  # let the cancelled read see its cancellation
+
+    assert values == {"SR:BPM01:X": 2.5}
+    assert 0.15 <= elapsed < 1.0
+    assert connector.cancelled == ["SR:BPM02:X"]
+    assert set(connector.timeouts) == {0.2}
+
+    # The connector is built on the first sample and reused for every later one.
+    await read(["SR:BPM01:X"])
+    assert connects == [1]
+
+
+async def test_a_connector_that_does_not_connect_in_time_costs_one_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from osprey.services.archiver_recorder import recorder
+
+    attempts: list[int] = []
+
+    async def connect():
+        attempts.append(1)
+        if len(attempts) == 1:
+            await asyncio.Event().wait()
+        return _StallingConnector()
+
+    monkeypatch.setattr(recorder, "_connect", connect)
+    read = recorder.channel_access_reader(_settings(cadence_sec=0.1))
+
+    assert await read(["SR:BPM01:X"]) == {}
+    assert await read(["SR:BPM01:X"]) == {"SR:BPM01:X": 2.5}
 
 
 async def test_non_numeric_channels_are_skipped_and_warned_about_once(

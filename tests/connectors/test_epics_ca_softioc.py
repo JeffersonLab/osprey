@@ -256,3 +256,14 @@ def test_a_dispatch_trigger_stays_armed_across_a_repoint(ioc, prefix):
     result = _drive("dispatch_repoint", prefix, ioc)
 
     assert result["fired"] == [[1.0, 6.0]], result
+
+
+def test_the_archiver_recorder_samples_through_the_ca_loop(ioc, prefix):
+    """A channel nobody serves costs only itself, within the cadence, and every
+    sample, whatever loop it runs on, reuses the one channel cache of the CA loop."""
+    result = _drive("recorder", prefix, ioc)
+
+    for sample in result["samples"]:
+        assert sample == {"AO": 1.5, "LONG": 3, "MBBO": 1}, result
+    assert all(seconds < 2.0 for seconds in result["elapsed"]), result
+    assert result["ca_loop_caches"] == [True], result
