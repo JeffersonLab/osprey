@@ -323,7 +323,7 @@ class LiveServer:
             try:
                 self._conn.send(("stop", None))
             except (BrokenPipeError, OSError):
-                pass
+                pass  # the child is already gone; the join below reaps it
         self._process.join(STOP_TIMEOUT_S)
         if self._process.is_alive():
             self._process.terminate()
