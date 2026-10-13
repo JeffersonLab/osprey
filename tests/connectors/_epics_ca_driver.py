@@ -211,8 +211,9 @@ async def repoint(prefix: str) -> dict[str, Any]:
     """Connect at the IOC, then at a port nothing serves, then at the IOC again.
 
     Each connect repoints the process's one CA context. The read in the middle
-    goes unanswered only if the context really moved, and the monitor opened
-    on the first context is closed with it.
+    goes unanswered only if the context really moved. The monitor opened on the
+    first context is closed with it, re-opened on each new one, and delivers
+    again once CA is back at the IOC.
     """
     import os
 
@@ -241,6 +242,7 @@ async def repoint(prefix: str) -> dict[str, Any]:
 
     back = EPICSConnector()
     await back.connect(at(ioc_port))
+    await asyncio.sleep(0.3)
     write = await back.write_channel(f"{prefix}:AO", 4.0)
     after = (await back.read_channel(f"{prefix}:AO")).value
     await asyncio.sleep(0.3)
@@ -249,8 +251,42 @@ async def repoint(prefix: str) -> dict[str, Any]:
         "moved": moved,
         "write": write.outcome.name,
         "after": after,
-        "monitor_updates_after_repoint": len(updates) - seen_before_repoint,
+        "monitor_after_repoint": updates[seen_before_repoint:],
     }
+
+
+async def dispatch_repoint(prefix: str) -> dict[str, Any]:
+    """A dispatch trigger, armed before CA is pointed away and back, still fires."""
+    import os
+    import types
+
+    from osprey.dispatch.sources.epics_ca import EpicsCaSource
+
+    fired: list[list[float]] = []
+
+    async def fire(_trigger: Any, payload: dict[str, Any]) -> None:
+        fired.append([payload["previous_value"], payload["value"]])
+
+    trigger = types.SimpleNamespace(
+        name="crossing",
+        source_config={"pv": f"{prefix}:AO", "threshold": 5.0, "cool_down_sec": 0},
+    )
+    source = EpicsCaSource()
+    await source.start([trigger], fire)
+    await asyncio.sleep(0.3)
+
+    ioc_port = os.environ["EPICS_CA_SERVER_PORT"]
+    for port in (1, ioc_port):
+        await EPICSConnector().connect(
+            {"timeout_s": 1, "gateways": {"read_only": {"address": "127.0.0.1", "port": port}}}
+        )
+    await asyncio.sleep(0.5)
+    writer = await _connect()
+    for value in (1.0, 6.0):
+        await writer.write_channel(f"{prefix}:AO", value)
+        await asyncio.sleep(0.3)
+    await source.stop()
+    return {"fired": fired}
 
 
 SCENARIOS = {
@@ -262,6 +298,7 @@ SCENARIOS = {
     "stopped_before_teardown": stopped_before_teardown,
     "unreachable_name_server": unreachable_name_server,
     "repoint": repoint,
+    "dispatch_repoint": dispatch_repoint,
 }
 
 

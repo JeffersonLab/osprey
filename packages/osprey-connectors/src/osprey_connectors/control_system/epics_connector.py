@@ -316,22 +316,35 @@ class _ChannelSubscription:
     Both transports store one of these in ``EPICSConnector._subscriptions``:
     Channel Access keeps the aioca ``Subscription``, PVAccess the p4p
     ``Subscription``; both are released with ``close()``. The aioca one
-    belongs to the CA loop, so its ``close()`` is handed to that loop
+    belongs to the CA loop, so its release is handed to that loop
     (``ca_loop``) rather than run on whichever thread unsubscribes. Dispatching
     here is what lets ``unsubscribe`` and ``disconnect`` walk subscription ids
     without knowing which protocol opened them.
+
+    A Channel Access subscription can also carry ``reopen``, registered with
+    the CA loop so a repoint opens the monitor again on the new context and
+    swaps it in as ``handle``. The release forgets it and closes whichever
+    handle is current when it runs: both run on the loop thread, so a
+    subscription closed before, during or after a repoint stays closed.
 
     ``close()`` is idempotent and best effort: closing twice is a no-op, and a
     handle that fails to release is logged rather than raised, so tearing down
     a whole connector cannot be derailed by one dead channel.
     """
 
-    __slots__ = ("_closed", "ca_loop", "handle", "kind")
+    __slots__ = ("_closed", "ca_loop", "handle", "kind", "reopen")
 
-    def __init__(self, kind: str, handle: Any, ca_loop: Any = None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        handle: Any,
+        ca_loop: Any = None,
+        reopen: Callable[[], None] | None = None,
+    ) -> None:
         self.kind = kind
         self.handle = handle
         self.ca_loop = ca_loop
+        self.reopen = reopen
         self._closed = False
 
     @property
@@ -346,8 +359,18 @@ class _ChannelSubscription:
         self._closed = True
         try:
             if self.ca_loop is not None:
-                self.ca_loop.call_soon(self.handle.close)
+                self.ca_loop.call_soon(self._release)
             else:
+                self.handle.close()
+        except Exception as exc:  # teardown is best effort, never fatal
+            logger.debug(f"Subscription teardown failed for {self.kind} handle: {exc}")
+
+    def _release(self) -> None:
+        """Forget the re-opener and close the current handle; on the CA loop."""
+        try:
+            if self.reopen is not None:
+                self.ca_loop.discard_reopener(self.reopen)
+            if self.handle is not None:
                 self.handle.close()
         except Exception as exc:  # teardown is best effort, never fatal
             logger.debug(f"Subscription teardown failed for {self.kind} handle: {exc}")
@@ -1397,6 +1420,11 @@ class EPICSConnector(ControlSystemConnector):
         monitor, every other address a Channel Access monitor. Either way the
         subscriber callback runs on the event loop, never on the transport's
         own worker thread.
+
+        A Channel Access monitor outlives a repoint: when a connect elsewhere in
+        the process moves CA to another gateway, the monitor is opened again on
+        the new context, and its first update there reaches the callback like
+        any other. Cancelling the call leaves no monitor open behind it.
         """
         loop = asyncio.get_running_loop()
 
@@ -1404,6 +1432,7 @@ class EPICSConnector(ControlSystemConnector):
             return self._subscribe_pva(channel_address, callback, loop)
 
         aioca = self._aioca
+        subscription = _ChannelSubscription("ca", None, ca_loop=self._ca)
 
         def ca_callback(reading: Any) -> None:
             """Adapt one aioca monitor update; runs on the CA loop.
@@ -1428,29 +1457,45 @@ class EPICSConnector(ControlSystemConnector):
                 # The subscriber's loop has closed (osprey.runtime runs one per
                 # call). Raised here, aioca would print it to stdout -- a stdio
                 # MCP server's protocol stream -- and drop the monitor; close
-                # the monitor here instead, quietly.
+                # the subscription here instead, quietly, so a repoint does not
+                # re-open it either.
                 logger.debug(f"Closing CA monitor on '{channel_address}': its loop has closed")
-                for monitor in opened:
-                    monitor.close()
+                subscription.close()
 
-        opened: list[Any] = []
+        def open_monitor() -> None:
+            # On the CA loop: aioca binds a monitor to the loop it is opened on.
+            subscription.handle = aioca.camonitor(
+                channel_address, ca_callback, format=aioca.FORMAT_TIME, notify_disconnect=True
+            )
 
-        async def open_monitor() -> Any:
-            # aioca binds a monitor to the loop it is opened on: this one. The
-            # task is held until it finishes, so it is not collected mid-fetch.
+        async def open_first() -> None:
+            # Closed already: the caller gave up waiting before the loop got
+            # here, and its release has run or is queued behind this.
+            if subscription.closed:
+                return
+            # The task is held until it finishes, so it is not collected mid-fetch.
             fetch = asyncio.ensure_future(self._ca_ctrl_fields(channel_address, self._timeout))
             self._ca_ctrl_fetches.add(fetch)
             fetch.add_done_callback(self._ca_ctrl_fetches.discard)
-            monitor = aioca.camonitor(
-                channel_address, ca_callback, format=aioca.FORMAT_TIME, notify_disconnect=True
-            )
-            opened.append(monitor)
-            return monitor
+            open_monitor()
+            # A repoint purges every aioca channel without telling the monitor's
+            # callback; the CA loop re-opens this one on the new context.
+            subscription.reopen = open_monitor
+            self._ca.add_reopener(open_monitor)
 
-        monitor = await self._ca.run(open_monitor())
+        try:
+            await self._ca.run(open_first())
+        except asyncio.CancelledError:
+            # A caller that bounds the open (the dispatch trigger source does)
+            # cancels it here, but the open may already be queued on the CA
+            # loop, or done with its result still in flight. Closing hands the
+            # release to that loop, behind the open: no monitor is left firing
+            # with nobody to unsubscribe it.
+            subscription.close()
+            raise
 
-        sub_id = f"{channel_address}_{id(monitor)}"
-        self._subscriptions[sub_id] = _ChannelSubscription("ca", monitor, ca_loop=self._ca)
+        sub_id = f"{channel_address}_{id(subscription)}"
+        self._subscriptions[sub_id] = subscription
 
         logger.debug(f"EPICS subscription created: {sub_id}")
         return sub_id

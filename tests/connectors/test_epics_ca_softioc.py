@@ -246,4 +246,13 @@ def test_a_connect_to_another_gateway_repoints_the_process(ioc, prefix):
     assert result["moved"] == "ConnectionError", result
     assert result["write"] == "CONFIRMED", result
     assert result["after"] == 4.0, result
-    assert result["monitor_updates_after_repoint"] == 0, result
+    # aioca closes every monitor with the context it drops; the connector
+    # re-opens its own on the new one, so the subscriber keeps hearing writes.
+    assert 4.0 in result["monitor_after_repoint"], result
+
+
+def test_a_dispatch_trigger_stays_armed_across_a_repoint(ioc, prefix):
+    """The dispatch source watches through the connector, so its monitor comes back too."""
+    result = _drive("dispatch_repoint", prefix, ioc)
+
+    assert result["fired"] == [[1.0, 6.0]], result

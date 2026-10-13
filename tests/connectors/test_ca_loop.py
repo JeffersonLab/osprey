@@ -111,7 +111,7 @@ def test_a_dropped_context_is_dropped_again_only_after_the_next_call(ca_loop, co
 def test_a_first_call_with_nothing_pointed_pins_the_environment_it_ran_with(
     ca_loop, context, monkeypatch
 ):
-    """The dispatch source calls CA without pointing; a connector after it still moves it."""
+    """aioca used directly calls CA without pointing; a connector after it still moves it."""
     for key, setting in GATEWAY_A.items():
         if setting is not None:
             monkeypatch.setenv(key, setting)
@@ -133,6 +133,91 @@ def test_pointing_from_the_loop_thread_runs_in_place(ca_loop, context):
 
     assert _environment() == GATEWAY_B
     assert context.purged == 1
+
+
+def _register(ca_loop, reopen) -> None:
+    """Register a re-opener the way the connector does: on the loop thread.
+
+    The registering call is itself a CA call, so a test points the loop first
+    and that call pins the settings it was pointed at.
+    """
+
+    async def on_loop() -> None:
+        ca_loop.add_reopener(reopen)
+
+    ca_loop.run_sync(on_loop(), timeout=5)
+
+
+def test_a_repoint_reopens_each_registered_monitor_on_the_loop_thread(ca_loop, context):
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+    ran: list[tuple[str, bool, int]] = []
+    _register(ca_loop, lambda: ran.append(("a", ca_loop.on_loop_thread(), context.purged)))
+    _register(ca_loop, lambda: ran.append(("b", ca_loop.on_loop_thread(), context.purged)))
+
+    asyncio.run(ca_loop.point_at(GATEWAY_B))
+
+    # After the old context was dropped, in the order they were registered.
+    assert ran == [("a", True, 1), ("b", True, 1)]
+
+
+def test_a_reopened_monitor_counts_as_a_call_on_the_new_context(ca_loop, context):
+    """Pointing away again must drop the context the re-opened monitors live on."""
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+    _register(ca_loop, lambda: None)
+    asyncio.run(ca_loop.point_at(GATEWAY_B))
+
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+
+    assert context.purged == 2
+
+
+@pytest.mark.usefixtures("context")
+def test_nothing_is_reopened_when_the_context_stays(ca_loop):
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+    ran: list[str] = []
+    _register(ca_loop, lambda: ran.append("reopened"))
+
+    asyncio.run(ca_loop.point_at(dict(GATEWAY_A)))
+
+    assert ran == []
+
+
+@pytest.mark.usefixtures("context")
+def test_a_discarded_reopener_is_not_run(ca_loop):
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+    ran: list[str] = []
+
+    def reopen() -> None:
+        ran.append("reopened")
+
+    _register(ca_loop, reopen)
+
+    async def discard() -> None:
+        ca_loop.discard_reopener(reopen)
+        ca_loop.discard_reopener(reopen)  # a no-op the second time
+
+    ca_loop.run_sync(discard(), timeout=5)
+
+    asyncio.run(ca_loop.point_at(GATEWAY_B))
+
+    assert ran == []
+
+
+@pytest.mark.usefixtures("context")
+def test_one_monitor_that_fails_to_reopen_leaves_the_rest_reopened(ca_loop, caplog):
+    asyncio.run(ca_loop.point_at(GATEWAY_A))
+    ran: list[str] = []
+
+    def broken() -> None:
+        raise RuntimeError("no such channel")
+
+    _register(ca_loop, broken)
+    _register(ca_loop, lambda: ran.append("reopened"))
+
+    asyncio.run(ca_loop.point_at(GATEWAY_B))
+
+    assert ran == ["reopened"]
+    assert "not re-opened" in caplog.text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="fork() is POSIX")

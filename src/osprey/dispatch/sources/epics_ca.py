@@ -1,10 +1,16 @@
 """EPICS Channel Access trigger source for the event dispatcher.
 
-Manages one aioca CA monitor per trigger, opened on the process's Channel
-Access loop (``osprey_connectors.control_system.ca_loop``), applies
-threshold/edge/cool-down/first-read-suppression logic, and forwards
-threshold-crossing events to the asyncio serving loop via
-``run_coroutine_threadsafe``.
+Watches one channel per trigger through the control-system connector's
+``subscribe``, applies threshold/edge/cool-down/first-read-suppression logic,
+and hands each threshold crossing to the dispatcher's fire callback on the
+asyncio serving loop.
+
+The connector is an ``epics`` one with no gateway of its own: it runs Channel
+Access with the ``EPICS_CA_*`` environment the dispatcher was started with (a
+deployment hands it over through ``dispatch.env``), on the process's one CA
+loop. Going through the connector rather than aioca directly is what keeps a
+trigger armed across a repoint of that loop: the connector re-opens its
+monitors on the new context.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from osprey.dispatch.pool import QueueFullError
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+    from osprey.connectors.control_system.base import ChannelValue, ControlSystemConnector
     from osprey.dispatch.sources.base import FireCallback
     from osprey.dispatch.trigger_config import TriggerConfig
 
@@ -34,58 +41,26 @@ logger = logging.getLogger("osprey.dispatch.sources.epics_ca")
 VALID_EDGES = frozenset({"rising", "falling", "both"})
 
 
-#: How long arming one monitor may take. Opening a monitor only queues the
-#: channel search, so this bounds a stalled CA loop, not a slow IOC.
+#: How long connecting, or arming one monitor, may take. Opening a monitor only
+#: queues the channel search, so this bounds a stalled CA loop, not a slow IOC.
 _OPEN_TIMEOUT_S = 5.0
 
 
-class _Monitor:
-    """An aioca monitor, closed on the CA loop that owns it."""
+async def _connect() -> ControlSystemConnector:
+    """Build and connect the Channel Access connector the triggers watch through.
 
-    def __init__(self, subscription: Any, ca_loop: Any) -> None:
-        self._subscription = subscription
-        self._ca_loop = ca_loop
-
-    def close(self) -> None:
-        self._ca_loop.call_soon(self._subscription.close)
-
-
-def _open_monitor(pv_name: str, callback: Any) -> _Monitor:
-    """Open a CA monitor on ``pv_name`` delivering each update to ``callback``.
-
-    aioca binds a monitor to the event loop it is opened on, so it is opened on
-    the process's CA loop, the same one the EPICS connector uses: one Channel
-    Access context for the whole process. ``callback`` then runs on that
-    loop's thread.
-
-    Raises ``TimeoutError`` when the loop does not open it in time. The open
-    is still queued then, so the loop is also told to close the monitor
-    whenever it does open: both run on the loop's thread, so whichever comes
-    second sees the other, and no monitor is left firing with no watcher.
+    Built by the connector factory as type ``epics`` with an empty settings
+    block, rather than from the deployment's ``control_system`` section. The
+    dispatcher is not a session and never switches target, and its gateway is
+    the one the deployment hands it in ``EPICS_CA_*`` through ``dispatch.env``:
+    a gateway block from the section would rewrite that environment, and could
+    name an address only the agent's own network reaches. With no gateway
+    configured, ``connect()`` leaves the environment as it stands.
     """
-    import aioca
+    from osprey.connectors.factory import ConnectorFactory, register_builtin_connectors
 
-    from osprey_connectors.control_system.ca_loop import get_ca_loop
-
-    ca_loop = get_ca_loop()
-    state: dict[str, Any] = {}
-
-    async def open_() -> Any:
-        state["subscription"] = subscription = aioca.camonitor(pv_name, callback)
-        if state.get("abandoned"):
-            subscription.close()
-        return subscription
-
-    def abandon() -> None:
-        state["abandoned"] = True
-        if "subscription" in state:
-            state["subscription"].close()
-
-    try:
-        return _Monitor(ca_loop.run_sync(open_(), timeout=_OPEN_TIMEOUT_S), ca_loop)
-    except TimeoutError:
-        ca_loop.call_soon(abandon)
-        raise
+    register_builtin_connectors()  # idempotent; the factory resolves "epics" through it
+    return await ConnectorFactory.create_control_system_connector({"type": "epics"})
 
 
 def _number_setting(
@@ -123,8 +98,8 @@ def _number_setting(
 class _PvWatcher:
     """Monitor one PV and fire a callback when its value crosses a threshold.
 
-    Updates arrive on the CA loop's thread; hands off to the asyncio serving
-    loop via ``run_coroutine_threadsafe``.  Each instance is self-contained so that
+    The connector delivers each update on the asyncio serving loop, where the
+    fire is scheduled as a task. Each instance is self-contained so that
     multiple PVs are independent: a cool-down or first-read on one does not
     affect the others.
     """
@@ -143,20 +118,34 @@ class _PvWatcher:
         self._trigger = trigger
         self._fire = fire_callback
         self._loop = loop
-        self._monitor: _Monitor | None = None
+        self._connector: ControlSystemConnector | None = None
+        self._subscription: str | None = None
+        # Fires in flight, held so a task is not collected before it runs.
+        self._dispatches: set[asyncio.Task[None]] = set()
         self._last_fire_ts: float | None = None  # None = has not fired yet
         self._last_value: float | None = None  # None = first read not yet seen
 
-    def start(self) -> None:
-        self._monitor = _open_monitor(self._pv_name, self._on_change)
+    async def start(self, connector: ControlSystemConnector) -> None:
+        """Subscribe to the PV through ``connector``.
 
-    def stop(self) -> None:
-        if self._monitor is not None:
-            self._monitor.close()
-            self._monitor = None
+        Raises ``TimeoutError`` when the monitor does not open within
+        :data:`_OPEN_TIMEOUT_S`. The subscribe is cancelled then, and the
+        connector closes the monitor behind it whenever the CA loop gets to it,
+        so none is left firing with no watcher.
+        """
+        self._subscription = await asyncio.wait_for(
+            connector.subscribe(self._pv_name, self._on_change), _OPEN_TIMEOUT_S
+        )
+        self._connector = connector
+
+    async def stop(self) -> None:
+        if self._connector is not None and self._subscription is not None:
+            await self._connector.unsubscribe(self._subscription)
+        self._connector = None
+        self._subscription = None
 
     # ------------------------------------------------------------------
-    # Internals (run on the CA loop's thread)
+    # Internals (run on the serving loop)
     # ------------------------------------------------------------------
 
     def _detect_edge(self, prev: float, curr: float) -> bool:
@@ -173,16 +162,17 @@ class _PvWatcher:
         # "both"
         return (prev < self._threshold <= curr) or (prev > self._threshold >= curr)
 
-    def _on_change(self, value: Any) -> None:
-        """CA monitor callback. Schedules the fire coroutine on the serving loop."""
+    def _on_change(self, update: ChannelValue) -> None:
+        """Connector monitor callback. Schedules the fire coroutine on the serving loop."""
+        value = update.value
         if value is None:
             return
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            # Non-numeric PV (enum string, waveform, …): nothing to threshold on.
-            # Log and return rather than raise on the CA thread, where the
-            # exception would be swallowed and the watcher would silently die.
+            # Non-numeric PV (string, waveform, …): nothing to threshold on.
+            # Log and return rather than raise out of a loop callback, where
+            # the exception would only be logged and the update lost unread.
             logger.warning(
                 "EPICS CA trigger '%s' PV '%s' produced non-numeric value %r; ignoring",
                 self._trigger.name,
@@ -213,16 +203,12 @@ class _PvWatcher:
             "edge": self._edge,
             "timestamp": datetime.now(tz=UTC),
         }
-        dispatch = self._dispatch(payload)
-        try:
-            asyncio.run_coroutine_threadsafe(dispatch, self._loop)
-        except RuntimeError:
-            dispatch.close()
-            # The serving loop has closed under a monitor nobody stopped. Raised
-            # here, aioca would print it to stdout and drop the monitor; stop it
-            # here instead, quietly.
-            logger.debug("EPICS CA trigger '%s': serving loop closed", self._trigger.name)
-            self.stop()
+        # The connector calls back on this loop, the one the watcher was armed
+        # on; once that loop has closed it closes the monitor itself, so no
+        # update arrives here after.
+        task = self._loop.create_task(self._dispatch(payload))
+        self._dispatches.add(task)
+        task.add_done_callback(self._dispatches.discard)
 
     async def _dispatch(self, payload: dict[str, Any]) -> None:
         """Coroutine executed on the asyncio loop after an edge is detected."""
@@ -239,7 +225,8 @@ class _PvWatcher:
 class EpicsCaSource:
     """Event source that fires triggers on EPICS CA PV threshold crossings.
 
-    One CA monitor is armed per trigger in :meth:`start`; all are released in
+    One monitor is armed per trigger in :meth:`start`, through one connector
+    built for the source; all are released, and the connector disconnected, in
     :meth:`stop`. Threshold, edge direction, cool-down, and first-read
     suppression are per-trigger and implemented in :class:`_PvWatcher`.
 
@@ -259,14 +246,21 @@ class EpicsCaSource:
 
     def __init__(self) -> None:
         self._watchers: list[_PvWatcher] = []
+        self._connector: ControlSystemConnector | None = None
 
     def register_routes(self, mcp_app: FastMCP) -> None:  # noqa: ARG002 - trigger-source lifecycle signature; a source with no routes registers nothing
         """EPICS CA source has no HTTP routes."""
         return None
 
     async def start(self, triggers: list[TriggerConfig], fire_callback: FireCallback) -> None:
-        """Arm one CA monitor per trigger (lifespan startup, running loop)."""
+        """Arm one CA monitor per trigger (lifespan startup, running loop).
+
+        Every trigger is read first, and the connector is built only when at
+        least one of them is usable: a dispatcher whose ``epics_ca`` triggers
+        are all refused never touches Channel Access.
+        """
         loop = asyncio.get_running_loop()
+        watchers: list[_PvWatcher] = []
         for trigger in triggers:
             if not trigger.source_config.get("pv"):
                 logger.warning(
@@ -287,18 +281,32 @@ class EpicsCaSource:
                 )
                 continue
             try:
-                watcher = _PvWatcher(trigger, fire_callback, loop)
+                watchers.append(_PvWatcher(trigger, fire_callback, loop))
             except ValueError as exc:
                 logger.warning("EPICS CA trigger '%s' has %s; skipping", trigger.name, exc)
                 continue
+        if not watchers:
+            logger.info("EPICS CA source started with 0 monitor(s)")
+            return
+
+        try:
+            connector = await asyncio.wait_for(_connect(), _OPEN_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(
+                "EPICS CA source: the CA loop did not connect within %ss; no trigger armed",
+                _OPEN_TIMEOUT_S,
+            )
+            return
+        self._connector = connector
+        for watcher in watchers:
             try:
-                watcher.start()
+                await watcher.start(connector)
             except TimeoutError:
                 logger.warning(
                     "EPICS CA trigger '%s': the CA loop did not open a monitor on '%s' "
                     "within %ss; skipping",
-                    trigger.name,
-                    trigger.source_config["pv"],
+                    watcher._trigger.name,
+                    watcher._pv_name,
                     _OPEN_TIMEOUT_S,
                 )
                 continue
@@ -306,7 +314,10 @@ class EpicsCaSource:
         logger.info("EPICS CA source started with %d monitor(s)", len(self._watchers))
 
     async def stop(self) -> None:
-        """Disconnect all CA monitors and release resources."""
+        """Disconnect all CA monitors and release the connector."""
         for watcher in self._watchers:
-            watcher.stop()
+            await watcher.stop()
         self._watchers = []
+        connector, self._connector = self._connector, None
+        if connector is not None:
+            await connector.disconnect()

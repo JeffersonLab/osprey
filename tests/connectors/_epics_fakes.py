@@ -337,6 +337,7 @@ class InlineCaLoop:
 
     def __init__(self):
         self.pointed_at: list[dict] = []
+        self.reopeners: list = []
 
     async def run(self, coro):
         return await coro
@@ -354,6 +355,18 @@ class InlineCaLoop:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = setting
+
+    def add_reopener(self, reopen):
+        self.reopeners.append(reopen)
+
+    def discard_reopener(self, reopen):
+        if reopen in self.reopeners:
+            self.reopeners.remove(reopen)
+
+    def repoint(self):
+        """What a repoint does to monitors: every one is re-opened on the new context."""
+        for reopen in list(self.reopeners):
+            reopen()
 
 
 def install_fake_aioca(monkeypatch, channels: dict[str, FakeChannel] | None = None) -> FakeAioca:

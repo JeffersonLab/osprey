@@ -262,8 +262,27 @@ class TestDisconnect:
         subscription.close()
         subscription.close()  # idempotent
 
-        ca_loop.call_soon.assert_called_once_with(monitor.close)
+        ca_loop.call_soon.assert_called_once()
         monitor.close.assert_not_called()  # the loop runs it, not this thread
+        (release,) = ca_loop.call_soon.call_args.args
+        release()
+        monitor.close.assert_called_once_with()
+
+    def test_the_release_forgets_the_reopener_and_closes_the_current_handle(self):
+        """A repoint between close() and the release swapped the handle: the new one closes."""
+        first, reopened = MagicMock(), MagicMock()
+        ca_loop = MagicMock()
+        reopen = MagicMock()
+        subscription = _ChannelSubscription("ca", first, ca_loop=ca_loop, reopen=reopen)
+
+        subscription.close()
+        subscription.handle = reopened
+        (release,) = ca_loop.call_soon.call_args.args
+        release()
+
+        ca_loop.discard_reopener.assert_called_once_with(reopen)
+        reopened.close.assert_called_once_with()
+        first.close.assert_not_called()
 
 
 class TestReadChannel:
@@ -839,6 +858,109 @@ class TestSubscribe:
         monitor.callback(ca_reading(7.0))  # raising here is what aioca prints
 
         assert monitor.closed is True
+        # Nor does a later repoint bring it back for a loop that is gone.
+        connector._ca.repoint()
+        assert connector._aioca.monitors == [monitor]
+
+
+class TestSubscriptionAcrossARepoint:
+    """aioca closes every monitor on a repoint without telling its callback."""
+
+    @pytest.mark.asyncio
+    async def test_a_repoint_reopens_the_monitor_and_updates_keep_arriving(self):
+        connector = _channel_connector()
+        received, _fire = await _subscribed(connector)
+        first = connector._aioca.monitors[-1]
+
+        connector._ca.repoint()
+
+        reopened = connector._aioca.monitors[-1]
+        assert reopened is not first
+        assert (reopened.name, reopened.callback) == ("SR:CH", first.callback)
+        call = [c for c in connector._aioca.calls if c[0] == "camonitor"][-1]
+        assert call[2] == {"format": aioca.FORMAT_TIME, "notify_disconnect": True}
+        reopened.callback(ca_reading(3.0))
+        await asyncio.sleep(0.01)
+        assert [value.value for value in received] == [3.0]
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_after_a_repoint_closes_the_reopened_monitor(self):
+        connector = _channel_connector()
+        sub_id = await connector.subscribe("SR:CH", lambda _value: None)
+        connector._ca.repoint()
+        reopened = connector._aioca.monitors[-1]
+
+        await connector.unsubscribe(sub_id)
+
+        assert reopened.closed is True
+        assert connector._ca.reopeners == []
+        connector._ca.repoint()  # an unsubscribed monitor stays closed
+        assert connector._aioca.monitors[-1] is reopened
+
+    @pytest.mark.asyncio
+    async def test_each_subscription_is_reopened(self):
+        connector = _channel_connector()
+        await connector.subscribe("SR:CH", lambda _value: None)
+        await connector.subscribe("SR:OTHER", lambda _value: None)
+
+        connector._ca.repoint()
+
+        assert [m.name for m in connector._aioca.monitors] == [
+            "SR:CH",
+            "SR:OTHER",
+            "SR:CH",
+            "SR:OTHER",
+        ]
+
+
+class _StalledCaLoop:
+    """A CA loop whose answer never comes back: the caller is left to give up.
+
+    ``opens_first`` decides whether the queued open runs before the caller
+    gives up or only after its release has run.
+    """
+
+    def __init__(self, inline, *, opens_first: bool):
+        self._inline = inline
+        self._opens_first = opens_first
+        self.queued = []
+
+    async def run(self, coro):
+        if self._opens_first:
+            await coro
+        else:
+            self.queued.append(coro)
+        await asyncio.Event().wait()
+
+    def call_soon(self, callback, *args):
+        callback(*args)
+
+    def add_reopener(self, reopen):
+        self._inline.add_reopener(reopen)
+
+    def discard_reopener(self, reopen):
+        self._inline.discard_reopener(reopen)
+
+
+class TestSubscribeCancelled:
+    """A caller that bounds the open must not leave a monitor behind it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("opens_first", [True, False])
+    async def test_no_monitor_is_left_open(self, opens_first):
+        connector = _channel_connector()
+        reopeners = connector._ca
+        connector._ca = _StalledCaLoop(reopeners, opens_first=opens_first)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(connector.subscribe("SR:CH", lambda _value: None), 0.05)
+        for coro in connector._ca.queued:  # the open the loop ran late
+            await coro
+
+        # Opened before the caller gave up, it is closed; queued, it never opens.
+        assert [m.closed for m in connector._aioca.monitors] == ([True] if opens_first else [])
+        assert reopeners.reopeners == []
+        assert connector._subscriptions == {}
 
 
 class TestValidateChannelAndMetadata:

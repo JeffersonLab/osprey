@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import logging
 import os
 import sys
 import threading
@@ -41,6 +42,8 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 #: Runs at interpreter shutdown before any ``atexit`` hook; private, but the
 #: stdlib's own ``concurrent.futures`` relies on it for the same reason.
@@ -95,6 +98,10 @@ class CaLoop:
         self._env: dict[str, str | None] | None = None
         self._used = False
         self._env_lock = threading.Lock()
+        # What re-opens each long-lived monitor after a repoint. A dict for its
+        # insertion order, so monitors come back in the order they were opened.
+        # Read and written on the loop thread only, like everything aioca does.
+        self._reopeners: dict[Callable[[], None], None] = {}
 
     async def point_at(self, env: dict[str, str | None]) -> None:
         """Make Channel Access run with these ``EPICS_CA_*`` settings from now on.
@@ -112,6 +119,11 @@ class CaLoop:
         per process. The old context is detached and left, not destroyed:
         ``ca_context_destroy`` can wait half a minute on a name server nobody
         answers (pyepics left it the same way).
+
+        aioca closes a purged monitor without a word to its callback, so a
+        monitor that must outlive a repoint registers a re-opener with
+        :meth:`add_reopener`; each one is run on the new context right after
+        the old one is dropped, before any other call can reach the loop.
 
         Runs on the loop thread, so it cannot interleave with a CA call.
         """
@@ -132,10 +144,36 @@ class CaLoop:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = setting
-            if self._used and env != self._env:
+            dropped = self._used and env != self._env
+            if dropped:
                 _drop_ca_context()
                 self._used = False
             self._env = dict(env)
+        if dropped and self._reopeners:
+            # Outside the lock: re-opening is a CA call, which marks the loop
+            # used again under that same lock.
+            self._mark_used()
+            for reopen in list(self._reopeners):
+                try:
+                    reopen()
+                except Exception:
+                    # One channel that cannot be re-opened must not keep the
+                    # rest of the process's monitors closed.
+                    logger.warning("A Channel Access monitor was not re-opened", exc_info=True)
+
+    def add_reopener(self, reopen: Callable[[], None]) -> None:
+        """Run ``reopen`` on the loop thread each time a repoint drops the context.
+
+        For a monitor that must outlive a repoint: ``reopen`` opens it again on
+        the fresh context. Called on the loop thread, as is
+        :meth:`discard_reopener`; a monitor's open and its close run there
+        too, so whichever of them comes second sees the other.
+        """
+        self._reopeners[reopen] = None
+
+    def discard_reopener(self, reopen: Callable[[], None]) -> None:
+        """Stop re-opening this monitor; a no-op for one never added. Loop thread only."""
+        self._reopeners.pop(reopen, None)
 
     def _mark_used(self) -> None:
         """Record that CA has been called, pinning the environment it runs with."""
