@@ -42,12 +42,12 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
-try:
-    # Runs at interpreter shutdown before any ``atexit`` hook; private, but the
-    # stdlib's own ``concurrent.futures`` relies on it for the same reason.
-    from threading import _register_atexit as _register_before_atexit
-except ImportError:  # pragma: no cover - CPython has had it since 3.9
-    _register_before_atexit = atexit.register
+#: Runs at interpreter shutdown before any ``atexit`` hook; private, but the
+#: stdlib's own ``concurrent.futures`` relies on it for the same reason.
+#: CPython has had it since 3.9.
+_register_before_atexit: Callable[[Callable[[], None]], Any] = getattr(
+    threading, "_register_atexit", atexit.register
+)
 
 _THREAD_NAME = "osprey-ca-loop"
 
@@ -65,6 +65,25 @@ def current_ca_env() -> dict[str, str | None]:
     return {key: os.environ.get(key) for key in CA_ENV_KEYS}
 
 
+def _drop_ca_context() -> None:
+    """Close every aioca channel and let the next CA call create a fresh context.
+
+    Called on the loop thread, the one that created the context and is
+    attached to it. The context is detached rather than destroyed; any other
+    thread still attached to it is moved to the new one by aioca itself the
+    next time it opens a channel cache.
+    """
+    catools = sys.modules.get("aioca._catools")
+    if catools is None:
+        return
+    context = catools._Context
+    context.purge_channel_caches()
+    if context._ca_context:
+        catools.cadef.ca_detach_context()
+    context._ca_context = None
+    context._should_destroy = False
+
+
 class CaLoop:
     """An event loop running forever on a daemon thread of its own."""
 
@@ -77,29 +96,46 @@ class CaLoop:
         self._used = False
         self._env_lock = threading.Lock()
 
-    def claim_env(self, env: dict[str, str | None]) -> None:
-        """Record the ``EPICS_CA_*`` settings CA is to run with; refuse a change.
+    async def point_at(self, env: dict[str, str | None]) -> None:
+        """Make Channel Access run with these ``EPICS_CA_*`` settings from now on.
 
         CA reads its environment once, when the context is created on the
-        first call. Until a call has been made, a new claim simply replaces the
-        old one. After that, a claim naming different settings raises: the
-        context cannot be repointed in-process, and staying silently on the
-        old settings could route a read-only run through a write gateway. A
-        first call made with nothing claimed (the dispatch trigger source's,
-        say) pins the environment as it was then, so it is held the same way.
+        first call. So the settings are written to ``os.environ`` and, when a
+        context already serves different ones, that context is dropped for the
+        next call to create a fresh one from them -- what pyepics'
+        ``clear_cache`` did on every connect. A notebook kernel that follows a
+        target switch relies on it, and so does a read-only connect after a
+        write one: it must not ride the earlier connector's write gateway.
 
-        Raises before anything is recorded, so a caller can claim first and
-        change ``os.environ`` only once the claim stands.
+        Every channel is closed, monitors included, and everything else in the
+        process that uses CA follows the new settings: there is one context
+        per process. The old context is detached and left, not destroyed:
+        ``ca_context_destroy`` can wait half a minute on a name server nobody
+        answers (pyepics left it the same way).
+
+        Runs on the loop thread, so it cannot interleave with a CA call.
         """
+        if self.on_loop_thread():
+            self._point_at(env)
+            return
+
+        async def on_loop() -> None:
+            self._point_at(env)
+
+        self._refuse_in_a_forked_child()
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(on_loop(), self._loop))
+
+    def _point_at(self, env: dict[str, str | None]) -> None:
         with self._env_lock:
+            for key, setting in env.items():
+                if setting is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = setting
             if self._used and env != self._env:
-                raise RuntimeError(
-                    "Channel Access in this process is already running with "
-                    f"{self._env}; it cannot be repointed to {env} in-process. "
-                    "A connector to a different gateway needs a process of its own."
-                )
-            if not self._used:
-                self._env = dict(env)
+                _drop_ca_context()
+                self._used = False
+            self._env = dict(env)
 
     def _mark_used(self) -> None:
         """Record that CA has been called, pinning the environment it runs with."""

@@ -3,9 +3,10 @@ and pyepics is no longer a dependency: aioca is the one Channel Access client,
 on one long-lived event loop per process, so a process that also uses aioca
 (ophyd-async devices, for example) shares one CA context instead of two. Every
 read now asks the IOC, so `fresh_reads` no longer changes anything. A write to
-a channel that never connects reports that nothing was sent. A second
-`connect()` in the same process that would point Channel Access at a
-different gateway is refused rather than left on the first one. Text written to a numeric channel is read by that channel's own field type
-before it is sent, so `"1e3"` is refused for an integer field instead of
+a channel that never connects reports that nothing was sent. A
+`connect()` that points Channel Access at a different gateway gives the
+process a fresh CA context, as pyepics did, closing the old one's channels and
+monitors. Text written to a numeric channel is read by that channel's own
+field type before it is sent, so `"1e3"` is refused for an integer field instead of
 landing as 1; text written to a char waveform is stored as a string; and a put
 the IOC answers without taking (a disabled record) is reported as failed.

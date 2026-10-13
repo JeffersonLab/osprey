@@ -23,7 +23,7 @@ from osprey_connectors.control_system.base import (
     is_readonly_run,
     values_match,
 )
-from osprey_connectors.control_system.ca_loop import current_ca_env, get_ca_loop
+from osprey_connectors.control_system.ca_loop import CaLoop, current_ca_env, get_ca_loop
 from osprey_connectors.control_system.call_timeout import call_timeout_s
 from osprey_connectors.control_system.limits_validator import (
     DEFAULT_STEP_READ_TIMEOUT_SECONDS,
@@ -407,7 +407,7 @@ class EPICSConnector(ControlSystemConnector):
         self._subscriptions: dict[str, Any] = {}
         # aioca, and the CA loop every call to it runs on; both set by connect().
         self._aioca: Any = None
-        self._ca: Any = None
+        self._ca: CaLoop = None  # type: ignore[assignment]
         # Per channel, the CTRL-form reading that carries units, precision and
         # enum labels: fetched on a channel's first read, then reused, since
         # they describe the record rather than the reading. Touched only on
@@ -522,8 +522,7 @@ class EPICSConnector(ControlSystemConnector):
                 )
 
         # The EPICS_CA_* settings this connector needs, planned against the
-        # environment as it stands and written to it only once the CA loop
-        # has accepted them.
+        # environment as it stands.
         ca_env = current_ca_env()
         if gateway_config:
             address = gateway_config.get("address", "")
@@ -553,18 +552,13 @@ class EPICSConnector(ControlSystemConnector):
             ca_env["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
 
         # Channel Access reads the EPICS_CA_* environment once, when the
-        # process's CA context is created on the first call. A context already
-        # serving other settings cannot be repointed in-process, so a connect()
-        # that would need that is refused, before it has changed anything,
-        # rather than left on the old gateway: a read-only run must never ride
-        # an earlier connector's write gateway.
+        # process's CA context is created. A context already serving other
+        # settings is dropped for a fresh one rather than left on the old
+        # gateway: a read-only run must never ride an earlier connector's write
+        # gateway, and a notebook kernel that follows a target switch must
+        # reach the new machine.
         self._ca = get_ca_loop()
-        self._ca.claim_env(ca_env)
-        for key, setting in ca_env.items():
-            if setting is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = setting
+        await self._ca.point_at(ca_env)
         if gateway_config:
             logger.debug(f"Configured EPICS gateway: {address}:{port}")
             self._epics_configured = True

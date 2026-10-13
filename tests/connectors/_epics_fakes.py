@@ -12,6 +12,7 @@ for example ``from tests.connectors._epics_fakes import fake_aioca  # noqa: F401
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import types
 from typing import Any
@@ -335,7 +336,7 @@ class InlineCaLoop:
     """
 
     def __init__(self):
-        self.claimed: list[dict] = []
+        self.pointed_at: list[dict] = []
 
     async def run(self, coro):
         return await coro
@@ -346,8 +347,13 @@ class InlineCaLoop:
     def call_soon(self, callback, *args):
         callback(*args)
 
-    def claim_env(self, env):
-        self.claimed.append(dict(env))
+    async def point_at(self, env):
+        self.pointed_at.append(dict(env))
+        for key, setting in env.items():
+            if setting is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = setting
 
 
 def install_fake_aioca(monkeypatch, channels: dict[str, FakeChannel] | None = None) -> FakeAioca:
@@ -355,12 +361,12 @@ def install_fake_aioca(monkeypatch, channels: dict[str, FakeChannel] | None = No
 
     ``connect()`` imports aioca and binds the process's CA loop; both are
     replaced, so a test that connects never starts the real loop thread or
-    claims the process's Channel Access environment.
+    repoints the process's Channel Access.
     """
     fake = FakeAioca(channels)
     monkeypatch.setitem(sys.modules, "aioca", fake)
     monkeypatch.setattr(
-        "osprey_connectors.control_system.epics_connector.get_ca_loop", lambda: InlineCaLoop()
+        "osprey_connectors.control_system.epics_connector.get_ca_loop", InlineCaLoop
     )
     return fake
 

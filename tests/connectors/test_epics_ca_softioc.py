@@ -4,8 +4,8 @@ The unit tests drive the connector through a fake aioca; this file holds it
 to the real one. The IOC is ``python -m epicscorelibs.ioc``-equivalent — the
 minimal soft IOC that ships with ``epicscorelibs`` — started with an access
 security file, so a denied write is a real one. Every scenario runs the
-connector in a child process (``_epics_ca_driver.py``): the CA loop claims a
-process's Channel Access environment on first use, and what happens at
+connector in a child process (``_epics_ca_driver.py``): a process has one
+Channel Access context, which each connect repoints, and what happens at
 interpreter exit is part of what is tested.
 
 The exit scenarios are the regression test for the crash that made aioca the
@@ -237,3 +237,13 @@ def test_an_unreachable_name_server_does_not_hold_the_exit(ioc, prefix):
 
     assert result == {"read": "ConnectionError"}
     assert time.monotonic() - started < 15
+
+
+def test_a_connect_to_another_gateway_repoints_the_process(ioc, prefix):
+    """A notebook kernel follows a target switch in-process: each connect moves CA."""
+    result = _drive("repoint", prefix, ioc)
+
+    assert result["moved"] == "ConnectionError", result
+    assert result["write"] == "CONFIRMED", result
+    assert result["after"] == 4.0, result
+    assert result["monitor_updates_after_repoint"] == 0, result

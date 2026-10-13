@@ -555,11 +555,11 @@ def _readiness_pv_served() -> bool:
 
     Channel Access reads ``EPICS_CA_*`` once, when a process's context is
     created, and the probe points it at the container's published port. A
-    probe made in this process would pin its context to that port for the
-    rest of the session -- and the connector's CA loop refuses to be repointed
-    in-process (``ca_loop.CaLoop.claim_env``) -- so the readiness check never
-    touches Channel Access in-process: it runs out-of-process, exactly as the
-    probe's caget check does. Returns True once the readiness PV is served.
+    probe made in this process would pin its context to that port, and the
+    next connector to point elsewhere would drop that context and every
+    channel and monitor on it (``ca_loop.CaLoop.point_at``) -- so the
+    readiness check never touches Channel Access in-process: it runs
+    out-of-process, exactly as the probe's caget check does. Returns True once the readiness PV is served.
 
     The probe leaves through ``os._exit`` rather than returning. aioca's exit
     hook destroys the CA context, and that destroy blocks for as long as a

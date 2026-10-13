@@ -6,9 +6,9 @@ Run by ``test_epics_ca_softioc.py`` as ``python _epics_ca_driver.py <scenario>
 because a crash in Channel Access teardown only shows there. Underscore-
 prefixed, so pytest never collects it.
 
-Each scenario runs in a process of its own: the connector's CA loop claims the
-process's Channel Access environment on first use, so no two IOCs, and no test
-of what happens at exit, can share one.
+Each scenario runs in a process of its own: a process has one Channel Access
+context, which every connect repoints, so no two IOCs, and no test of what
+happens at exit, can share one.
 """
 
 from __future__ import annotations
@@ -207,6 +207,52 @@ async def unreachable_name_server(prefix: str) -> dict[str, Any]:
     return {"read": "answered"}
 
 
+async def repoint(prefix: str) -> dict[str, Any]:
+    """Connect at the IOC, then at a port nothing serves, then at the IOC again.
+
+    Each connect repoints the process's one CA context. The read in the middle
+    goes unanswered only if the context really moved, and the monitor opened
+    on the first context is closed with it.
+    """
+    import os
+
+    def at(port: int | str) -> dict[str, Any]:
+        return {
+            "timeout_s": 1,
+            "gateways": {"read_only": {"address": "127.0.0.1", "port": port}},
+        }
+
+    ioc_port = os.environ["EPICS_CA_SERVER_PORT"]
+    first = EPICSConnector()
+    await first.connect(at(ioc_port))
+    before = (await first.read_channel(f"{prefix}:AO")).value
+    updates: list[float] = []
+    await first.subscribe(f"{prefix}:AO", lambda value: updates.append(value.value))
+    await asyncio.sleep(0.3)
+    seen_before_repoint = len(updates)
+
+    nowhere = EPICSConnector()
+    await nowhere.connect(at(1))
+    try:
+        await nowhere.read_channel(f"{prefix}:AO", timeout=1)
+        moved = "answered"
+    except Exception as exc:  # the exception class is the assertion
+        moved = type(exc).__name__
+
+    back = EPICSConnector()
+    await back.connect(at(ioc_port))
+    write = await back.write_channel(f"{prefix}:AO", 4.0)
+    after = (await back.read_channel(f"{prefix}:AO")).value
+    await asyncio.sleep(0.3)
+    return {
+        "before": before,
+        "moved": moved,
+        "write": write.outcome.name,
+        "after": after,
+        "monitor_updates_after_repoint": len(updates) - seen_before_repoint,
+    }
+
+
 SCENARIOS = {
     "contract": contract,
     "runtime_style": runtime_style,
@@ -215,6 +261,7 @@ SCENARIOS = {
     "dispatch": dispatch,
     "stopped_before_teardown": stopped_before_teardown,
     "unreachable_name_server": unreachable_name_server,
+    "repoint": repoint,
 }
 
 
