@@ -228,3 +228,12 @@ def test_the_ca_loop_is_stopped_before_aioca_tears_channel_access_down(ioc, pref
     result = _drive("stopped_before_teardown", prefix, ioc, marker="__ATEXIT__")
 
     assert result == {"ca_loop_alive": False}
+
+
+def test_an_unreachable_name_server_does_not_hold_the_exit(ioc, prefix):
+    """ca_context_destroy waits out the circuit to a dead name server: 30 s of exit."""
+    started = time.monotonic()
+    result = _drive("unreachable_name_server", prefix, ioc)
+
+    assert result == {"read": "ConnectionError"}
+    assert time.monotonic() - started < 15

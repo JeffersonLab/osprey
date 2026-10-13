@@ -191,6 +191,22 @@ async def stopped_before_teardown(prefix: str) -> dict[str, Any]:
     return {}
 
 
+async def unreachable_name_server(prefix: str) -> dict[str, Any]:
+    """A read through a name-server gateway nobody answers, then exit."""
+    connector = EPICSConnector()
+    await connector.connect(
+        {
+            "timeout_s": 1,
+            "gateways": {"read_only": {"address": "127.0.0.1", "port": 1, "use_name_server": True}},
+        }
+    )
+    try:
+        await connector.read_channel(f"{prefix}:AO", timeout=1)
+    except Exception as exc:  # the exception class is the assertion
+        return {"read": type(exc).__name__}
+    return {"read": "answered"}
+
+
 SCENARIOS = {
     "contract": contract,
     "runtime_style": runtime_style,
@@ -198,6 +214,7 @@ SCENARIOS = {
     "connector_first": connector_first,
     "dispatch": dispatch,
     "stopped_before_teardown": stopped_before_teardown,
+    "unreachable_name_server": unreachable_name_server,
 }
 
 

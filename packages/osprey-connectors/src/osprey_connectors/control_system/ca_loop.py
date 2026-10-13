@@ -21,6 +21,12 @@ under it crashes the process. So the loop is stopped, and its thread joined,
 from ``threading``'s shutdown hook -- the one ``concurrent.futures`` stops its
 workers from -- which runs before every ``atexit`` hook, whichever of the two
 was registered first.
+
+The context itself is then left for the process's exit to reclaim rather
+than destroyed: ``ca_context_destroy`` waits out a TCP circuit still trying to
+reach a name server nobody answers (an unreachable
+``EPICS_CA_NAME_SERVERS`` gateway), which held a process's exit for half a
+minute. aioca still clears its channels first, and makes no CA call after.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import os
+import sys
 import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
@@ -170,6 +177,15 @@ _ca_loop: CaLoop | None = None
 _ca_loop_lock = threading.Lock()
 
 
+def _shut_down() -> None:
+    """Stop the process's CA loop; leave the CA context for the exit to reclaim."""
+    if _ca_loop is not None:
+        _ca_loop.stop()
+    catools = sys.modules.get("aioca._catools")
+    if catools is not None:
+        catools._Context._should_destroy = False
+
+
 def get_ca_loop() -> CaLoop:
     """The process's Channel Access loop, started on first use."""
     global _ca_loop
@@ -177,8 +193,8 @@ def get_ca_loop() -> CaLoop:
         if _ca_loop is None:
             _ca_loop = CaLoop()
             try:
-                _register_before_atexit(_ca_loop.stop)
+                _register_before_atexit(_shut_down)
             except RuntimeError:
                 # First used while the interpreter is already shutting down.
-                atexit.register(_ca_loop.stop)
+                atexit.register(_shut_down)
         return _ca_loop
