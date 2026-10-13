@@ -50,22 +50,22 @@ function isEmbedded() {
 }
 
 /**
- * Default view when no hash is present. Search is standalone-only: when
- * embedded in the web terminal, logbook search goes through the agent, so
- * the panel opens on Browse instead.
+ * Default view when no hash is present. Search is useful in both standalone
+ * and embedded ARIEL: keyword search works without an embedding model.
  * @returns {string}
  */
 function defaultView() {
-  return isEmbedded() ? 'browse' : 'search';
+  return 'search';
 }
 
 /**
- * Views the tile bar's nav offers when embedded. Search and Status are
- * standalone-only (navigateTo redirects both to browse), so the bar carries
- * the two views an operator actually works in.
+ * Views the tile bar's nav offers when embedded. Status remains standalone
+ * because the terminal owns service health, while Search, Browse, and New
+ * Entry are ordinary panel work.
  * @type {{ id: string, label: string }[]}
  */
 const HEADER_VIEWS = [
+  { id: 'search', label: 'Search' },
   { id: 'browse', label: 'Browse' },
   { id: 'create', label: 'New Entry' },
 ];
@@ -246,11 +246,10 @@ function navigateTo(hash) {
   const { viewName: routeName, params } = parseHash(hash);
   const viewName = routeName === 'entry' ? 'browse' : routeName;
 
-  // Search and Status are standalone-only: embedded users search the logbook
-  // through the agent, and the hub's own ARIEL dot reports service health.
-  // Redirect stray hashes so neither view can activate (which also keeps the
-  // status auto-refresh interval — started only on that activation — off).
-  if (isEmbedded() && (viewName === 'search' || viewName === 'status')) {
+  // Status is standalone-only: the terminal's ARIEL dot reports service
+  // health. Search remains available in the embedded panel, including its
+  // keyword mode when semantic-search dependencies are unavailable.
+  if (isEmbedded() && viewName === 'status') {
     navigateTo('browse');
     return;
   }

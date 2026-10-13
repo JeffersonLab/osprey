@@ -2,9 +2,9 @@
 
 When the panel runs inside the web-terminal iframe (``?embedded=true``) the
 host tile bar is its only header: ``layout.css`` hides the panel's own header
-outright and ``app.js`` contributes a Browse / New Entry nav into the tile bar
-instead. Search and Status are standalone-only, so the router opens Browse by
-default and redirects stray ``#search`` and ``#status`` hashes there.
+outright and ``app.js`` contributes a Search / Browse / New Entry nav into the
+tile bar instead. Search works in either mode (notably keyword search needs no
+embedding model); only Status is standalone-only.
 Standalone keeps the full header and Search as the default view.
 
 Run:
@@ -29,8 +29,8 @@ except ImportError:  # pragma: no cover
 pytestmark = [pytest.mark.browser, pytest.mark.slow]
 
 
-def test_embedded_hides_header_and_defaults_to_browse(tmp_path, monkeypatch, chromium_browser):
-    """``?embedded=true`` hides the panel's own header and lands on Browse."""
+def test_embedded_hides_header_and_defaults_to_search(tmp_path, monkeypatch, chromium_browser):
+    """``?embedded=true`` hides the panel's own header and lands on Search."""
     with _launch_ariel(tmp_path, monkeypatch) as base_url:
         page = chromium_browser.new_page()
 
@@ -39,22 +39,22 @@ def test_embedded_hides_header_and_defaults_to_browse(tmp_path, monkeypatch, chr
         # layout.css drops the whole header off body.embedded — the tile bar
         # carries the nav instead (contributed by app.js).
         expect(page.locator(".header")).to_be_hidden()
-        # defaultView() routed the empty hash to Browse, not Search.
-        expect(page.locator("#view-browse.active")).to_have_count(1)
-        expect(page.locator("#view-search.active")).to_have_count(0)
+        # Keyword search is available without an embedding model in either UI.
+        expect(page.locator("#view-search.active")).to_have_count(1)
+        expect(page.locator("#view-browse.active")).to_have_count(0)
 
         page.close()
 
 
-def test_embedded_redirects_search_hash_to_browse(tmp_path, monkeypatch, chromium_browser):
-    """A stray ``#search`` deep link is rerouted to Browse when embedded."""
+def test_embedded_keeps_search_hash(tmp_path, monkeypatch, chromium_browser):
+    """An embedded ``#search`` deep link stays in the usable Search view."""
     with _launch_ariel(tmp_path, monkeypatch) as base_url:
         page = chromium_browser.new_page()
 
         page.goto(f"{base_url}?embedded=true#search", wait_until="load")
 
-        expect(page.locator("#view-browse.active")).to_have_count(1)
-        expect(page).to_have_url(f"{base_url}/?embedded=true#browse")
+        expect(page.locator("#view-search.active")).to_have_count(1)
+        expect(page).to_have_url(f"{base_url}/?embedded=true#search")
 
         page.close()
 

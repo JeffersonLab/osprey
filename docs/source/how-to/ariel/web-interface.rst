@@ -155,6 +155,15 @@ elsewhere. The embedded panel has no header of its own either --- the
 terminal's tile bar is the one header --- so the sliders button does not
 appear there.
 
+Embedded ARIEL keeps its Search view in that tile bar. Keyword search works
+immediately against the ARIEL full-text index; semantic and hybrid choices are
+shown only when their configured services are available. Opening a stored,
+viewable picture from an entry also offers **Use in Workspace**. It copies the
+prepared rendition into the local Workspace gallery with its logbook
+provenance, then activates Workspace in the browser that clicked it. Ask the
+agent about that Workspace artifact; it resolves the provenance and reads the
+same stored attachment pixels rather than an external logbook URL.
+
 The ``GET /api/capabilities`` endpoint the interface calls at startup, and the
 parameter descriptors it returns, are documented in
 :doc:`/reference/contracts/ariel`.
