@@ -39,6 +39,7 @@ from tests.connectors._epics_fakes import (
     ECA_TIMEOUT,
     FakeAioca,
     FakeChannel,
+    InlineCaLoop,
     ca_reading,
     clean_epics_env,  # noqa: F401 - fixture, used by name
     fake_aioca,  # noqa: F401 - fixture, used by name
@@ -142,6 +143,31 @@ class TestConnect:
                 "EPICS_CA_AUTO_ADDR_LIST": "NO",
             }
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("clean_epics_env")
+    async def test_a_refused_claim_leaves_the_environment_as_it_was(self, monkeypatch):
+        """A connect() the CA loop refuses has not rerouted anything else in the process."""
+        _patch_writes_enabled(monkeypatch, False)
+        install_fake_aioca(monkeypatch)
+        monkeypatch.setenv("EPICS_CA_ADDR_LIST", "first-gateway")
+        refusing = InlineCaLoop()
+
+        def refuse(_env):
+            raise RuntimeError("cannot be repointed")
+
+        refusing.claim_env = refuse
+        monkeypatch.setattr(
+            "osprey_connectors.control_system.epics_connector.get_ca_loop", lambda: refusing
+        )
+
+        with pytest.raises(RuntimeError, match="cannot be repointed"):
+            await EPICSConnector().connect(
+                {"gateways": {"read_only": {"address": "second-gateway", "port": 5070}}}
+            )
+
+        assert os.environ["EPICS_CA_ADDR_LIST"] == "first-gateway"
+        assert "EPICS_CA_AUTO_ADDR_LIST" not in os.environ
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("clean_epics_env", "fake_aioca")

@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import os
 import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
@@ -42,6 +43,19 @@ except ImportError:  # pragma: no cover - CPython has had it since 3.9
     _register_before_atexit = atexit.register
 
 _THREAD_NAME = "osprey-ca-loop"
+
+#: The environment a Channel Access context is created from.
+CA_ENV_KEYS = (
+    "EPICS_CA_ADDR_LIST",
+    "EPICS_CA_SERVER_PORT",
+    "EPICS_CA_NAME_SERVERS",
+    "EPICS_CA_AUTO_ADDR_LIST",
+)
+
+
+def current_ca_env() -> dict[str, str | None]:
+    """The ``EPICS_CA_*`` settings a context created now would run with."""
+    return {key: os.environ.get(key) for key in CA_ENV_KEYS}
 
 
 class CaLoop:
@@ -62,10 +76,15 @@ class CaLoop:
         first call. Until a call has been made, a new claim simply replaces the
         old one. After that, a claim naming different settings raises: the
         context cannot be repointed in-process, and staying silently on the
-        old settings could route a read-only run through a write gateway.
+        old settings could route a read-only run through a write gateway. A
+        first call made with nothing claimed (the dispatch trigger source's,
+        say) pins the environment as it was then, so it is held the same way.
+
+        Raises before anything is recorded, so a caller can claim first and
+        change ``os.environ`` only once the claim stands.
         """
         with self._env_lock:
-            if self._used and self._env is not None and env != self._env:
+            if self._used and env != self._env:
                 raise RuntimeError(
                     "Channel Access in this process is already running with "
                     f"{self._env}; it cannot be repointed to {env} in-process. "
@@ -73,6 +92,14 @@ class CaLoop:
                 )
             if not self._used:
                 self._env = dict(env)
+
+    def _mark_used(self) -> None:
+        """Record that CA has been called, pinning the environment it runs with."""
+        with self._env_lock:
+            if not self._used:
+                self._used = True
+                if self._env is None:
+                    self._env = current_ca_env()
 
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -89,15 +116,13 @@ class CaLoop:
 
     def submit(self, coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
         """Schedule ``coro`` on the loop, from any thread; return its future."""
-        with self._env_lock:
-            self._used = True
+        self._mark_used()
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     async def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Await ``coro`` on the CA loop from whichever loop the caller is on."""
         if self.on_loop_thread():
-            with self._env_lock:
-                self._used = True
+            self._mark_used()
             return await coro
         return await asyncio.wrap_future(self.submit(coro))
 

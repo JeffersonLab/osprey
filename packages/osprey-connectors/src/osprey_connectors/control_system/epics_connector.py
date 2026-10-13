@@ -23,7 +23,7 @@ from osprey_connectors.control_system.base import (
     is_readonly_run,
     values_match,
 )
-from osprey_connectors.control_system.ca_loop import get_ca_loop
+from osprey_connectors.control_system.ca_loop import current_ca_env, get_ca_loop
 from osprey_connectors.control_system.call_timeout import call_timeout_s
 from osprey_connectors.control_system.limits_validator import (
     DEFAULT_STEP_READ_TIMEOUT_SECONDS,
@@ -35,14 +35,6 @@ from osprey_connectors.types import writes_enabled_key
 
 logger = get_logger("epics_connector")
 
-
-# The environment a Channel Access context is created from, as connect() sets it.
-_CA_ENV_KEYS = (
-    "EPICS_CA_ADDR_LIST",
-    "EPICS_CA_SERVER_PORT",
-    "EPICS_CA_NAME_SERVERS",
-    "EPICS_CA_AUTO_ADDR_LIST",
-)
 
 # Channel Access status codes the connector branches on (EPICS base caerr.h).
 # epicscorelibs' cadef names only some of them, so they are spelled out here.
@@ -529,6 +521,10 @@ class EPICSConnector(ControlSystemConnector):
                     "reject writes. Configure gateways.write_access to enable hardware writes."
                 )
 
+        # The EPICS_CA_* settings this connector needs, planned against the
+        # environment as it stands and written to it only once the CA loop
+        # has accepted them.
+        ca_env = current_ca_env()
         if gateway_config:
             address = gateway_config.get("address", "")
             port = gateway_config.get("port", 5064)
@@ -538,35 +534,40 @@ class EPICSConnector(ControlSystemConnector):
                 f"{gateway_role}.use_name_server",
             )
 
-            # Configure EPICS environment variables
             # Clear conflicting variables first — having both CA_ADDR_LIST and
             # CA_NAME_SERVERS set causes TCP connection attempts that block
             # asyncio.to_thread() worker threads.
             if use_name_server:
                 # Use CA_NAME_SERVERS (required for SSH tunnels and some gateway configurations)
-                os.environ["EPICS_CA_NAME_SERVERS"] = f"{address}:{port}"
-                os.environ.pop("EPICS_CA_ADDR_LIST", None)
-                os.environ.pop("EPICS_CA_SERVER_PORT", None)
+                ca_env["EPICS_CA_NAME_SERVERS"] = f"{address}:{port}"
+                ca_env["EPICS_CA_ADDR_LIST"] = None
+                ca_env["EPICS_CA_SERVER_PORT"] = None
                 logger.debug(f"Using EPICS_CA_NAME_SERVERS: {address}:{port}")
             else:
                 # Use CA_ADDR_LIST (standard gateway configuration)
-                os.environ["EPICS_CA_ADDR_LIST"] = address
-                os.environ["EPICS_CA_SERVER_PORT"] = str(port)
-                os.environ.pop("EPICS_CA_NAME_SERVERS", None)
+                ca_env["EPICS_CA_ADDR_LIST"] = address
+                ca_env["EPICS_CA_SERVER_PORT"] = str(port)
+                ca_env["EPICS_CA_NAME_SERVERS"] = None
                 logger.debug(f"Using EPICS_CA_ADDR_LIST: {address}, CA_SERVER_PORT: {port}")
 
-            os.environ["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
-
-            logger.debug(f"Configured EPICS gateway: {address}:{port}")
-            self._epics_configured = True
+            ca_env["EPICS_CA_AUTO_ADDR_LIST"] = "NO"
 
         # Channel Access reads the EPICS_CA_* environment once, when the
         # process's CA context is created on the first call. A context already
         # serving other settings cannot be repointed in-process, so a connect()
-        # that would need that is refused rather than left on the old gateway:
-        # a read-only run must never ride an earlier connector's write gateway.
+        # that would need that is refused, before it has changed anything,
+        # rather than left on the old gateway: a read-only run must never ride
+        # an earlier connector's write gateway.
         self._ca = get_ca_loop()
-        self._ca.claim_env({key: os.environ.get(key) for key in _CA_ENV_KEYS})
+        self._ca.claim_env(ca_env)
+        for key, setting in ca_env.items():
+            if setting is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = setting
+        if gateway_config:
+            logger.debug(f"Configured EPICS gateway: {address}:{port}")
+            self._epics_configured = True
 
         # The ceiling on the fresh read a `max_step` check makes before a
         # write. A facility-network fact like `timeout_s`, and read from
