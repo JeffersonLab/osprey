@@ -1428,7 +1428,18 @@ class EPICSConnector(ControlSystemConnector):
             except Exception as exc:
                 logger.warning(f"Dropping CA update for '{channel_address}': {exc}")
                 return
-            loop.call_soon_threadsafe(callback, channel_value)
+            try:
+                loop.call_soon_threadsafe(callback, channel_value)
+            except RuntimeError:
+                # The subscriber's loop has closed (osprey.runtime runs one per
+                # call). Raised here, aioca would print it to stdout -- a stdio
+                # MCP server's protocol stream -- and drop the monitor; close
+                # the monitor here instead, quietly.
+                logger.debug(f"Closing CA monitor on '{channel_address}': its loop has closed")
+                for monitor in opened:
+                    monitor.close()
+
+        opened: list[Any] = []
 
         async def open_monitor() -> Any:
             # aioca binds a monitor to the loop it is opened on: this one. The
@@ -1436,9 +1447,11 @@ class EPICSConnector(ControlSystemConnector):
             fetch = asyncio.ensure_future(self._ca_ctrl_fields(channel_address, self._timeout))
             self._ca_ctrl_fetches.add(fetch)
             fetch.add_done_callback(self._ca_ctrl_fetches.discard)
-            return aioca.camonitor(
+            monitor = aioca.camonitor(
                 channel_address, ca_callback, format=aioca.FORMAT_TIME, notify_disconnect=True
             )
+            opened.append(monitor)
+            return monitor
 
         monitor = await self._ca.run(open_monitor())
 

@@ -625,6 +625,43 @@ class TestEpicsCaSourceLifecycle:
         assert EpicsCaSource.source_type == "epics_ca"
 
 
+class TestServingLoopClosed:
+    def test_a_crossing_after_the_serving_loop_closed_stops_the_watcher(self) -> None:
+        """Raised on the CA thread, aioca would print it to stdout and drop the monitor."""
+        loop = asyncio.new_event_loop()
+        loop.close()
+        watcher, fake_pv = _arm_watcher(_trigger(threshold=1.0), AsyncMock(), loop)
+
+        fake_pv.fire(0.0)
+        fake_pv.fire(2.0)  # a rising crossing: the hand-off meets the closed loop
+
+        assert fake_pv.closed is True
+        assert watcher._monitor is None
+
+
+class TestOpenTimeout:
+    @pytest.mark.asyncio
+    async def test_start_skips_a_trigger_whose_monitor_did_not_open_in_time(self, caplog) -> None:
+        source = EpicsCaSource()
+
+        def _open(pvname, callback=None):
+            if pvname == "SIM:SLOW":
+                raise TimeoutError
+            return _FakePV(pvname, callback)
+
+        with (
+            caplog.at_level("WARNING", logger="osprey.dispatch.sources.epics_ca"),
+            patch("osprey.dispatch.sources.epics_ca._open_monitor", side_effect=_open),
+        ):
+            await source.start(
+                [_trigger(name="slow", pv="SIM:SLOW"), _trigger(name="ok", pv="SIM:OK")],
+                AsyncMock(),
+            )
+
+        assert [w._pv_name for w in source._watchers] == ["SIM:OK"]
+        assert "slow" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # _open_monitor: the seam the watchers arm through
 # ---------------------------------------------------------------------------
@@ -656,3 +693,36 @@ class TestOpenMonitor:
         assert opened == [("SIM:PV", callback)]
         ca_loop.call_soon.assert_called_once_with(subscription.close)
         subscription.close.assert_not_called()  # the loop runs it
+
+    @pytest.mark.parametrize("opens_before_abandon", [True, False])
+    def test_a_monitor_that_opens_after_its_open_timed_out_is_closed(
+        self, monkeypatch, opens_before_abandon
+    ) -> None:
+        """The open is still queued on the loop; whichever runs second closes the monitor."""
+        from osprey.dispatch.sources import epics_ca
+
+        subscription = MagicMock()
+        fake_aioca = MagicMock(camonitor=lambda _pv, _cb: subscription)
+        queued: list = []
+        ca_loop = MagicMock()
+
+        def stalled(coro, timeout=None):  # noqa: ARG001 - the real loop's signature
+            queued.append(coro)
+            raise TimeoutError
+
+        ca_loop.run_sync.side_effect = stalled
+        ca_loop.call_soon.side_effect = lambda callback, *args: queued.append((callback, args))
+        monkeypatch.setitem(sys.modules, "aioca", fake_aioca)
+        monkeypatch.setattr("osprey_connectors.control_system.ca_loop.get_ca_loop", lambda: ca_loop)
+
+        with pytest.raises(TimeoutError):
+            epics_ca._open_monitor("SIM:PV", MagicMock())
+
+        open_coro, (abandon, _args) = queued
+        if opens_before_abandon:
+            asyncio.run(open_coro)
+            abandon()
+        else:
+            abandon()
+            asyncio.run(open_coro)
+        subscription.close.assert_called_once_with()

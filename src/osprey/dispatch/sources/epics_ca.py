@@ -57,17 +57,35 @@ def _open_monitor(pv_name: str, callback: Any) -> _Monitor:
     the process's CA loop, the same one the EPICS connector uses: one Channel
     Access context for the whole process. ``callback`` then runs on that
     loop's thread.
+
+    Raises ``TimeoutError`` when the loop does not open it in time. The open
+    is still queued then, so the loop is also told to close the monitor
+    whenever it does open: both run on the loop's thread, so whichever comes
+    second sees the other, and no monitor is left firing with no watcher.
     """
     import aioca
 
     from osprey_connectors.control_system.ca_loop import get_ca_loop
 
     ca_loop = get_ca_loop()
+    state: dict[str, Any] = {}
 
     async def open_() -> Any:
-        return aioca.camonitor(pv_name, callback)
+        state["subscription"] = subscription = aioca.camonitor(pv_name, callback)
+        if state.get("abandoned"):
+            subscription.close()
+        return subscription
 
-    return _Monitor(ca_loop.run_sync(open_(), timeout=_OPEN_TIMEOUT_S), ca_loop)
+    def abandon() -> None:
+        state["abandoned"] = True
+        if "subscription" in state:
+            state["subscription"].close()
+
+    try:
+        return _Monitor(ca_loop.run_sync(open_(), timeout=_OPEN_TIMEOUT_S), ca_loop)
+    except TimeoutError:
+        ca_loop.call_soon(abandon)
+        raise
 
 
 def _number_setting(
@@ -195,7 +213,16 @@ class _PvWatcher:
             "edge": self._edge,
             "timestamp": datetime.now(tz=UTC),
         }
-        asyncio.run_coroutine_threadsafe(self._dispatch(payload), self._loop)
+        dispatch = self._dispatch(payload)
+        try:
+            asyncio.run_coroutine_threadsafe(dispatch, self._loop)
+        except RuntimeError:
+            dispatch.close()
+            # The serving loop has closed under a monitor nobody stopped. Raised
+            # here, aioca would print it to stdout and drop the monitor; stop it
+            # here instead, quietly.
+            logger.debug("EPICS CA trigger '%s': serving loop closed", self._trigger.name)
+            self.stop()
 
     async def _dispatch(self, payload: dict[str, Any]) -> None:
         """Coroutine executed on the asyncio loop after an edge is detected."""
@@ -264,7 +291,17 @@ class EpicsCaSource:
             except ValueError as exc:
                 logger.warning("EPICS CA trigger '%s' has %s; skipping", trigger.name, exc)
                 continue
-            watcher.start()
+            try:
+                watcher.start()
+            except TimeoutError:
+                logger.warning(
+                    "EPICS CA trigger '%s': the CA loop did not open a monitor on '%s' "
+                    "within %ss; skipping",
+                    trigger.name,
+                    trigger.source_config["pv"],
+                    _OPEN_TIMEOUT_S,
+                )
+                continue
             self._watchers.append(watcher)
         logger.info("EPICS CA source started with %d monitor(s)", len(self._watchers))
 

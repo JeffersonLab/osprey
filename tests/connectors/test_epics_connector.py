@@ -856,6 +856,16 @@ class TestSubscribe:
         assert connector._aioca.monitors[-1].closed is True
         assert sub_id not in connector._subscriptions
 
+    def test_an_update_after_the_subscribers_loop_closed_closes_the_monitor(self):
+        """osprey.runtime's loop ends with its call; aioca must not be left to print."""
+        connector = _channel_connector()
+        asyncio.run(connector.subscribe("SR:CH", lambda _value: None))
+        monitor = connector._aioca.monitors[-1]
+
+        monitor.callback(ca_reading(7.0))  # raising here is what aioca prints
+
+        assert monitor.closed is True
+
 
 class TestValidateChannelAndMetadata:
     @pytest.mark.asyncio
