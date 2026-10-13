@@ -5,12 +5,14 @@ library; the raw-client guard asks :func:`door_is_open` and lets a put through
 only when the answer is yes. A put made from user code that reached for the
 client directly finds the door closed.
 
-**Contract.** A connector makes its client put either in the context that
-opened the door or inside ``asyncio.to_thread`` started from that context.
-The flag is a context variable, so it reaches exactly the code that shares
-that context: ``asyncio.to_thread`` copies the context into its worker thread
-and carries the open door with it, as does every task created while the door
-is open. ``loop.run_in_executor``, a raw executor ``submit`` and a bare
+**Contract.** A connector makes its client put in the context that opened
+the door, inside ``asyncio.to_thread`` started from that context, or in a
+coroutine handed to another loop with ``asyncio.run_coroutine_threadsafe``
+from that context. The flag is a context variable, so it reaches exactly the
+code that shares that context: ``asyncio.to_thread`` and
+``run_coroutine_threadsafe`` both run the work in a copy of it and carry the
+open door with it, as does every task created while the door is open.
+``loop.run_in_executor``, a raw executor ``submit`` and a bare
 ``threading.Thread`` start from a fresh context and see the door closed, so a
 connector that puts behind one of those hops is refused.
 
@@ -18,12 +20,9 @@ connector that puts behind one of those hops is refused.
 some paths open it for code that is not a connector's own put. These are
 accepted, because attribution is not a boundary:
 
-- The EPICS connector hands its Channel Access put to the process's CA loop
-  (``ca_loop``) with ``asyncio.run_coroutine_threadsafe``, which runs the work
-  in a copy of the caller's context, so the open door crosses to the loop's
-  thread with it. Anything that coroutine starts while it runs inherits the
-  door too. libca's own callback threads start from a fresh context and never
-  carry it.
+- Anything a connector's put coroutine starts on the CA loop while it runs
+  (``ca_loop``) inherits the door with it. libca's own callback threads start
+  from a fresh context and never carry it.
 - ``ControlSystemConnector`` wraps every subclass's ``write_channel`` and
   ``write_multiple_channels``, including those of a user-defined connector
   subclass, so a user-defined connector puts inside an open door.
