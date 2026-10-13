@@ -1,11 +1,10 @@
 """What a client sees when it writes a co-hosted setpoint over real Channel Access.
 
-Everything here runs in **one process**: a real ``pcaspy`` server hosting the
-real serving database, the real write path deciding what each write means, and
-a real ``aioca`` client driving it from the pytest thread. No subprocess
-split, no fake driver -- the assertions are made from the far side of the wire,
-which is the only place the properties this file exists to pin are observable
-at all. ``tests/va/test_serving_pvdb.py`` and ``tests/va/test_serving_runner.py``
+A real ``pcaspy`` server hosts the real serving database, the real write path
+decides what each write means, and a real ``aioca`` client drives it from the
+pytest thread. No fake driver -- the assertions are made from the far side of
+the wire, which is the only place the properties this file exists to pin are
+observable at all. ``tests/va/test_serving_pvdb.py`` and ``tests/va/test_serving_runner.py``
 already prove the same contracts in process against a duck-typed driver; this
 file is the check that the wire agrees with them.
 
@@ -14,44 +13,36 @@ nothing without them.
 
 **pcaspy is the venue's hard requirement.** It publishes no macOS arm64 wheel
 that this host can load, so on a developer machine the live classes *skip* --
-loudly, via ``importorskip``, and a skipped live suite proves nothing. The
-venue that proves them is a linux container (and CI's linux lanes); everything
-in this file that does not need a server -- the drive-limit derivation, the
-collection floor -- runs everywhere and is not gated.
+loudly, and a skipped live suite proves nothing. The venue that proves them is
+a linux container (and CI's linux lanes); everything in this file that does not
+need a server -- the drive-limit derivation, the collection floor -- runs
+everywhere and is not gated.
 
-**The client and the server share a process.** ``pcaspy``'s compiled extension
-links EPICS statically and exports those symbols, so whichever EPICS stack is
-loaded first wins. ``import aioca`` loads epicscorelibs' libca and libCom with
-``RTLD_GLOBAL``; a pcaspy extension loaded *after* that resolves its own EPICS
-symbols against those global copies (``LD_DEBUG=bindings`` shows some 1600
-such bindings), and the result is a server that answers every read and kills
-the client's circuit on every write ("unexpected problem with client's input -
-forcing disconnect"), then dies of heap corruption at exit. Loaded first, the
-extension keeps its own copies and both ends work. So pcaspy is imported at the
-very top of this module, before anything can load aioca, and the fixture fails
-loudly if aioca got there first. (pyepics needed the opposite order: its libca
-had to initialise before pcaspy loaded.)
+**The client and the server run in separate processes.** pcaspy's extension
+statically bundles its own EPICS base, which binds to aioca's globally loaded
+libca and libCom if the two share a process and then drops the client on every
+write; so the server lives in a spawned child (``tests/va/_live_ca_server.py``)
+that never loads aioca, and the client stays here, with no import order to keep.
 
 aioca is asyncio-only, so every client call runs on the process's one Channel
 Access loop (``get_ca_loop()``, the same one the connector uses) and the pytest
 thread blocks on its result.
 
-The run loop is stood in for by :class:`_RunLoop`, which reproduces the one
-property of the real loop the write path depends on: the model is touched from
-one thread that is never the server's, and the write is completed from there.
+The run loop is stood in for by the server's ``RunLoop``, which reproduces the
+one property of the real loop the write path depends on: the model is touched
+from one thread that is never the server's, and the write is completed from
+there.
 """
 
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import socket
-import sys
-import threading
 import time
 from collections.abc import Coroutine, Iterator
-from queue import Queue
 from typing import Any
 
 import pytest
@@ -80,14 +71,6 @@ os.environ.setdefault("EPICS_CA_SERVER_PORT", _free_port())
 os.environ.setdefault("EPICS_CAS_SERVER_PORT", os.environ["EPICS_CA_SERVER_PORT"])
 os.environ.setdefault("EPICS_CA_REPEATER_PORT", _free_port())
 
-# import-time required, and ahead of every import below: pcaspy has to be
-# loaded before anything in this process loads aioca. See the module docstring.
-_AIOCA_LOADED_FIRST = "epicscorelibs.ca.cadef" in sys.modules and "pcaspy" not in sys.modules
-try:
-    import pcaspy  # noqa: F401
-except ImportError:  # no loadable wheel on this host; the live fixture skips
-    pass
-
 from osprey.services.virtual_accelerator.entrypoint import (  # noqa: E402
     _load_drive_limits,
 )
@@ -102,11 +85,7 @@ from osprey.services.virtual_accelerator.manifest import (  # noqa: E402
 from osprey.services.virtual_accelerator.manifest.paths import (  # noqa: E402
     PACKAGE_PATHS,
 )
-from osprey.services.virtual_accelerator.serving.pvdb import build_serving_pvdb  # noqa: E402
-from osprey.services.virtual_accelerator.serving.write_path import (  # noqa: E402
-    CohostWritePath,
-    physics_setpoint_addresses,
-)
+from tests.va import _live_ca_server  # noqa: E402
 
 # Floor for this module's own test count -- a guard against a refactor that
 # leaves the file importable but empty, which would otherwise pass silently.
@@ -271,161 +250,46 @@ SERVED_CHANNELS = [
 ]
 
 
-class _RunLoop:
-    """The one property of the real run loop the write path depends on.
+#: What the server process serves, and what its stand-in physics hook does.
+SERVER_SPEC = {
+    "name": "va-test",
+    "channels": SERVED_CHANNELS,
+    "drive_limits": DRIVE_LIMITS,
+    "boot_values": BOOT_VALUES,
+    "stuck_setpoints": [STUCK_SP],
+    "bpm": BPM,
+    "bpm_reading": BPM_READING,
+    "refused_value": REFUSED_VALUE,
+    "refusal_reason": REFUSAL_REASON,
+}
 
-    A queued write is applied and completed from a thread that is never the
-    Channel Access server's, because the model underneath is not thread-safe.
-    Everything else the real loop does -- batching, the output pass, the
-    rollback -- is either disabled by the runner's configuration policy or
-    irrelevant to what a client observes, and is proven in process elsewhere.
-    """
-
-    def __init__(self, on_setpoint) -> None:  # test-local callable
-        self._on_setpoint = on_setpoint
-        self._queue: Queue = Queue()
-        self.thread = threading.Thread(target=self._run, daemon=True, name="va-test-run-loop")
-        self.thread.start()
-
-    def enqueue(self, values: dict, *, done) -> None:  # test-local callable
-        self._queue.put((values, done))
-
-    def _run(self) -> None:
-        while True:
-            values, done = self._queue.get()
-            error = None
-            try:
-                for address, item in values.items():
-                    self._on_setpoint(address, item["value"])
-            except Exception as exc:  # the loop reports, never raises
-                error = str(exc)
-            done(error)
-
-
-class _PhysicsHook:
-    """Stands in for the physics bridge: applies a write, then pushes a reading.
-
-    Faithful on the two points a client can see. It runs on the loop's thread,
-    and the reading it pushes onto the BPM is its own -- never a value read back
-    out of whatever took the write -- so a reading on the wire can only have
-    come from here.
-    """
-
-    def __init__(self, records) -> None:  # ServingRecords
-        self._records = records
-        self.calls: list[tuple[str, float]] = []
-        self.threads: set[str] = set()
-
-    def __call__(self, address: str, value: float) -> None:
-        self.threads.add(threading.current_thread().name)
-        if value == REFUSED_VALUE:
-            # The model refuses by raising; the loop turns that into the error
-            # string the write path completes on.
-            raise ValueError(REFUSAL_REASON)
-        self.calls.append((address, value))
-        self._records.all[BPM].set(BPM_READING)
-
-
-class LiveNamespace:
-    """A served namespace, its write path, and the loop behind it."""
-
-    def __init__(self, records, path, hook, loop, driver, refusal_alarm) -> None:
-        self.records = records
-        self.path = path
-        self.hook = hook
-        self.loop = loop
-        self.driver = driver
-        # The (alarm, severity) the write path was built with, so the alarm
-        # assertions compare against the condition this server actually
-        # declares rather than against a number copied out of EPICS.
-        self.refusal_alarm = refusal_alarm
-
-
-def _build_namespace(pcaspy: Any) -> LiveNamespace:
-    """Assemble the serving layer exactly as the entrypoint assembles it.
-
-    Database first, with every boot value already in it, because the Channel
-    Access server copies each spec when it creates the PV; the driver, and so
-    the records' attachment to it, only after the server exists.
-    """
-    records = build_serving_pvdb(
-        SERVED_CHANNELS,
-        drive_limits=DRIVE_LIMITS,
-        boot_values=BOOT_VALUES,
-        async_setpoints=True,
-    )
-    hook = _PhysicsHook(records)
-    loop = _RunLoop(hook)
-    refusal_alarm = (pcaspy.Alarm.WRITE_ALARM, pcaspy.Severity.INVALID_ALARM)
-    path = CohostWritePath(
-        records,
-        enqueue=loop.enqueue,
-        physics_setpoints=physics_setpoint_addresses(records),
-        stuck_setpoints=frozenset({STUCK_SP}),
-        drive_limits=DRIVE_LIMITS,
-        refusal_alarm=refusal_alarm,
-    )
-
-    class LiveDriver(pcaspy.Driver):
-        """The production driver's whole body: delegate to the write path."""
-
-        def write(self, reason: str, value: Any) -> bool:  # pcaspy contract
-            accepted: bool = path.write(self, reason, value)
-            return accepted
-
-    server = pcaspy.SimpleServer()
-    server.createPV("", records.pvdb)
-    driver = LiveDriver()
-    records.attach_driver(driver)
-
-    stop = threading.Event()
-
-    def serve() -> None:
-        while not stop.is_set():
-            server.process(0.05)
-
-    thread = threading.Thread(target=serve, daemon=True, name="va-test-cas")
-    thread.start()
-
-    namespace = LiveNamespace(records, path, hook, loop, driver, refusal_alarm)
-    # Kept alive for the fixture's lifetime: a server or its serving thread
-    # collected out from under the client would fail every test below for a
-    # reason that has nothing to do with the write path.
-    namespace._server = server  # this object is the test's own
-    namespace._stop = stop
-    namespace._thread = thread
-    return namespace
+PCASPY_MISSING = (
+    "the live Channel Access venue needs pcaspy, which has no loadable "
+    "macOS arm64 wheel; run this suite in a linux container or on CI"
+)
 
 
 @pytest.fixture(scope="module")
 def live() -> Any:
-    """A live Channel Access server over the real serving layer.
+    """A live Channel Access server over the real serving layer, in a child process.
 
-    pcaspy was imported before anything loaded aioca, so the server extension
-    keeps its own EPICS symbols rather than binding to the libca and libCom
-    aioca loads globally. Import order is the mitigation; see the module
-    docstring.
+    The child receives this process's EPICS_* settings, so it listens where the
+    client searches. ``live.hook``, ``live.loop.thread.name`` and
+    ``live.refusal_alarm`` are fetched from it.
     """
-    pcaspy = pytest.importorskip(
-        "pcaspy",
-        reason=(
-            "the live Channel Access venue needs pcaspy, which has no loadable "
-            "macOS arm64 wheel; run this suite in a linux container or on CI"
-        ),
-    )
-    if _AIOCA_LOADED_FIRST:
-        pytest.fail(
-            "aioca's libca was loaded before pcaspy, so the server extension is "
-            "bound to it and every write would kill the client's circuit; import "
-            "pcaspy first (see the module docstring)"
-        )
-
-    namespace = _build_namespace(pcaspy)
-    if not _wait_until(lambda: _caget(TELEMETRY) is not None):
-        pytest.fail("the Channel Access server never became reachable")
-    yield namespace
-    namespace._stop.set()
-    namespace._thread.join(timeout=5)
+    if importlib.util.find_spec("pcaspy") is None:
+        pytest.skip(PCASPY_MISSING)
+    env = {key: value for key, value in os.environ.items() if key.startswith("EPICS_")}
+    try:
+        server = _live_ca_server.start({**SERVER_SPEC, "env": env})
+    except _live_ca_server.ServerUnavailable as exc:
+        pytest.skip(f"{PCASPY_MISSING} ({exc})")
+    try:
+        if not _wait_until(lambda: _caget(TELEMETRY) is not None):
+            pytest.fail("the Channel Access server never became reachable")
+        yield server
+    finally:
+        server.close()
 
 
 def _wait_until(predicate, *, timeout: float = SETTLE_TIMEOUT_S) -> Any:

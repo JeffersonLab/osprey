@@ -8,14 +8,15 @@ command, and every client that reads the device sees the same frozen readback.
 That distinction is only observable over a real wire, which is what most of
 this file is.
 
-The venue and the in-process topology are the ones
-``tests/va/test_record_factory.py`` documents: one process, a real ``pcaspy``
-server, a real ``aioca`` client on the process's one Channel Access loop, and
-pcaspy imported before anything loads aioca, because a pcaspy extension loaded
-after aioca's global libca binds its EPICS symbols to it and then drops the
-client's circuit on every write. pcaspy has no loadable macOS arm64 wheel, so the
-live classes skip on a developer host and are proven in a linux container and
-on CI; the route-table tests need no server and run everywhere.
+The venue and the topology are the ones ``tests/va/test_record_factory.py``
+documents: a real ``pcaspy`` server in a spawned child process
+(``tests/va/_live_ca_server.py``) and a real ``aioca`` client on this process's
+one Channel Access loop. They are kept in separate processes because pcaspy's
+extension statically bundles its own EPICS base, which binds to aioca's globally
+loaded libca and drops the client on every write if the two share a process.
+pcaspy has no loadable macOS arm64 wheel, so the live classes skip on a
+developer host and are proven in a linux container and on CI; the route-table
+tests need no server and run everywhere.
 
 The address set here is deliberately disjoint from every other module's, so two
 servers alive in one pytest session can never answer for each other's names.
@@ -30,13 +31,11 @@ bridge serves whatever the model holds now, and keeps no copy of its own.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import os
 import socket
-import sys
-import threading
 import time
 from collections.abc import Coroutine, Iterator
-from queue import Queue
 from typing import Any
 
 import pytest
@@ -60,15 +59,6 @@ os.environ.setdefault("EPICS_CA_SERVER_PORT", _free_port())
 os.environ.setdefault("EPICS_CAS_SERVER_PORT", os.environ["EPICS_CA_SERVER_PORT"])
 os.environ.setdefault("EPICS_CA_REPEATER_PORT", _free_port())
 
-# import-time required, and ahead of every import below: pcaspy has to be
-# loaded before anything in this process loads aioca. See
-# ``tests/va/test_record_factory.py``'s module docstring.
-_AIOCA_LOADED_FIRST = "epicscorelibs.ca.cadef" in sys.modules and "pcaspy" not in sys.modules
-try:
-    import pcaspy  # noqa: F401
-except ImportError:  # no loadable wheel on this host; the live fixture skips
-    pass
-
 from osprey.services.virtual_accelerator.bindings import (  # noqa: E402
     Binding,
     BindingsDocument,
@@ -91,6 +81,8 @@ from osprey.services.virtual_accelerator.serving.write_path import (  # noqa: E4
     CohostWritePath,
     physics_setpoint_addresses,
 )
+from tests.va import _live_ca_server  # noqa: E402
+from tests.va._live_ca_server import PhysicsHook, RunLoop  # noqa: E402
 
 # Floor for this module's own test count -- a guard against a refactor that
 # leaves the file importable but empty, which would otherwise pass silently.
@@ -207,106 +199,37 @@ def _build_records(**kwargs: Any) -> Any:
     )
 
 
-class _RunLoop:
-    """The model's thread. See ``test_record_factory.py`` for why it exists."""
+#: What the server process serves. Its stand-in physics hook only records.
+SERVER_SPEC = {
+    "name": "va-fault",
+    "channels": SERVED_CHANNELS,
+    "drive_limits": {},
+    "boot_values": BOOT_VALUES,
+    "stuck_setpoints": sorted(STUCK_SETPOINTS),
+}
 
-    def __init__(self, on_setpoint) -> None:  # test-local callable
-        self._on_setpoint = on_setpoint
-        self._queue: Queue = Queue()
-        self.thread = threading.Thread(target=self._run, daemon=True, name="va-fault-run-loop")
-        self.thread.start()
-
-    def enqueue(self, values: dict, *, done) -> None:  # test-local callable
-        self._queue.put((values, done))
-
-    def _run(self) -> None:
-        while True:
-            values, done = self._queue.get()
-            error = None
-            try:
-                for address, item in values.items():
-                    self._on_setpoint(address, item["value"])
-            except Exception as exc:  # the loop reports, never raises
-                error = str(exc)
-            done(error)
-
-
-class _PhysicsHook:
-    """Records every write the lattice would have been given."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, float]] = []
-
-    def __call__(self, address: str, value: float) -> None:
-        self.calls.append((address, value))
-
-
-class LiveNamespace:
-    """A served namespace with one faulted channel in each partition."""
-
-    def __init__(self, records, hook, loop) -> None:
-        self.records = records
-        self.hook = hook
-        self.loop = loop
+PCASPY_MISSING = (
+    "the live Channel Access venue needs pcaspy, which has no loadable "
+    "macOS arm64 wheel; run this suite in a linux container or on CI"
+)
 
 
 @pytest.fixture(scope="module")
 def live() -> Any:
-    """A live Channel Access server serving a faulted namespace."""
-    pcaspy = pytest.importorskip(
-        "pcaspy",
-        reason=(
-            "the live Channel Access venue needs pcaspy, which has no loadable "
-            "macOS arm64 wheel; run this suite in a linux container or on CI"
-        ),
-    )
-    if _AIOCA_LOADED_FIRST:
-        pytest.fail(
-            "aioca's libca was loaded before pcaspy, so the server extension is "
-            "bound to it and every write would kill the client's circuit; import "
-            "pcaspy first (see the module docstring)"
-        )
-
-    records = _build_records()
-    hook = _PhysicsHook()
-    loop = _RunLoop(hook)
-    path = CohostWritePath(
-        records,
-        enqueue=loop.enqueue,
-        physics_setpoints=physics_setpoint_addresses(records),
-        stuck_setpoints=STUCK_SETPOINTS,
-        refusal_alarm=(pcaspy.Alarm.WRITE_ALARM, pcaspy.Severity.INVALID_ALARM),
-    )
-
-    class LiveDriver(pcaspy.Driver):
-        """The production driver's whole body: delegate to the write path."""
-
-        def write(self, reason: str, value: Any) -> bool:  # pcaspy contract
-            accepted: bool = path.write(self, reason, value)
-            return accepted
-
-    server = pcaspy.SimpleServer()
-    server.createPV("", records.pvdb)
-    driver = LiveDriver()
-    records.attach_driver(driver)
-
-    stop = threading.Event()
-
-    def serve() -> None:
-        while not stop.is_set():
-            server.process(0.05)
-
-    thread = threading.Thread(target=serve, daemon=True, name="va-fault-cas")
-    thread.start()
-
-    if not _wait_until(lambda: _caget(LIVE_RB) is not None):
-        stop.set()
-        pytest.fail("the Channel Access server never became reachable")
-
-    yield LiveNamespace(records, hook, loop)
-
-    stop.set()
-    thread.join(timeout=5)
+    """A live Channel Access server serving a faulted namespace, in a child process."""
+    if importlib.util.find_spec("pcaspy") is None:
+        pytest.skip(PCASPY_MISSING)
+    env = {key: value for key, value in os.environ.items() if key.startswith("EPICS_")}
+    try:
+        server = _live_ca_server.start({**SERVER_SPEC, "env": env})
+    except _live_ca_server.ServerUnavailable as exc:
+        pytest.skip(f"{PCASPY_MISSING} ({exc})")
+    try:
+        if not _wait_until(lambda: _caget(LIVE_RB) is not None):
+            pytest.fail("the Channel Access server never became reachable")
+        yield server
+    finally:
+        server.close()
 
 
 def _wait_until(predicate, *, timeout: float = SETTLE_TIMEOUT_S) -> Any:
@@ -422,7 +345,7 @@ class TestFaultRouting:
 
     def test_an_unfaulted_magnet_still_reaches_the_model(self) -> None:
         records = _build_records()
-        loop = _RunLoop(_PhysicsHook())
+        loop = RunLoop(PhysicsHook())
         path = CohostWritePath(
             records,
             enqueue=loop.enqueue,
@@ -437,7 +360,7 @@ class TestFaultRouting:
         """No channel is faulted unless it is named: the fixture is opt-in, so
         an unconfigured virtual accelerator serves an unfaulted machine."""
         records = _build_records()
-        loop = _RunLoop(_PhysicsHook())
+        loop = RunLoop(PhysicsHook())
         path = CohostWritePath(
             records,
             enqueue=loop.enqueue,

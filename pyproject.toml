@@ -382,9 +382,9 @@ screen-capture-linux = [
 #
 # pcaspy is the portable Channel Access server. The serving layer hosts one,
 # and tests/va/test_record_factory.py and tests/va/test_apply_fault.py stand
-# one up in-process to assert the write contract from the far side of the wire;
-# without pcaspy installed both suites skip, and a skipped live suite proves
-# nothing.
+# one up in a child process to assert the write contract from the far side of
+# the wire; without pcaspy installed both suites skip, and a skipped live suite
+# proves nothing.
 #
 # `>=0.8.1` is a hard floor, not a preference. 0.8.0's `SimplePV.writeNotify`
 # hands `startAsyncWrite` the wrong object and aborts the server process on any
@@ -399,7 +399,7 @@ screen-capture-linux = [
 # @rpath/libc++.1.dylib with no surviving LC_RPATH entry). Unmarked, this
 # requirement would send a developer's Mac into a source build that needs EPICS
 # Base plus the separate PCAS module, and fail. Marked, those hosts get the
-# honest `importorskip` skip and run the live suites in the container venue
+# honest skip and run the live suites in the container venue
 # under scripts/va/live_ca/ instead.
 #
 # THE SAME MARKER RIDES ON lume-pva-apg, and for the same reason rather than

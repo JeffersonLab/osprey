@@ -2,15 +2,19 @@
 
 `tests/va/test_record_factory.py` and `tests/va/test_apply_fault.py` assert the
 virtual accelerator's serving contract from the far side of a real Channel
-Access wire. Everything runs in one process: a real `pcaspy` CA server hosting
-the real serving database, the real write path deciding what each write means,
-and a real `aioca` client driving it from the pytest thread.
+Access wire: a real `pcaspy` CA server hosting the real serving database, the
+real write path deciding what each write means, and a real `aioca` client
+driving it from the pytest thread. The server runs in a spawned child process
+(`tests/va/_live_ca_server.py`) that never loads aioca, because pcaspy's
+extension statically bundles its own EPICS base, and in a process where aioca
+has already loaded epicscorelibs' libca it binds to that copy and drops the
+client on every write. With the two apart, test order does not matter.
 
 That needs `pcaspy`, and `pcaspy` publishes manylinux **x86_64** wheels only —
 no aarch64 wheel at any interpreter, and the macOS arm64 wheels it does publish
 are unloadable as shipped. So on a developer's Mac the live classes skip.
 
-They skip honestly, via `pytest.importorskip` with a reason. But a skipped live
+They skip honestly, via `pytest.skip` with a reason. But a skipped live
 suite proves nothing, and `pytest` exits 0 either way. This directory is the
 venue where they are not allowed to skip.
 
@@ -30,16 +34,16 @@ summary and per-run summary line elided between the header and the count line:
     [... test_record_factory's own pytest output: 35 passed in 9.36s ...]
   tests/va/test_record_factory.py: passed=35 skipped=0 failed=0 errors=0 exit=0
 --- tests/va/test_apply_fault.py ---
-    [... test_apply_fault's own pytest output: 18 passed in 5.02s ...]
-  tests/va/test_apply_fault.py: passed=18 skipped=0 failed=0 errors=0 exit=0
+    [... test_apply_fault's own pytest output: 27 passed in 5.02s ...]
+  tests/va/test_apply_fault.py: passed=27 skipped=0 failed=0 errors=0 exit=0
 --- tests/va/test_facility_seam.py ---
-    [... test_facility_seam's own pytest output: 4 passed in 9.48s ...]
-  tests/va/test_facility_seam.py: passed=4 skipped=0 failed=0 errors=0 exit=0
+    [... test_facility_seam's own pytest output: 10 passed in 9.48s ...]
+  tests/va/test_facility_seam.py: passed=10 skipped=0 failed=0 errors=0 exit=0
 
 ========================================================================
 live Channel Access gate (--pva)
-  passed=57 skipped=0 failed=0 errors=0 pytest_exit=0
-  VERDICT: PASS -- 57 live Channel Access test(s) ran, none skipped.
+  passed=72 skipped=0 failed=0 errors=0 pytest_exit=0
+  VERDICT: PASS -- 72 live Channel Access test(s) ran, none skipped.
 ========================================================================
 ```
 
@@ -81,7 +85,10 @@ module alone in a fresh process went 20 for 20. One module per process is what
 makes that `setdefault` mean what it looks like it means. Counts still come
 from pytest's own reporter: each child is `gate.py` re-entered with
 `--run-module`, printing one machine-readable line the parent sums, and a child
-that prints nothing is counted as an error rather than as zeroes.
+that prints nothing is counted as an error rather than as zeroes. (Each server
+now lives in a child process that exits at its module's teardown, and combined
+runs in either order have passed; the gate keeps one module per process
+regardless.)
 
 Verified against a negative control: with `pcaspy` made unimportable inside the
 container, pytest reports `9 passed, 44 skipped` and exits **0**, and the gate
@@ -101,7 +108,7 @@ docker run --rm --platform linux/amd64 -v "$PWD:/work:ro" <image> \
 ```
 
 with `pcaspy` made unimportable. `pcaspy` is the only module the live suites
-guard with `importorskip`, so it is also the only one whose absence produces a
+guard with a skip, so it is also the only one whose absence produces a
 skip rather than an error — breaking anything else gives you a red run for a
 different reason and tells you nothing about the skip check.
 
@@ -122,9 +129,9 @@ stale image built under the same name.
 
 ## It claims no host port
 
-The CA server and its client share one process inside the container's own
-network namespace. Nothing is published — there is no `-p` on the `docker run`,
-by design, not by omission. This is why the venue never collides with a virtual
+The CA server and its client share the container's own network namespace.
+Nothing is published — there is no `-p` on the `docker run`, by design, not by
+omission. This is why the venue never collides with a virtual
 accelerator already serving on 5064. The suites also pick their own ephemeral
 loopback port at import time, so two runs at once do not interfere either.
 

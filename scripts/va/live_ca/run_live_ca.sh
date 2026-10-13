@@ -5,9 +5,9 @@
 #   scripts/va/live_ca/run_live_ca.sh [PYTEST_TARGET...]
 #
 # tests/va/test_record_factory.py and tests/va/test_apply_fault.py stand a real
-# pcaspy Channel Access server up in-process and drive it with a real aioca
-# client, and tests/va/test_facility_seam.py boots the whole serving assembly
-# on both transports. pcaspy publishes manylinux x86_64 wheels only, so on a
+# pcaspy Channel Access server up in a child process and drive it with a real
+# aioca client, and tests/va/test_facility_seam.py boots the whole serving
+# assembly on both transports. pcaspy publishes manylinux x86_64 wheels only, so on a
 # developer's Mac all of that skips. This builds a linux/amd64 container that
 # installs the repo's own `virtual-accelerator` extra from the repo's own
 # lockfile, mounts the worktree read-only, and runs the suites there under a
@@ -20,9 +20,8 @@
 # unpublished and had nothing to resolve by name.
 #
 # Nothing is published and no host port is claimed. The Channel Access server
-# and its client share one process inside the container's own network
-# namespace, so this cannot collide with a virtual accelerator already running
-# on 5064. Do not add `-p` to the run below without re-reading that sentence.
+# and its client share the container's own network namespace, so this cannot
+# collide with a virtual accelerator already running on 5064. Do not add `-p` to the run below without re-reading that sentence.
 #
 # The image is rebuilt only when a pyproject.toml or uv.lock changes; test and
 # source edits are picked up from the mount with no rebuild. Set

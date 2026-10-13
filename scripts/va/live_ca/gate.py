@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the live Channel Access suites and fail unless they really ran.
 
-The suites this drives guard their pcaspy import with ``pytest.importorskip``.
+The suites this drives skip their live classes when pcaspy is not installed.
 That is the right behaviour on a host that cannot load pcaspy -- an honest,
 loud skip beats a hollow pass -- but it means the ordinary pytest exit code
 cannot distinguish "the Channel Access contract holds" from "nothing was
