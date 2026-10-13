@@ -1221,8 +1221,9 @@ class TestProtocolAwareSafetyRules:
 
         content = (project_dir / ".claude" / "rules" / "control-system-safety.md").read_text()
         assert "EPICS Channel Access" in content
-        assert "import epics" in content
-        assert "epics.caget" in content
+        assert "import aioca" in content
+        assert "aioca.caget" in content
+        assert "aioca.caput" in content
         assert "epics.caput" in content
         assert "osprey.runtime" in content
         assert "read_channel" in content

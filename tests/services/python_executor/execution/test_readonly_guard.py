@@ -1430,7 +1430,7 @@ import sys
 assert "bluesky" not in sys.modules and "ophyd_async" not in sys.modules, (
     "the guard must not load an acquisition framework the script never imports"
 )
-assert {"epics", "aioca", "epicscorelibs", "p4p"} <= set(sys.modules), (
+assert {"aioca", "epicscorelibs", "p4p"} <= set(sys.modules), (
     "the client rows must be resolved before the script runs"
 )
 run_engine = importlib.import_module("bluesky.run_engine")
@@ -1649,10 +1649,10 @@ def test_two_guards_in_one_process_delegate_without_recursing(tmp_path, monkeypa
 
 def test_the_client_rows_are_resolved_before_the_script_runs():
     """The counterpart to the framework tests: the client half does not wait."""
-    for library in ("epics", "aioca", "p4p"):
+    for library in ("aioca", "p4p"):
         pytest.importorskip(library, reason=f"{library} is not installed in this environment")
 
     _run_guard("readonly")
 
     assert subprocess.run.__name__ == "_osprey_readonly_refuse"
-    assert {"epics", "aioca", "p4p.client.thread"} <= set(sys.modules)
+    assert {"aioca", "p4p.client.thread"} <= set(sys.modules)

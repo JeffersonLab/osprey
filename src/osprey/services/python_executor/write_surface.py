@@ -89,7 +89,8 @@ partition to the table.
 #: the producer of :data:`READONLY_DENIED_IMPORTS`: a readonly run refuses to
 #: import any top-level package named here.
 _CLIENT_WRITE_TARGETS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # --- EPICS Channel Access (pyepics) ---
+    # --- EPICS Channel Access (pyepics). Not a dependency; guarded in case a
+    # user installs it.
     ("epics", ("caput", "caput_many")),
     ("epics.PV", ("put",)),
     ("epics.ca", ("put", "sg_put")),
