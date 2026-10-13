@@ -1226,9 +1226,7 @@ async def _picture_for_workspace_artifact(
 
 
 @router.post("/attachments/{attachment_id}/artifact")
-async def attachment_to_workspace_artifact(
-    request: Request, attachment_id: str
-) -> dict[str, Any]:
+async def attachment_to_workspace_artifact(request: Request, attachment_id: str) -> dict[str, Any]:
     """Copy a stored viewable picture into the local Workspace gallery.
 
     This is intentionally a local API action, not an agent command.  Its
@@ -1248,7 +1246,9 @@ async def attachment_to_workspace_artifact(
         raise
     except Exception:
         logger.exception("failed to copy attachment to Workspace artifact")
-        raise HTTPException(status_code=500, detail="Could not copy picture to Workspace.") from None
+        raise HTTPException(
+            status_code=500, detail="Could not copy picture to Workspace."
+        ) from None
 
 
 async def _store_and_link_attachments(
