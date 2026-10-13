@@ -32,10 +32,11 @@ says so instead of reporting a difference it cannot attribute.
 reasons, both load-bearing. libca latches ``EPICS_CA_*`` when the C library
 initialises, and this directory's session container (``conftest.py``) publishes
 on a different port than the containers here do, so one process cannot be a
-client of both. And the connector wraps synchronous pyepics in a thread-pool
-executor whose CA context is per-thread, so a main-thread pyepics call in this
-process deadlocks any connector-based test sharing it. The worker below is
-dispatched before this module imports anything heavy and speaks JSON on stdout.
+client of both. And this process's connectors run Channel Access on one CA
+loop that claims the environment on first use and refuses to be repointed, so
+a client of these containers made in-process would either be refused or pin the
+session to the wrong port. The worker below is dispatched before this module
+imports anything heavy and speaks JSON on stdout.
 
 **Ports, and container names.** Each container binds an ephemeral port and
 publishes it unchanged: a Channel Access search reply carries the server's own
@@ -52,6 +53,7 @@ is the suffix; the prefix stays recognisable to a human reading ``docker ps``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -63,11 +65,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # The CA-client worker. Dispatched before this module imports pytest or any
-# osprey package, so the client process stays as close to a bare pyepics client
+# osprey package, so the client process stays as close to a bare aioca client
 # as it can be -- see the module docstring for why it is a separate process.
 
 
-def _worker(request: dict) -> dict:
+async def _worker(request: dict) -> dict:
     """Run one scripted Channel Access operation and return its result.
 
     Three operations cover everything this suite needs:
@@ -78,69 +80,89 @@ def _worker(request: dict) -> dict:
         enum labels, control band, alarm condition.
     ``write_watch``
         Subscribe to the watched addresses, then write one setpoint with
-        put-completion and collect the monitor events that follow. Callbacks
-        are added *after* the initial read, so a connection's own first update
-        is never mistaken for a response to the write.
+        put-completion and collect the monitor events that follow. Each
+        subscription's first update is the value it connected to, and is
+        consumed before anything is recorded, so a connection's own first
+        update is never mistaken for a response to the write.
     ``watch``
         Subscribe and collect events for a fixed window with no write at all --
         the only way to see a value the server publishes on its own schedule.
+
+    Every value asserted on comes from a ``caget`` of its own, off the wire:
+    aioca keeps no monitor cache a read could be answered from, so a "did not
+    move" assertion cannot pass by reading a cache that never moves.
     """
-    import epics
+
+    import aioca
 
     op = request["op"]
     timeout = request.get("timeout", 10.0)
 
-    def fresh(pv: Any) -> Any:
-        """Read ``pv`` off the wire, never out of pyepics' monitor cache.
+    def plain(value: Any) -> Any:
+        """An aioca value as the JSON scalar it augments."""
+        if isinstance(value, float):
+            return float(value)
+        if isinstance(value, int):
+            return int(value)
+        return str(value)
 
-        ``PV.get()`` defaults to ``use_monitor=True``, which returns the value
-        of the last monitor callback the client happened to have processed. On
-        a subscribed PV that is a *stale* value: a put can complete and the
-        following read still report the old one, because the monitor event has
-        not been dispatched yet. Worse than the flake, a "did not move"
-        assertion reads a cache that never moves and passes for free. Every
-        value this suite asserts on is therefore read explicitly.
-        """
-        return pv.get(use_monitor=False)
+    async def fresh(address: str) -> Any:
+        return plain(await aioca.caget(address, timeout=timeout))
 
-    def describe(pv: Any) -> dict:
-        control = pv.get_ctrlvars() or {}
+    async def describe(address: str) -> dict:
+        info = await aioca.cainfo(address, timeout=timeout)
+        control = await aioca.caget(address, format=aioca.FORMAT_CTRL, timeout=timeout)
         return {
-            "value": fresh(pv),
-            "type": pv.type,
-            "count": pv.count,
-            "precision": control.get("precision"),
-            "enum_strs": list(control.get("enum_strs") or []) or None,
-            "lower_ctrl_limit": control.get("lower_ctrl_limit"),
-            "upper_ctrl_limit": control.get("upper_ctrl_limit"),
-            "severity": pv.severity,
-            "status": pv.status,
+            "value": plain(control),
+            "type": aioca.CAInfo.datatype_strings[info.datatype],
+            "count": info.count,
+            "precision": getattr(control, "precision", None),
+            "enum_strs": list(getattr(control, "enums", None) or []) or None,
+            "lower_ctrl_limit": getattr(control, "lower_ctrl_limit", None),
+            "upper_ctrl_limit": getattr(control, "upper_ctrl_limit", None),
+            "severity": control.severity,
+            "status": control.status,
         }
 
-    def connect(address: str, *, monitor: bool = False) -> Any:
-        pv = epics.PV(address, auto_monitor=monitor)
-        if not pv.wait_for_connection(timeout=timeout):
-            raise RuntimeError(f"never connected to {address}")
-        pv.get()
-        return pv
+    async def subscribe(addresses: list[str], record: Any) -> list[Any]:
+        """Monitor each address and wait out its connection's first update.
+
+        ``record(address, value)`` sees every update after that one;
+        ``all_updates`` so that none is merged into the next.
+        """
+        primed = {address: asyncio.Event() for address in addresses}
+
+        def on_update(value: Any, index: int) -> None:
+            address = addresses[index]
+            if primed[address].is_set():
+                record(address, plain(value))
+            else:
+                primed[address].set()
+
+        subscriptions = aioca.camonitor(addresses, on_update, all_updates=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(event.wait() for event in primed.values())), timeout
+            )
+        except BaseException:
+            for subscription in subscriptions:
+                subscription.close()
+            raise
+        return subscriptions
 
     if op == "read":
-        pvs = [connect(address) for address in request["addresses"]]
-        try:
-            return {"channels": {pv.pvname: describe(pv) for pv in pvs}}
-        finally:
-            for pv in pvs:
-                pv.disconnect()
+        return {"channels": {address: await describe(address) for address in request["addresses"]}}
 
     if op == "write_watch":
-        watched = {address: connect(address, monitor=True) for address in request["watch"]}
-        before = {address: fresh(pv) for address, pv in watched.items()}
-        events: dict[str, list] = {address: [] for address in watched}
-        for address, pv in watched.items():
-            pv.add_callback(lambda value=None, _sink=events[address], **_kw: _sink.append(value))
+        watch = list(request["watch"])
+        events: dict[str, list] = {address: [] for address in watch}
+        subscriptions = await subscribe(watch, lambda address, value: events[address].append(value))
         try:
+            before = {address: await fresh(address) for address in watch}
             started = time.monotonic()
-            accepted = epics.caput(request["address"], request["value"], wait=True, timeout=timeout)
+            put = await aioca.caput(
+                request["address"], request["value"], wait=True, timeout=timeout, throw=False
+            )
             elapsed = time.monotonic() - started
             # Settle on the value actually written, which may be the clamped
             # one rather than the requested one.
@@ -151,56 +173,58 @@ def _worker(request: dict) -> dict:
                     values and abs(values[-1] - target) < 1e-12 for values in events.values()
                 ):
                     break
-                time.sleep(0.02)
+                await asyncio.sleep(0.02)
             return {
-                "accepted": bool(accepted),
+                "accepted": bool(put.ok),
                 "put_seconds": elapsed,
                 "before": before,
                 "events": events,
-                "after": {address: fresh(pv) for address, pv in watched.items()},
+                "after": {address: await fresh(address) for address in watch},
             }
         finally:
-            # Explicit, and in a finally: a pyepics PV whose subscription is
-            # still live segfaults libca when the garbage collector finalises
-            # it at some arbitrary later point.
-            for pv in watched.values():
-                pv.disconnect()
+            for subscription in subscriptions:
+                subscription.close()
 
     if op == "watch":
-        watched = {address: connect(address, monitor=True) for address in request["watch"]}
-        before = {address: fresh(pv) for address, pv in watched.items()}
-        events: dict[str, list] = {address: [] for address in watched}
-        started = time.monotonic()
-        for address, pv in watched.items():
-            pv.add_callback(
-                lambda value=None, _sink=events[address], _t0=started, **_kw: _sink.append(
-                    [time.monotonic() - _t0, value]
-                )
-            )
+        watch = list(request["watch"])
+        events = {address: [] for address in watch}
+        clock: dict[str, float] = {}
+
+        def record(address: str, value: Any) -> None:
+            # Anything published before the clock starts was published while
+            # the window was still being set up, and is not part of it.
+            if "started" in clock:
+                events[address].append([time.monotonic() - clock["started"], value])
+
+        subscriptions = await subscribe(watch, record)
         try:
-            time.sleep(request["seconds"])
+            before = {address: await fresh(address) for address in watch}
+            clock["started"] = time.monotonic()
+            await asyncio.sleep(request["seconds"])
             return {"before": before, "events": events}
         finally:
-            for pv in watched.values():
-                pv.disconnect()
+            for subscription in subscriptions:
+                subscription.close()
 
     raise ValueError(f"unknown worker op {op!r}")
 
 
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[1] == "--worker":
-    # Leave through ``os._exit`` on every path, for the reason every other
-    # bare-pyepics child in this directory does: a normal exit runs pyepics'
-    # ``finalize_libca`` atexit hook, which can wedge in ``ca_context_destroy``
-    # after Channel Access was used. A wedged exit holds the parent's
-    # ``subprocess.run`` until its timeout, which is longer than the boot
-    # deadline, so one wedge reads as a boot that never served. That includes
-    # the failing path: a read of an address not served yet is the ordinary
-    # answer during a boot, and it has used Channel Access just the same.
-    try:
-        print(json.dumps(_worker(json.loads(sys.argv[2])), default=str), flush=True)
-    except BaseException:
-        import traceback
+    # Leave through ``os._exit`` whichever way the operation ends. A normal
+    # exit runs aioca's teardown hook, whose ``ca_context_destroy`` blocks for
+    # as long as a name-server circuit is still retrying a port nothing serves
+    # yet -- and the boot loop below asks exactly that of a container still
+    # coming up. The answer, or the traceback, is already written; a wedged
+    # exit would only hold the parent's ``subprocess.run`` until its timeout,
+    # which is longer than the boot deadline, so one wedge reads as a boot that
+    # never served. That includes the failing path: a read of an address not
+    # served yet is the ordinary answer during a boot, and it has used Channel
+    # Access just the same.
+    import traceback
 
+    try:
+        print(json.dumps(asyncio.run(_worker(json.loads(sys.argv[2]))), default=str), flush=True)
+    except BaseException:
         traceback.print_exc()
         sys.stderr.flush()
         os._exit(1)
@@ -294,10 +318,11 @@ IDENTITY_BPM_ERROR: dict[str, float] = {
 #: value instead of only on the offset.
 REFERENCE_CURRENT = 1.5
 
-#: Manifest ``record_type`` -> the wire type pyepics reports for it. This is
-#: the parity table, and it is asserted to cover every type the manifest
-#: actually uses -- see ``TestRecordTypeParity``.
-WIRE_TYPES = {"ai": "time_double", "bi": "time_enum"}
+#: Manifest ``record_type`` -> the native field type the server reports for it,
+#: as aioca's ``cainfo`` names it. This is the parity table, and it is asserted
+#: to cover every type the manifest actually uses -- see
+#: ``TestRecordTypeParity``.
+WIRE_TYPES = {"ai": "double", "bi": "enum"}
 
 #: How many channels the parity sweep samples per record type.
 PARITY_SAMPLE = 8

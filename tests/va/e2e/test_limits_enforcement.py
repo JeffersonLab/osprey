@@ -12,7 +12,7 @@ max_step entirely (max_step enforcement is connector-blind -- see
 only exercises min/max, matching what's actually shipped). The out-of-limits
 write must be rejected *before* it ever reaches the IOC: LimitsValidator.validate()
 raises synchronously, before ``EPICSConnector.write_channel`` issues any
-``epics.caput`` at all, so a rejected write can never move the record over CA.
+``aioca.caput`` at all, so a rejected write can never move the record over CA.
 """
 
 from __future__ import annotations

@@ -331,7 +331,7 @@ async def test_channel_access_alarm_renders_as_a_name(tmp_path, monkeypatch):
 async def test_enum_reading_carries_its_state_label(tmp_path, monkeypatch):
     """An mbbi reading reaches the agent as an index *and* the state it names.
 
-    Driven through a real ``EPICSConnector`` with a fake pyepics, for the same
+    Driven through a real ``EPICSConnector`` with a fake aioca, for the same
     reason as the alarm-name test above: what matters is what the connector
     actually ships to the tool. Before this, an agent asked "what mode is the
     device in?" was handed ``2`` and had nowhere to look up what 2 meant.

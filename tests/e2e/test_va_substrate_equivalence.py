@@ -10,8 +10,8 @@ proofs then exercise the whole stack end to end:
 
   P1 co-deploy:     containers up, healthy, loopback-only, depends_on ordering held.
   P2 liveness:      the full manifest namespace is reachable over CA.
-  P3 read-equiv:    a pyepics (host) read and an ophyd-async (bridge) read of
-                     the same PV agree.
+  P3 read-equiv:    a host read (the connector, over aioca) and an ophyd-async
+                     (bridge) read of the same PV agree.
   P4 concurrent:    an EPICS-substrate ``grid_scan`` plan runs to completion
                      while a concurrent host read observes the same PV
                      consistently — the loop-affinity falsifier.
@@ -902,10 +902,9 @@ def test_p1_co_deploy_health_binding_and_ordering() -> None:
 def test_p2_full_manifest_liveness() -> None:
     # Runs scripts/va/sweep_check.py as its OWN subprocess/CA client, exactly
     # as it's meant to be invoked against a host-published container (see its
-    # module docstring) — never in-process here: this process also acts as an
-    # async EPICS CA client via EPICSConnector (P3-P5), and mixing a
-    # main-thread pyepics operation into a process that also drives CA off an
-    # asyncio.to_thread() executor is a documented deadlock risk (see
+    # module docstring) — never in-process here: Channel Access reads its
+    # EPICS_CA_* environment once, when a process's context is created, so a
+    # client pointed at this stack's port belongs in a process of its own (see
     # tests/va/e2e/conftest.py's `_readiness_pv_served`).
     # The sweep script defaults EPICS_CA_NAME_SERVERS to localhost:5064; this
     # stack serves CA on the module's ephemeral VA_CA_PORT, so the subprocess
@@ -931,7 +930,7 @@ def test_p2_full_manifest_liveness() -> None:
 
 
 # ---------------------------------------------------------------------------
-# P3: read-equivalence — pyepics (host) vs ophyd-async (bridge)
+# P3: read-equivalence — the host connector vs ophyd-async (bridge)
 # ---------------------------------------------------------------------------
 
 
@@ -941,7 +940,7 @@ async def test_p3_read_equivalence(deployed_stack: DeployedStack) -> None:
     lo, hi = deployed_stack.bounds(sp)
     value = lo + 0.5 * (hi - lo)
 
-    # Host side (pyepics), isolated in its own process: arrange a known,
+    # Host side (the connector), isolated in its own process: arrange a known,
     # non-default state (rather than comparing two never-written 0.0 defaults,
     # a degenerate proof), then read the sibling readback back. settle_read: the
     # SP->RB echo is asynchronous, so the host op polls the readback until it
@@ -1002,7 +1001,7 @@ async def test_p3_read_equivalence(deployed_stack: DeployedStack) -> None:
         f"({value}) — sp-echo should be an exact copy"
     )
     assert abs(host_read - bridge_value) <= 1e-6, (
-        f"host (pyepics) read of {rb} = {host_read} != bridge (ophyd-async) read = {bridge_value}"
+        f"host (connector) read of {rb} = {host_read} != bridge (ophyd-async) read = {bridge_value}"
     )
 
 
@@ -1120,7 +1119,7 @@ async def test_p5_honest_divergence_under_stuck_setpoint(deployed_stack: Deploye
     value = lo + 0.5 * (hi - lo)
     assert abs(value) > 1e-6
 
-    # Host side (pyepics), isolated in its own process: write the pre-faulted SP,
+    # Host side (the connector), isolated in its own process: write the pre-faulted SP,
     # then read the sibling RB back — one connect/write/read in one subprocess.
     host = _run_host_ca_op(
         _host_ca_op_spec(deployed_stack.repo, read=rb, write={"address": sp, "value": value})
@@ -1173,10 +1172,10 @@ async def test_p5_honest_divergence_under_stuck_setpoint(deployed_stack: Deploye
     bridge_rb = data["rows"][0][col]
     assert bridge_rb is not None, f"no value recorded for {P5_DETECTOR}: {data}"
 
-    # Both independent CA clients (host pyepics, bridge ophyd-async) must
+    # Both independent CA clients (host connector, bridge ophyd-async) must
     # agree on the frozen value -- honest divergence, not a per-client one.
     assert abs(host_rb - bridge_rb) <= 1e-6, (
-        f"host (pyepics) read of frozen {rb} = {host_rb} != bridge (ophyd-async) "
+        f"host (connector) read of frozen {rb} = {host_rb} != bridge (ophyd-async) "
         f"read = {bridge_rb} — the two CA clients disagree on the stuck readback"
     )
 

@@ -27,8 +27,8 @@ and refuses to boot rather than serving the framework's demo channels under
 whatever name a deployment gave the container. See ``stage_demo_data_dir``.
 
 Process-boundary note (mirrors ``tests/va/test_record_factory.py``): this
-conftest and every test module in this directory may import ``epics``
-(pyepics, a CA *client*) and the softioc-free
+conftest and every test module in this directory may import ``aioca``
+(a CA *client*) and the softioc-free
 ``osprey.services.virtual_accelerator.manifest`` package, but must NEVER
 import ``ioc.records`` or ``softioc.builder`` -- doing so in-process
 permanently breaks this process's ability to act as a CA client (see that
@@ -336,12 +336,12 @@ def patched_config(**overrides: Any) -> Iterator[None]:
         yield
 
 
-# Connectors handed out by connect_va(), pending deterministic teardown. A
-# pyepics PV whose subscription is still live segfaults libca if it is
-# finalized by a garbage-collection cycle at an arbitrary point (observed
-# reproducibly: GC triggered inside a later test's json.load collects a prior
-# test's PVs -> PV.__del__ -> ca.clear_subscription -> SIGSEGV). Tests must
-# never leave connector PVs to die by GC.
+# Connectors handed out by connect_va(), pending deterministic teardown. aioca
+# keeps a subscription alive on the process's one CA loop until it is closed,
+# whatever becomes of the connector that opened it, so a test that left its
+# connector to the garbage collector would leave its monitors firing into every
+# later test. Each one is disconnected, closing its subscriptions, after its
+# test.
 _LIVE_CONNECTORS: list[Any] = []
 
 
@@ -553,30 +553,26 @@ def boot_report(container: str, host_port: int) -> str:
 def _readiness_pv_served() -> bool:
     """Probe container readiness in a SUBPROCESS.
 
-    The async connector wraps *sync* pyepics in a thread-pool executor, and
-    libca CA contexts are per-thread: a main-thread pyepics CA operation in
-    this process deadlocks the connector's executor-thread caget/caput calls.
-    So the readiness check must never touch pyepics in-process -- run it
-    out-of-process, exactly as the probe's caget check does. Returns True once
-    the readiness PV is served.
+    Channel Access reads ``EPICS_CA_*`` once, when a process's context is
+    created, and the probe points it at the container's published port. A
+    probe made in this process would pin its context to that port for the
+    rest of the session -- and the connector's CA loop refuses to be repointed
+    in-process (``ca_loop.CaLoop.claim_env``) -- so the readiness check never
+    touches Channel Access in-process: it runs out-of-process, exactly as the
+    probe's caget check does. Returns True once the readiness PV is served.
 
-    The probe leaves through ``os._exit`` rather than returning. This child
-    calls ``epics.caget`` directly and builds no connector, so nothing takes
-    pyepics' ``finalize_libca`` off its exit hooks the way
-    ``EPICSConnector.connect`` does for the processes that go through it. That
-    finalizer's recorded hang follows Channel Access use on a worker thread --
-    what the connector's executor does -- rather than the one main-thread
-    ``caget`` this child makes, which has not been seen to hang. The forced
-    exit is kept as a bound that costs nothing: a probe that will not die is
-    read here as a container that is not serving, and the word is written and
-    flushed before the exit.
+    The probe leaves through ``os._exit`` rather than returning. aioca's exit
+    hook destroys the CA context, and that destroy blocks for as long as a
+    name-server circuit is still retrying a port nothing serves yet -- the very
+    case a readiness probe polls through, and one seen to outlast this probe's
+    timeout. The word is written and flushed before the exit.
     """
     code = (
-        "import sys, epics\n"
-        f"v = epics.caget({READINESS_ADDRESS!r}, timeout=1.0, connection_timeout=1.0)\n"
-        "sys.stdout.write('SERVED' if v is not None else 'NONE')\n"
+        "import asyncio, os, sys, aioca\n"
+        f"v = asyncio.run(aioca.caget({READINESS_ADDRESS!r}, timeout=2.0, throw=False))\n"
+        "sys.stdout.write('SERVED' if v.ok else 'NONE')\n"
         "sys.stdout.flush()\n"
-        "import os; os._exit(0)\n"
+        "os._exit(0)\n"
     )
     env = {
         **os.environ,

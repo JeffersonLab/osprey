@@ -37,12 +37,12 @@ last.
 2. Attaching a terminal yields a session id, and the deployment's
    control-context record — owned by the web terminal — names the target the
    posture route reports.
-3. With writes on, a runtime write lands, while a direct ``epics.caput`` from a
+3. With writes on, a runtime write lands, while a direct ``aioca.caput`` from a
    cell is refused with ``RAW_CLIENT_WRITE``, the write-through-the-runtime
    line and one ``raw_client_write`` audit record, and leaves the value where
-   the runtime put it. A client put made from a libca callback thread while a
+   the runtime put it. A client put made from a monitor callback while a
    runtime write is in flight is refused too: the connector's write door is
-   open only in the context that opened it, never on a thread libca started.
+   open only in the context that opened it, never in a callback libca woke.
 4. A cell run while writes are off for that target reads, and refuses a write
    with the connector's text plus the turn-writes-on line and exactly one audit
    record on the ``notebook_kernel`` surface, filed under the KERNEL's own
@@ -735,8 +735,9 @@ STAMPS_CELL = (
 )
 READ_CELL = f"from osprey.runtime import read_channel\nprint(repr(read_channel({CHANNEL!r})))\n"
 WRITE_CELL = f"from osprey.runtime import write_channel\nwrite_channel({CHANNEL!r}, 1.0)\n"
-#: A client library's own put, straight past the runtime.
-RAW_CAPUT_CELL = f"import epics\nepics.caput({WRITE_TARGET!r}, 2.0)\n"
+#: A client library's own put, straight past the runtime. The kernel runs a
+#: cell's top-level ``await`` on its own loop, and aioca has no other spelling.
+RAW_CAPUT_CELL = f"import aioca\nawait aioca.caput({WRITE_TARGET!r}, 2.0)\n"
 #: How long a readback gets to follow its setpoint.
 READBACK_SETTLE_SEC = 20.0
 #: A cell that prints the setpoint and, once it has followed or the wait runs
@@ -752,40 +753,54 @@ SETPOINT_CELL = (
     f"    rb = read_channel({WRITE_READBACK!r})\n"
     "print(json.dumps({'sp': sp, 'rb': rb}))\n"
 )
-#: The real-libca door proof. A monitor callback runs on a thread libca
-#: started, which never carries the connector's write door; it tries a client
-#: put of its own and records whether the runtime write was in flight at that
-#: moment. The in-flight flag is a plain ``threading.Event`` for the same
-#: reason: a context variable set here would be invisible on that thread. The
-#: callback catches its own refusal, because pyepics swallows what a callback
-#: raises. The initial-value callback is allowed to land before the flag is set,
-#: so the flag marks only callbacks the in-flight write caused.
+#: The real-libca door proof. aioca hands a monitor update to the loop that
+#: opened the subscription, woken from a thread libca started, so the callback
+#: never runs in the connector's context and never carries its write door. The
+#: subscription lives on a watcher thread with a loop of its own rather than on
+#: the kernel's: ``write_channel`` blocks the kernel's thread for the whole
+#: write, so a callback queued there could only run once the write was over.
+#: The callback tries a client put of its own and records whether the runtime
+#: write was in flight at that moment. The in-flight flag is a plain
+#: ``threading.Event`` for the same reason: a context variable set here would be
+#: invisible on the watcher. The callback catches its own refusal, because aioca
+#: closes a subscription whose callback raises. The initial-value callback is
+#: allowed to land before the flag is set, so the flag marks only callbacks the
+#: in-flight write caused.
 DOOR_PROOF_CELL = (
-    "import json, threading, time\n"
-    "import epics\n"
+    "import asyncio, json, threading, time\n"
+    "import aioca\n"
     "from osprey.runtime import write_channel\n"
     "in_flight = threading.Event()\n"
+    "done = threading.Event()\n"
     "seen = []\n"
-    "def on_change(pvname=None, value=None, **kw):\n"
+    "async def on_change(value):\n"
     "    try:\n"
-    f"        epics.caput({WRITE_TARGET!r}, value)\n"
+    f"        await aioca.caput({WRITE_TARGET!r}, float(value))\n"
     "        refused = None\n"
     "    except Exception as exc:\n"
     "        refused = getattr(exc, 'reason', None) or type(exc).__name__\n"
-    "    seen.append({'in_flight': in_flight.is_set(), 'value': value, 'refused': refused})\n"
-    f"pv = epics.PV({WRITE_TARGET!r}, callback=on_change, auto_monitor=True)\n"
-    "assert pv.wait_for_connection(timeout=30), 'the setpoint never connected'\n"
-    "deadline = time.monotonic() + 10\n"
+    "    seen.append({'in_flight': in_flight.is_set(), 'value': float(value), 'refused': refused})\n"
+    "async def watch():\n"
+    f"    sub = aioca.camonitor({WRITE_TARGET!r}, on_change)\n"
+    "    try:\n"
+    "        while not done.is_set():\n"
+    "            await asyncio.sleep(0.1)\n"
+    "    finally:\n"
+    "        sub.close()\n"
+    "watcher = threading.Thread(target=asyncio.run, args=(watch(),), daemon=True)\n"
+    "watcher.start()\n"
+    "deadline = time.monotonic() + 30\n"
     "while not seen and time.monotonic() < deadline:\n"
     "    time.sleep(0.1)\n"
+    "assert seen, 'the setpoint never connected'\n"
     "in_flight.set()\n"
     "try:\n"
     f"    write_channel({WRITE_TARGET!r}, 3.0, confirm=True)\n"
     "finally:\n"
     "    in_flight.clear()\n"
     "time.sleep(1.0)\n"
-    "pv.clear_callbacks()\n"
-    "pv.disconnect()\n"
+    "done.set()\n"
+    "watcher.join(timeout=10)\n"
     "print(json.dumps(seen))\n"
 )
 
