@@ -244,15 +244,10 @@ A put made from a client-library callback thread the library started itself
 refused the same way.
 
 The door records who is making a put; it does not decide whether the put is
-allowed. The connector's own gates below do that. Two paths hold the door
-open for code that is not a shipped connector's own put, and are accepted as
-**cooperative bypasses**:
-
-- pyepics with ``PREEMPTIVE_CALLBACK=False`` runs callbacks while a thread
-  polls, including the poll inside a connector's waiting put, so a put made
-  from such a callback runs inside the open door.
-- A connector subclass written by the user is wrapped like a shipped one, so
-  its ``write_channel`` puts inside the open door.
+allowed. The connector's own gates below do that. One path holds the door
+open for code that is not a shipped connector's own put, and is accepted as a
+**cooperative bypass**: a connector subclass written by the user is wrapped
+like a shipped one, so its ``write_channel`` puts inside the open door.
 
 ``osprey_connectors`` imports nothing from ``osprey`` for this. The door
 module is standard-library only, because the guard that reads it runs in

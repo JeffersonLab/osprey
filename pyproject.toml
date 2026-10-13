@@ -137,9 +137,6 @@ dependencies = [
     "python-multipart>=0.0.18",
     # Utilities
     "unique-namer>=1.6.2",
-    # EPICS Channel Access client (used by control_system connector,
-    # limits_validator, and python_executor wrapper).
-    "pyepics",
     # PostgreSQL (required for native logbook_search capability and checkpointing)
     "psycopg[binary,pool]>=3.3.4,<4.0.0",
     "psycopg-pool>=3.3.1,<4.0.0",
@@ -561,7 +558,6 @@ module = [
     "pandas.*",
     "numpy.*",
     "matplotlib.*",
-    "pyepics.*",
     "p4p.*",
     "podman.*",
     "pymongo.*",
