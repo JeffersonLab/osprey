@@ -62,6 +62,7 @@ class CaLoop:
     """An event loop running forever on a daemon thread of its own."""
 
     def __init__(self) -> None:
+        self._pid = os.getpid()
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, name=_THREAD_NAME, daemon=True)
         self._thread.start()
@@ -114,8 +115,23 @@ class CaLoop:
         """True when the calling thread is this loop's own thread."""
         return threading.current_thread() is self._thread
 
+    def _refuse_in_a_forked_child(self, coro: Coroutine[Any, Any, Any] | None = None) -> None:
+        """Raise in a process forked from the one that started the loop.
+
+        A child inherits the loop but not its thread, so work queued to it
+        would wait forever; nor can it use the parent's libca context.
+        """
+        if os.getpid() != self._pid:
+            if coro is not None:
+                coro.close()
+            raise RuntimeError(
+                "Channel Access was started in the parent of this forked process and "
+                "cannot be used here; start the child with 'spawn' or 'forkserver'."
+            )
+
     def submit(self, coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
         """Schedule ``coro`` on the loop, from any thread; return its future."""
+        self._refuse_in_a_forked_child(coro)
         self._mark_used()
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
@@ -139,11 +155,12 @@ class CaLoop:
 
     def call_soon(self, callback: Callable[..., Any], *args: Any) -> None:
         """Run a plain callback on the loop thread, from any thread."""
+        self._refuse_in_a_forked_child()
         self._loop.call_soon_threadsafe(callback, *args)
 
     def stop(self) -> None:
         """Stop the loop and wait briefly for its thread. Idempotent."""
-        if self._loop.is_closed():
+        if self._loop.is_closed() or os.getpid() != self._pid:
             return
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2.0)

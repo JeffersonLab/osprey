@@ -5,6 +5,8 @@ here talks Channel Access or touches the shared loop.
 """
 
 import asyncio
+import os
+import sys
 
 import pytest
 
@@ -63,3 +65,26 @@ def test_a_call_awaited_on_the_loop_thread_pins_the_environment_too(ca_loop):
 
     with pytest.raises(RuntimeError, match="cannot be repointed"):
         ca_loop.claim_env(GATEWAY_B)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fork() is POSIX")
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+def test_a_forked_child_is_refused_rather_than_left_to_hang(ca_loop):
+    """The child inherits the loop object but not its thread."""
+    ca_loop.run_sync(_nothing(), timeout=5)
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child reports through the pipe
+        try:
+            ca_loop.run_sync(_nothing(), timeout=5)
+            verdict = b"ran"
+        except RuntimeError as exc:
+            verdict = b"refused" if b"forked" in str(exc).encode() else b"other"
+        except Exception:
+            verdict = b"other"
+        os.write(write, verdict)
+        os._exit(0)
+    os.close(write)
+    os.waitpid(pid, 0)
+    with os.fdopen(read, "rb") as child:
+        assert child.read() == b"refused"
