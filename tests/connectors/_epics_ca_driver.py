@@ -24,6 +24,7 @@ from unittest.mock import patch
 from osprey_connectors.control_system.epics_connector import EPICSConnector
 
 RESULT_MARKER = "__RESULT__"
+ATEXIT_MARKER = "__ATEXIT__"
 
 
 def _metadata(value: Any) -> dict[str, Any]:
@@ -169,12 +170,34 @@ async def dispatch(prefix: str) -> dict[str, Any]:
     return {"fired": fired}
 
 
+async def stopped_before_teardown(prefix: str) -> dict[str, Any]:
+    """Report, from an ``atexit`` hook, whether the CA loop still runs then.
+
+    The hook is registered after the connector's first CA call, so after
+    aioca's own teardown hook, and ``atexit`` runs it first: it sees what
+    aioca's teardown is about to see.
+    """
+    import atexit
+
+    connector = await _connect()
+    await connector.read_channel(f"{prefix}:AO")
+    await connector.subscribe(f"{prefix}:AO", lambda _value: None)
+
+    def report() -> None:
+        alive = any(t.name == "osprey-ca-loop" and t.is_alive() for t in threading.enumerate())
+        print(ATEXIT_MARKER + json.dumps({"ca_loop_alive": alive}), flush=True)
+
+    atexit.register(report)
+    return {}
+
+
 SCENARIOS = {
     "contract": contract,
     "runtime_style": runtime_style,
     "aioca_first": aioca_first,
     "connector_first": connector_first,
     "dispatch": dispatch,
+    "stopped_before_teardown": stopped_before_teardown,
 }
 
 

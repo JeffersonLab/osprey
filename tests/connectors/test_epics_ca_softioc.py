@@ -134,8 +134,8 @@ def ioc(tmp_path, prefix):
         process.wait(timeout=10)
 
 
-def _drive(scenario: str, prefix: str, env: dict[str, str]) -> dict:
-    """Run one driver scenario; assert a clean exit and return its result."""
+def _drive(scenario: str, prefix: str, env: dict[str, str], marker: str = RESULT_MARKER) -> dict:
+    """Run one driver scenario; assert a clean exit and return the line ``marker`` heads."""
     child_env = dict(env, PYTHONPATH=PYTHONPATH)
     completed = subprocess.run(
         [sys.executable, "-X", "faulthandler", str(DRIVER), scenario, prefix],
@@ -148,9 +148,9 @@ def _drive(scenario: str, prefix: str, env: dict[str, str]) -> dict:
     assert completed.returncode == 0, (
         f"{scenario} exited {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
     )
-    lines = [line for line in completed.stdout.splitlines() if line.startswith(RESULT_MARKER)]
-    assert lines, f"{scenario} printed no result\n{completed.stdout}\n{completed.stderr}"
-    return json.loads(lines[-1][len(RESULT_MARKER) :])
+    lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
+    assert lines, f"{scenario} printed no {marker}\n{completed.stdout}\n{completed.stderr}"
+    return json.loads(lines[-1][len(marker) :])
 
 
 def test_reads_writes_and_monitors_over_the_wire(ioc, prefix):
@@ -220,3 +220,11 @@ def test_the_dispatch_source_and_the_connector_share_the_ca_loop(ioc, prefix):
     result = _drive("dispatch", prefix, ioc)
 
     assert result["fired"] == [[1.0, 6.0], [2.0, 7.5]]
+
+
+def test_the_ca_loop_is_stopped_before_aioca_tears_channel_access_down(ioc, prefix):
+    """aioca destroys the CA context from an ``atexit`` hook; a loop still running
+    CA work under it crashed the process at exit, intermittently."""
+    result = _drive("stopped_before_teardown", prefix, ioc, marker="__ATEXIT__")
+
+    assert result == {"ca_loop_alive": False}

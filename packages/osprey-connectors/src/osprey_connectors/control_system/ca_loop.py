@@ -15,10 +15,12 @@ that thread the first time it is used, and any other thread aioca later runs
 on (ophyd-async on the RunEngine's, say) attaches to the same context.
 
 At exit, aioca's own ``atexit`` hook purges its channels and, when it created
-the context, destroys it. That hook is registered on aioca's first use, which
-is after :func:`get_ca_loop` registers the loop's shutdown, so it runs first
-(``atexit`` is last-in, first-out): channels are purged while the loop that
-owns them is still running, and the loop is stopped afterwards.
+the context, destroys it. Nothing may still be running on the loop by then: a
+channel created or read on the loop thread while the context is destroyed
+under it crashes the process. So the loop is stopped, and its thread joined,
+from ``threading``'s shutdown hook -- the one ``concurrent.futures`` stops its
+workers from -- which runs before every ``atexit`` hook, whichever of the two
+was registered first.
 """
 
 from __future__ import annotations
@@ -31,6 +33,13 @@ from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+try:
+    # Runs at interpreter shutdown before any ``atexit`` hook; private, but the
+    # stdlib's own ``concurrent.futures`` relies on it for the same reason.
+    from threading import _register_atexit as _register_before_atexit
+except ImportError:  # pragma: no cover - CPython has had it since 3.9
+    _register_before_atexit = atexit.register
 
 _THREAD_NAME = "osprey-ca-loop"
 
@@ -125,5 +134,9 @@ def get_ca_loop() -> CaLoop:
     with _ca_loop_lock:
         if _ca_loop is None:
             _ca_loop = CaLoop()
-            atexit.register(_ca_loop.stop)
+            try:
+                _register_before_atexit(_ca_loop.stop)
+            except RuntimeError:
+                # First used while the interpreter is already shutting down.
+                atexit.register(_ca_loop.stop)
         return _ca_loop
