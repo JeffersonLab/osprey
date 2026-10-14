@@ -473,6 +473,7 @@ async def get_capabilities(request: Request) -> dict:
         **_get_caps(service.config),
         "config_panel_enabled": panel_enabled,
         "facility_timezone": facility_timezone,
+        "embedded_search": service.config.embedded_search,
     }
     if errors:
         payload = {
