@@ -812,7 +812,14 @@ def test_a_worker_that_fails_leaves_as_promptly_as_one_that_answers() -> None:
     elapsed = time.monotonic() - started
 
     assert result.returncode != 0
-    assert "never connected to PARITY:NOT:SERVED" in result.stderr
+    # The read fails because the channel never connected: aioca's connection
+    # timeout on this address, raised from ``cainfo``, which does no I/O of its
+    # own beyond waiting for the channel to connect.
+    *_, last = result.stderr.strip().splitlines()
+    assert last == (
+        "aioca._catools.CANothing: PARITY:NOT:SERVED: User specified timeout on IO operation expired"
+    ), result.stderr
+    assert ", in cainfo\n" in result.stderr, result.stderr
     # The connect timeout is 1 s; libca's teardown alone is tens of seconds.
     assert elapsed < 15.0, f"the failed worker took {elapsed:.1f}s to leave"
 
