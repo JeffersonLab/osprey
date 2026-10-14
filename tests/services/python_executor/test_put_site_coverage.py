@@ -13,9 +13,9 @@ copy a user installs themselves.
 A site that nothing covers fails the test with its file and line, so a client
 upgrade that adds a new put path cannot pass unnoticed.
 
-The ``libca`` handles carry the same three symbols as attributes: the one
-pyepics loads for itself, and the one ``epicscorelibs.ca.cadef`` loads in its
-module body and aioca reads through. A run that reaches either handle directly
+The ``libca`` handles carry the same three symbols as attributes: the one a
+user-installed pyepics loads for itself, and the one ``epicscorelibs.ca.cadef``
+loads in its module body and aioca reads through. A run that reaches either handle directly
 calls C without going through any Python entry point; those attributes are
 listed below as documented cooperative bypasses rather than rows of the
 partition. A readonly run closes them, which is pinned here as well.
@@ -44,8 +44,8 @@ PUT_SYMBOLS: frozenset[str] = frozenset(
 #: Installed sources scanned: (top-level package, path inside the package).
 SCANNED_SOURCES: tuple[tuple[str, str], ...] = (("aioca", "_catools.py"),)
 
-#: Receivers a put site may call through. ``libca`` is pyepics' module-global
-#: handle to the loaded shared library; ``cadef`` is the ctypes binding aioca
+#: Receivers a put site may call through. ``libca`` is a user-installed
+#: pyepics' module-global handle to the loaded shared library; ``cadef`` is the ctypes binding aioca
 #: imports from ``epicscorelibs.ca``.
 _LIBCA_HANDLE = "epics.ca.libca"
 _CADEF_MODULE = "epicscorelibs.ca.cadef"
@@ -283,7 +283,7 @@ def test_readonly_closes_the_cadef_libca_bypasses() -> None:
 
     The handle predates the guard's ``ctypes`` gate, and a put symbol it has
     already resolved is cached on the instance, so the readonly table has to
-    name it. pyepics' handle is closed as the gate hands it out instead.
+    name it. A user-installed pyepics never gets a handle: its load is refused.
     """
     readonly = {(dotted, attr) for dotted, attrs in _READONLY_WRITE_TARGETS for attr in attrs}
     for row in COOPERATIVE_BYPASSES:
