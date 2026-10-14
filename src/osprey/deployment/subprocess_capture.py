@@ -539,7 +539,7 @@ def captured_failure_detail(
     # A stopped run's caller looked at the stall while it was still there to see;
     # that account is the detail, and the spool of a run that never ended holds
     # no "unhealthy" verdict to read.
-    found = getattr(exc, "detail", None)
+    found: str | None = getattr(exc, "detail", None)
     if found:
         return found
     spool_path = getattr(exc, "spool_path", None)

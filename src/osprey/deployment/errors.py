@@ -29,7 +29,7 @@ class CapturedProcessError(DeploymentError):
 
     def __init__(self, cmd: Sequence[str], returncode: int, spool_path: Path | None = None) -> None:
         self.cmd = list(cmd)
-        self.returncode = returncode
+        self.returncode: int | None = returncode
         self.spool_path = spool_path
         where = f" (output: {spool_path})" if spool_path is not None else ""
         super().__init__(f"Command '{' '.join(self.cmd)}' exited {returncode}{where}")
