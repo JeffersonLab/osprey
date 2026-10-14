@@ -711,6 +711,7 @@ def test_the_open_render_holds_no_login_surface_anywhere() -> None:
         "= /",
         "= /u/alice",
         "= /u/ariel",
+        "@osprey_terminal_starting",
     }
 
 

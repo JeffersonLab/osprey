@@ -1332,6 +1332,51 @@ def _no_companion_server_launches(request, monkeypatch):
 
 
 # ===================================================================
+# Bounded captured runs
+# ===================================================================
+
+
+@pytest.fixture(autouse=True, scope="function")
+def _bounded_runs_take_the_plain_spool_path(request):
+    """Route ``run_captured``'s bounded runs through its plain spool path.
+
+    A bounded run (a time limit or a watch, as every ``compose up`` now has)
+    starts its child with ``Popen`` in a process group of its own, because
+    stopping it has to reach that whole group. The deploy tests fake
+    ``subprocess.run`` — the plain spool path's one call — to record argv and
+    answer for compose. Without this, every one of them would let its
+    ``compose up`` escape to the real runtime through ``Popen``.
+
+    Only the runner is replaced: the argv, environment and spool a deploy test
+    observes are the ones the plain path gives a call, which is what the bounded
+    path gives it too. The runner's own tests opt out with
+    ``@pytest.mark.real_bounded_run``.
+
+    The patch is applied and undone here rather than through ``monkeypatch``:
+    an autouse fixture that requests ``monkeypatch`` moves its setup ahead of
+    the test's ``tmp_path``, so a test that patches ``os.open`` would still hold
+    that patch when ``tmp_path`` is removed at teardown.
+    """
+    if request.node.get_closest_marker("real_bounded_run"):
+        yield
+        return
+
+    from osprey.deployment import subprocess_capture
+
+    def _plain(cmd, *, env, cwd, spool_name, repo_root, check, **_bounds):
+        return subprocess_capture.run_captured(
+            cmd, env=env, cwd=cwd, spool_name=spool_name, repo_root=repo_root, check=check
+        )
+
+    real = subprocess_capture._run_bounded
+    subprocess_capture._run_bounded = _plain
+    try:
+        yield
+    finally:
+        subprocess_capture._run_bounded = real
+
+
+# ===================================================================
 # Marker-driven resource skip-gating
 # ===================================================================
 #

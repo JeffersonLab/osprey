@@ -889,7 +889,9 @@ def _stub_legacy_down(
     monkeypatch.setattr(container_lifecycle, "_env_file_args", lambda *a, **k: [])
     monkeypatch.setattr(container_lifecycle, "runtime_env", lambda config, env: dict(env))
     monkeypatch.setattr(
-        container_lifecycle, "with_plain_progress", lambda cmd: list(cmd) if cmd else ["docker"]
+        container_lifecycle,
+        "with_plain_progress",
+        lambda cmd, **k: list(cmd) if cmd else ["docker"],
     )
     monkeypatch.setattr(
         container_lifecycle, "get_runtime_command", lambda config: ["docker", "compose"]
