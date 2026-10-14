@@ -71,6 +71,53 @@ def _runtimes_to_try(config: Mapping[str, Any] | None) -> tuple[str, ...]:
     return ("docker", "podman")
 
 
+#: ``podman version 4.9.4`` at the start of a line: what ``docker --version``
+#: answers when ``docker`` is podman's Docker-CLI emulation rather than Docker.
+_PODMAN_VERSION_BANNER = re.compile(r"^podman version\b", re.IGNORECASE | re.MULTILINE)
+
+#: The notice the emulation prints on stderr before every command it forwards,
+#: unless the host has created ``/etc/containers/nodocker`` to quiet it.
+_PODMAN_EMULATION_NOTICE = "emulate docker cli using podman"
+
+
+def _docker_is_podman_emulation() -> bool:
+    """Whether ``docker`` on this host is podman's Docker-CLI emulation.
+
+    The ``podman-docker`` package (standard on RHEL) installs a ``docker``
+    that forwards every command to podman. It answers both runtime probes,
+    because podman answers them, so the probes alone would resolve it to a
+    ``docker compose`` argv that podman then hands to its own compose provider:
+    every docker-only flag reaches a provider that may reject it, and every
+    podman-only rule is skipped for a deployment that runs on podman.
+
+    Asked with ``docker --version``, which needs no daemon. A probe that cannot
+    run or does not answer reads as "not the emulation", leaving the verdict on
+    the runtime to the probes that follow it.
+    """
+    try:
+        result = _await_runtime_answer(["docker", "--version"], text=True)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    answer = f"{result.stdout or ''}\n{result.stderr or ''}"
+    return bool(_PODMAN_VERSION_BANNER.search(answer)) or (
+        _PODMAN_EMULATION_NOTICE in answer.lower()
+    )
+
+
+#: The refusal for a pinned ``docker`` that is podman's emulation. A pin is the
+#: operator's explicit choice, so it is never re-pointed at podman behind their
+#: back; the setting that matches the host is named instead. The pin may also be
+#: one an earlier ``osprey build`` recorded while answering ``auto``, before
+#: ``auto`` knew the emulation, so the rebuild that re-answers it is named too.
+_PINNED_DOCKER_IS_PODMAN = (
+    "container_runtime is docker, but `docker` on this host is podman's Docker-CLI "
+    "emulation (the podman-docker package): every container it starts runs under "
+    "podman. If the profile says `auto`, run `osprey build` again; it records podman "
+    "now. If docker was set on purpose, set `container_runtime: podman` instead, or "
+    "export CONTAINER_RUNTIME=podman."
+)
+
+
 def _await_runtime_answer(
     argv: Sequence[str], *, text: bool = False
 ) -> subprocess.CompletedProcess[Any]:
@@ -213,6 +260,10 @@ def get_runtime_command(config: Mapping[str, Any] | None = None) -> list[str]:
     runtime preference, so callers passing different configs (or none) each get
     the runtime their own inputs select.
 
+    A ``docker`` that is podman's Docker-CLI emulation is never served as
+    docker: ``auto`` passes over it to podman, which is what it runs on, and a
+    pin to ``docker`` is refused with the setting that matches the host.
+
     Args:
         config: Optional configuration mapping
 
@@ -220,7 +271,8 @@ def get_runtime_command(config: Mapping[str, Any] | None = None) -> list[str]:
         Command list: ['docker', 'compose'] or ['podman', 'compose']
 
     Raises:
-        RuntimeError: If no container runtime with compose support found
+        RuntimeError: If no container runtime with compose support found, or
+            ``docker`` is pinned and is podman's emulation.
     """
     candidates = _runtimes_to_try(config)
 
@@ -237,6 +289,15 @@ def get_runtime_command(config: Mapping[str, Any] | None = None) -> list[str]:
     skipped: list[tuple[str, _ProbeFailure]] = []
     for runtime in candidates:
         if not shutil.which(runtime):
+            continue
+
+        if runtime == "docker" and _docker_is_podman_emulation():
+            if candidates == ("docker",):
+                raise RuntimeError(_PINNED_DOCKER_IS_PODMAN)
+            logger.info(
+                "container_runtime: auto passed over `docker`: on this host it is podman's "
+                "Docker-CLI emulation, so the deployment is driven as podman."
+            )
             continue
 
         failure = _probe_runtime(runtime)
@@ -699,7 +760,7 @@ def runtime_env(
     return env
 
 
-def with_plain_progress(cmd: list[str]) -> list[str]:
+def with_plain_progress(cmd: list[str], *, provider: ComposeProvider | None) -> list[str]:
     """Add ``--progress plain`` to a docker compose argv so it cannot garble.
 
     Takes an already-resolved compose argv rather than resolving one itself,
@@ -718,13 +779,14 @@ def with_plain_progress(cmd: list[str]) -> list[str]:
     unreadable fragments. ``plain`` is append-only, so it has no frame
     arithmetic to get wrong.
 
-    Docker only, deliberately. ``--progress`` is a docker compose v2 flag;
-    ``podman compose`` delegates to whichever provider the host has, and a
-    provider that rejects an unknown flag would turn a cosmetic improvement
-    into a failed deploy. Podman hosts keep compose's own default, and lose
-    little: ``auto`` already resolves to ``plain`` whenever stdout is not a
-    terminal, which covers CI and systemd — the places a production deploy's
-    output is actually captured.
+    Docker Compose v2 behind the docker CLI only, deliberately, and both halves
+    are checked. ``--progress`` is a Docker Compose v2 flag, so the provider
+    that parses the argv has to be that one; ``podman compose`` delegates to
+    whichever provider the host has, and a provider that rejects an unknown
+    flag would turn a cosmetic improvement into a failed deploy. Podman hosts
+    keep compose's own default, and lose little: ``auto`` already resolves to
+    ``plain`` whenever stdout is not a terminal, which covers CI and systemd —
+    the places a production deploy's output is actually captured.
 
     ``--progress`` is a global flag, valid ahead of every compose subcommand,
     so callers append their ``-f``/``--env-file`` arguments and the subcommand
@@ -733,13 +795,16 @@ def with_plain_progress(cmd: list[str]) -> list[str]:
     Args:
         cmd: A compose argv base, e.g. ``["docker", "compose"]``, as returned
             by :func:`get_runtime_command`. Extended in place and returned, so
-            ``with_plain_progress(get_runtime_command(config))`` reads as one
-            expression at the call site.
+            ``with_plain_progress(get_runtime_command(config), provider=...)``
+            reads as one expression at the call site.
+        provider: The compose provider :func:`detect_compose_provider` found
+            behind ``cmd``. ``None`` (not probed) adds nothing.
 
     Returns:
-        The same list, with the flag appended when the runtime is docker.
+        The same list, with the flag appended when docker's CLI hands it to
+        Docker Compose v2.
     """
-    if cmd and cmd[0] == "docker":
+    if cmd and cmd[0] == "docker" and provider is ComposeProvider.DOCKER_V2:
         cmd.extend(("--progress", "plain"))
     return cmd
 

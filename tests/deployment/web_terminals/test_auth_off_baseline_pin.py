@@ -18,7 +18,7 @@ describes ``none``; its render is pinned by ``test_nginx_auth_surface.py``.
 
 So: a facility whose ``modules.web_terminals`` declares ``auth.method: token``
 (or no ``auth:`` block at all) and no ``authorization:`` block must render
-byte-for-byte what it rendered before this feature, with exactly six
+byte-for-byte what it rendered before this feature, with exactly seven
 exceptions:
 
   1. **the audit emitters and mounts** — ``OSPREY_AUDIT_IDENTITY``,
@@ -77,6 +77,14 @@ exceptions:
      every write. It is a perimeter rule that renders the same under every
      method, carries no account, role or claim, and names only the host
      ``deploy.fqdn`` already sets.
+  7. **the terminal-starting page** — ``error_page 502`` in every proxying
+     location, sending nginx's OWN 502 (nothing listening behind the terminal
+     yet) to one named location that answers with a self-reloading 503 page.
+     A terminal's app listens tens of seconds after its container starts, and
+     a browser left open across a restart meets that gap as a bare 502 that
+     reads as a broken deployment. It renders the same under every method,
+     reaches no status the app itself returns (``proxy_intercept_errors`` stays
+     off), and carries no account, role or claim.
 
 Everything else — every volume, header, ``location`` block, comment and blank
 line, and every port *site* (see the mask below) — must be untouched, with one
@@ -500,6 +508,19 @@ _REWORDED_NGINX_LINES = frozenset(
 #: may be replaced in the `token` render.
 _REPLACED_NGINX_LINES = frozenset({"    server_name _;"})
 
+#: The terminal-starting page's one response line, as the template spells it.
+_STARTING_PAGE_RETURN = (
+    '        return 503 \'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<meta http-equiv="refresh" content="5"><title>Terminal starting</title>'
+    "<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;"
+    "place-items:center;font:16px/1.5 system-ui,sans-serif;background:Canvas;"
+    "color:CanvasText}main{max-width:32rem;padding:1rem 1.5rem}p{opacity:.75}</style>"
+    "</head><body><main><h1>This terminal is not answering yet</h1><p>It is most likely "
+    "still starting, which takes up to a minute after a deploy or restart. This page "
+    "reloads itself every 5 seconds.</p></main></body></html>';"
+)
+
 #: Task 4.7 (nginx-identity-headers), ungated arm. Four clears per `/u/<user>/`
 #: location, and NOTHING else: no `auth_request_set`, no forward, no `/auth/`
 #: location — those render only with authentication on.
@@ -524,6 +545,18 @@ _ALLOWED_NGINX_LINES = Counter(
         "    access_log /dev/stdout osprey_sanitized;": 1,
         "    return 301 http://dls-deploy.dls.example.org:<port>$request_uri;": 1,
         "}": 1,
+        # The terminal-starting page — the SEVENTH exception to SC6. Each of
+        # the two proxying locations sends nginx's own 502 to one named
+        # location, which answers with a self-reloading 503. difflib pairs the
+        # named location's closing brace with the baseline's, so it counts as
+        # an indented `}` here.
+        "        error_page 502 = @osprey_terminal_starting;": 2,
+        "    location @osprey_terminal_starting {": 1,
+        "        default_type text/html;": 1,
+        "        add_header Retry-After 5 always;": 1,
+        '        add_header Cache-Control "no-store" always;': 1,
+        _STARTING_PAGE_RETURN: 1,
+        "    }": 1,
     }
 )
 

@@ -1107,12 +1107,16 @@ def _write_persona_project(root: Path, project_name: str, container_project_dir:
     config_text = f"project_name: {project_name}\n"
     dockerfile_text = (
         "FROM alpine:3.20\n"
-        "RUN adduser -D dispatch \\\n"
+        "RUN apk add --no-cache busybox-extras curl \\\n"
+        "    && adduser -D dispatch \\\n"
         "    && mkdir -p /data/claude-config \\\n"
         f"    && mkdir -p {container_project_dir}/var/agent_data \\\n"
         f"    && mkdir -p {container_project_dir}/.claude/skills \\\n"
-        f"    && chown -R dispatch:dispatch /data/claude-config {container_project_dir}\n"
-        'CMD ["tail", "-f", "/dev/null"]\n'
+        f"    && chown -R dispatch:dispatch /data/claude-config {container_project_dir} \\\n"
+        "    && mkdir -p /srv \\\n"
+        "    && echo ok > /srv/health\n"
+        'CMD ["sh", "-c", "exec httpd -f -p '
+        '\\"${OSPREY_TERMINAL_BIND_HOST:-127.0.0.1}:${OSPREY_TERMINAL_WEB_PORT}\\" -h /srv"]\n'
     )
     (root / "config.yml").write_text(config_text, encoding="utf-8")
     (root / "Dockerfile").write_text(dockerfile_text, encoding="utf-8")
