@@ -813,13 +813,15 @@ def test_a_worker_that_fails_leaves_as_promptly_as_one_that_answers() -> None:
 
     assert result.returncode != 0
     # The read fails because the channel never connected: aioca's connection
-    # timeout on this address, raised from ``cainfo``, which does no I/O of its
-    # own beyond waiting for the channel to connect.
+    # timeout on this address, raised from the worker's ``cainfo`` call, which
+    # does no I/O of its own beyond waiting for the channel to connect. The call
+    # site is matched rather than a frame name: aioca wraps ``cainfo`` in
+    # decorators, so which frame names it depends on the aioca version.
     *_, last = result.stderr.strip().splitlines()
     assert last == (
         "aioca._catools.CANothing: PARITY:NOT:SERVED: User specified timeout on IO operation expired"
     ), result.stderr
-    assert ", in cainfo\n" in result.stderr, result.stderr
+    assert "await aioca.cainfo(address" in result.stderr, result.stderr
     # The connect timeout is 1 s; libca's teardown alone is tens of seconds.
     assert elapsed < 15.0, f"the failed worker took {elapsed:.1f}s to leave"
 
