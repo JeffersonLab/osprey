@@ -8,6 +8,7 @@ the connector was called from.
 
 import asyncio
 import fnmatch
+import operator
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -71,9 +72,20 @@ _ALARM_NAMES = (
 
 # Channel Access field types, indexed by DBF code (db_access.h).
 _DBF_NAMES = ("string", "short", "float", "enum", "char", "long", "double")
-_DBF_SHORT, _DBF_FLOAT, _DBF_CHAR, _DBF_LONG, _DBF_DOUBLE = 1, 2, 4, 5, 6
+_DBF_SHORT, _DBF_FLOAT, _DBF_ENUM, _DBF_CHAR, _DBF_LONG, _DBF_DOUBLE = 1, 2, 3, 4, 5, 6
 _DBF_INTEGER = (_DBF_SHORT, _DBF_CHAR, _DBF_LONG)
 _DBF_REAL = (_DBF_FLOAT, _DBF_DOUBLE)
+
+#: The range each whole-number field type's wire form holds: DBR_SHORT is
+#: int16, DBR_ENUM uint16, DBR_CHAR uint8 and DBR_LONG int32. A number sent to
+#: one of these fields is converted by the IOC without a check, so 1.5 reaches
+#: a ``longout`` as 1 and 2**31 as -2147483648.
+_DBF_WHOLE_RANGES = {
+    _DBF_SHORT: (-(2**15), 2**15 - 1),
+    _DBF_ENUM: (0, 2**16 - 1),
+    _DBF_CHAR: (0, 2**8 - 1),
+    _DBF_LONG: (-(2**31), 2**31 - 1),
+}
 
 
 def _alarm_name(code: Any) -> str:
@@ -141,8 +153,54 @@ def _ca_plain(value: Any) -> Any:
     return value
 
 
-class _UnwritableText(ValueError):
-    """A string the channel's field type cannot hold; nothing was sent."""
+class _Unwritable(ValueError):
+    """A value the channel's field type cannot hold exactly; nothing was sent."""
+
+
+def _whole_number(element: Any, field_type: int) -> int:
+    """``element`` as the integer a whole-number field holds, exactly.
+
+    Text is read by the C rule an integer field reads it with
+    (:func:`c_numeral`); a number must already be whole. Either way the result
+    must fit the field's wire type. Raises :class:`_Unwritable` otherwise.
+    """
+    if isinstance(element, str):
+        number = c_numeral(element, integer_field=True)
+        if number is None:
+            raise _Unwritable(f"{element!r} is not a numeral an integer field reads")
+    elif isinstance(element, bytes | bytearray):
+        raise _Unwritable(f"{element!r} is not a whole number, and the channel holds integers")
+    else:
+        try:
+            number = operator.index(element)
+        except TypeError:
+            try:
+                real = float(element)
+            except (TypeError, ValueError):
+                real = None
+            if real is None or not real.is_integer():
+                raise _Unwritable(
+                    f"{element!r} is not a whole number, and the channel holds integers"
+                ) from None
+            number = int(real)
+    low, high = _DBF_WHOLE_RANGES[field_type]
+    if not low <= number <= high:
+        raise _Unwritable(f"{element!r} is outside the channel's integer range [{low}, {high}]")
+    return int(number)
+
+
+def _whole_numbers(value: Any, field_type: int) -> Any:
+    """``value`` as the whole number, or list of them, a whole-number field holds."""
+    if isinstance(value, list | tuple):
+        return [_whole_number(element, field_type) for element in value]
+    if hasattr(value, "__array__"):
+        import numpy
+
+        elements = numpy.asarray(value).tolist()
+        if isinstance(elements, list):
+            return [_whole_number(element, field_type) for element in elements]
+        return _whole_number(elements, field_type)
+    return _whole_number(value, field_type)
 
 
 def _ca_put_form(value: Any, field_type: Any, count: Any) -> tuple[Any, bool]:
@@ -157,24 +215,32 @@ def _ca_put_form(value: Any, field_type: Any, count: Any) -> tuple[Any, bool]:
     NUL, which is how a char waveform holds a string. String and enum fields
     take the text as it is: the IOC reads an enum's label itself.
 
-    Raises :class:`_UnwritableText` when the text cannot be written.
+    A number bound for a short, char, long or enum field, or each element of
+    an array bound for one, is sent only when the field holds it exactly: a
+    whole number within the field's wire range. A fraction, a NaN or a number
+    out of range is refused rather than cut down on its way in.
+
+    Raises :class:`_Unwritable` when the value cannot be written exactly.
     """
-    if not isinstance(value, str):
+    if isinstance(value, str):
+        if field_type == _DBF_CHAR and isinstance(count, int) and count > 1:
+            encoded = value.encode()
+            if len(encoded) >= count:
+                raise _Unwritable(
+                    f"text of {len(encoded)} bytes does not fit a {count}-element char array "
+                    "with its terminating NUL"
+                )
+            return value + "\0", True
+        if field_type in _DBF_INTEGER:
+            return _whole_number(value, field_type), False
+        if field_type in _DBF_REAL:
+            number = c_numeral(value, integer_field=False)
+            if number is None:
+                raise _Unwritable(f"{value!r} is not a numeral a floating-point field reads")
+            return number, False
         return value, False
-    if field_type == _DBF_CHAR and isinstance(count, int) and count > 1:
-        encoded = value.encode()
-        if len(encoded) >= count:
-            raise _UnwritableText(
-                f"text of {len(encoded)} bytes does not fit a {count}-element char array "
-                "with its terminating NUL"
-            )
-        return value + "\0", True
-    if field_type in _DBF_INTEGER or field_type in _DBF_REAL:
-        number = c_numeral(value, integer_field=field_type in _DBF_INTEGER)
-        if number is None:
-            kind = "an integer" if field_type in _DBF_INTEGER else "a floating-point"
-            raise _UnwritableText(f"{value!r} is not a numeral {kind} field reads")
-        return number, False
+    if field_type in _DBF_WHOLE_RANGES:
+        return _whole_numbers(value, field_type), False
     return value, False
 
 
@@ -856,15 +922,17 @@ class EPICSConnector(ControlSystemConnector):
         - ``("unacknowledged", failure)``: the put went out and its callback did
           not arrive in time. aioca reports this and a connect timeout with the
           same code, which is why connecting is a step of its own here.
-        - ``("unwritable", reason)``: the value is text the channel's field
-          type cannot hold (see :func:`_ca_put_form`), so nothing was sent.
+        - ``("unwritable", reason)``: the value is one the channel's field
+          type cannot hold exactly (see :func:`_ca_put_form`), so nothing was
+          sent.
         - ``("cs_refused", failure)``: the IOC's access security denied it.
         - ``("put_failed", failure)``: the IOC answered the put and did not
           take it (a disabled record, a value it could not convert).
         - ``("sent", (sent, as_text))``: sent, and, when ``wait``,
           acknowledged. ``sent`` is the value as it went out (text read into a
-          number for a numeric field), the one a confirming read is compared
-          with; ``as_text`` says it went to a char array as text.
+          number for a numeric field, a whole float as the integer it is), the
+          one a confirming read is compared with; ``as_text`` says it went to
+          a char array as text.
 
         Any other failure is raised: it leaves the outcome genuinely unknown,
         and every answer above claims to know it.
@@ -873,22 +941,17 @@ class EPICSConnector(ControlSystemConnector):
         connected = await aioca.connect(channel_address, timeout=timeout, throw=False)
         if not connected:
             return "not_sent", connected
-        datatype = None
-        sent, as_text = value, False
-        if isinstance(value, str):
-            info = await aioca.cainfo(channel_address, timeout=timeout, throw=False)
-            if isinstance(info, aioca.CANothing):
-                return "not_sent", info
-            try:
-                put_value, as_text = _ca_put_form(value, info.datatype, info.count)
-            except _UnwritableText as reason:
-                return "unwritable", reason
-            if as_text:
-                datatype = aioca.DBR_CHAR_STR
-            else:
-                sent = put_value
-        else:
-            put_value = value
+        # The channel's own field type decides what goes out. cainfo reads it
+        # from the channel just connected, without a round trip to the IOC.
+        info = await aioca.cainfo(channel_address, timeout=timeout, throw=False)
+        if isinstance(info, aioca.CANothing):
+            return "not_sent", info
+        try:
+            put_value, as_text = _ca_put_form(value, info.datatype, info.count)
+        except _Unwritable as reason:
+            return "unwritable", reason
+        datatype = aioca.DBR_CHAR_STR if as_text else None
+        sent = value if as_text else put_value
         done = await aioca.caput(
             channel_address, put_value, datatype=datatype, wait=wait, timeout=timeout, throw=False
         )

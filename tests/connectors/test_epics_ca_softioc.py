@@ -188,6 +188,11 @@ def test_reads_writes_and_monitors_over_the_wire(ioc, prefix):
     assert writes["text_hex_to_long"]["observed"] == 16
     assert writes["text_exponent_to_long"]["outcome"] == "REFUSED"
     assert writes["text_exponent_to_long"]["refusal_reason"] == "VALIDATION_ERROR"
+    # A number the integer field cannot hold exactly is refused unsent, never
+    # cut down by the IOC: 1.5 would land as 1, 2**31 as -2147483648.
+    for refused in ("fraction_to_long", "overflow_to_long"):
+        assert writes[refused]["outcome"] == "REFUSED", writes[refused]
+        assert writes[refused]["refusal_reason"] == "VALIDATION_ERROR"
     assert result["long_after_refusal"] == 16
     assert writes["text_exponent_to_ao"]["outcome"] == "CONFIRMED"
     assert writes["text_exponent_to_ao"]["observed"] == 2.5

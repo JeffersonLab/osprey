@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import aioca
+import numpy
 import pytest
 
 from osprey.connectors.control_system.base import (
@@ -32,7 +33,11 @@ from osprey.connectors.control_system.epics_connector import (
     _ChannelSubscription,
 )
 from tests.connectors._epics_fakes import (
+    DBR_CHAR,
+    DBR_DOUBLE,
     DBR_ENUM,
+    DBR_LONG,
+    DBR_SHORT,
     DBR_STRING,
     ECA_DISCONN,
     ECA_NOWTACCESS,
@@ -577,6 +582,128 @@ class TestWriteConfirmation:
 
         assert "4.7" in result.notes
         assert "5.0" in result.notes
+
+
+def _typed_write_connector(datatype, *, observed=5, count=None):
+    """A write connector whose channel is of field type ``datatype``.
+
+    ``cainfo`` answers the field type and element count of the channel's
+    reading, which is also what the confirming read returns.
+    """
+    reading = ca_reading(observed, datatype=datatype, count=count)
+    return _connector(aioca=FakeAioca({"SR:CH": FakeChannel(reading)}))
+
+
+@pytest.mark.usefixtures("writes_enabled")
+class TestWriteExactness:
+    """A value goes out exactly as written, or not at all.
+
+    The IOC converts a number into the channel's field type without checking
+    it, so a soft IOC stored 1.5 sent to a ``longout`` as 1 and 2**31 as
+    -2147483648, and with confirmation off nothing reported either. Such a
+    write is refused before ``caput``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("confirm", [True, False])
+    @pytest.mark.parametrize(
+        ("datatype", "value", "reason"),
+        [
+            (DBR_LONG, 1.5, "not a whole number"),
+            (DBR_LONG, "1.9", "not a numeral an integer field reads"),
+            (DBR_LONG, 2**31, "outside the channel's integer range"),
+            (DBR_LONG, "2147483648", "outside the channel's integer range"),
+            (DBR_SHORT, 40000, "outside the channel's integer range"),
+            (DBR_CHAR, 300, "outside the channel's integer range"),
+            (DBR_CHAR, -1, "outside the channel's integer range"),
+            (DBR_LONG, [1.5, 2], "not a whole number"),
+            (DBR_LONG, [2**31], "outside the channel's integer range"),
+            (DBR_LONG, numpy.array([1.0, 2.5]), "not a whole number"),
+            (DBR_LONG, float("nan"), "not a whole number"),
+            (DBR_LONG, float("inf"), "not a whole number"),
+            (DBR_ENUM, 1.5, "not a whole number"),
+            (DBR_ENUM, -1, "outside the channel's integer range"),
+        ],
+    )
+    async def test_a_value_the_integer_channel_cannot_hold_is_refused_unsent(
+        self, datatype, value, reason, confirm
+    ):
+        connector = _typed_write_connector(datatype)
+
+        result = await connector.write_channel("SR:CH", value, confirm=confirm)
+
+        assert result.outcome is WriteOutcome.REFUSED
+        assert result.refusal_reason == "VALIDATION_ERROR"
+        assert reason in result.error_message
+        assert connector._aioca.puts == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("datatype", "value", "sent"),
+        [
+            (DBR_LONG, 2.0, 2),
+            (DBR_LONG, "0x10", 16),
+            (DBR_LONG, -(2**31), -(2**31)),
+            (DBR_SHORT, True, 1),
+            (DBR_CHAR, 255, 255),
+            (DBR_LONG, [2.0, 3], [2, 3]),
+            (DBR_LONG, numpy.array([2.0, 3.0]), [2, 3]),
+            (DBR_ENUM, 1, 1),
+            (DBR_DOUBLE, 1.5, 1.5),
+        ],
+    )
+    async def test_a_value_the_channel_holds_exactly_is_sent(self, datatype, value, sent):
+        """A whole float bound for an integer field goes out as the integer it is."""
+        connector = _typed_write_connector(datatype)
+
+        await connector.write_channel("SR:CH", value, confirm=False)
+
+        [(_name, put_value, _wait)] = connector._aioca.puts
+        assert put_value == sent
+        assert type(put_value) is type(sent)
+
+    @pytest.mark.asyncio
+    async def test_text_for_a_char_array_is_sent_as_a_string(self):
+        connector = _typed_write_connector(DBR_CHAR, observed=[0] * 32)
+
+        await connector.write_channel("SR:CH", "text for a char array", confirm=False)
+
+        [(_name, put_value, _wait)] = connector._aioca.puts
+        assert put_value == "text for a char array\0"
+        caput = next(call for call in connector._aioca.calls if call[0] == "caput")
+        assert caput[2]["datatype"] == FakeAioca.DBR_CHAR_STR
+
+    @pytest.mark.asyncio
+    async def test_a_channel_that_never_connects_fails_with_nothing_sent(self):
+        connector = _write_connector(connected=False)
+
+        result = await connector.write_channel("SR:CH", 5.0)
+
+        assert result.outcome is WriteOutcome.FAILED
+        assert "no value was sent" in result.error_message
+        assert connector._aioca.puts == []
+
+    @pytest.mark.asyncio
+    async def test_text_a_char_array_holds_is_confirmed(self):
+        """Text goes to a char array as its bytes plus a NUL, and a confirming
+        read returns those bytes, never the text."""
+        held = [ord(c) for c in "hello"] + [0, 0]
+        connector = _typed_write_connector(DBR_CHAR, observed=held)
+
+        result = await connector.write_channel("SR:CH", "hello")
+
+        assert result.outcome is WriteOutcome.CONFIRMED
+        assert result.observed_value == "hello"
+
+    @pytest.mark.asyncio
+    async def test_text_a_char_array_cut_short_is_a_mismatch(self):
+        held = [ord(c) for c in "hel"] + [0, 0, 0, 0]
+        connector = _typed_write_connector(DBR_CHAR, observed=held)
+
+        result = await connector.write_channel("SR:CH", "hello")
+
+        assert result.outcome is WriteOutcome.MISMATCH
+        assert result.observed_value == "hel"
 
 
 @pytest.mark.usefixtures("writes_enabled")

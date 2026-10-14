@@ -79,6 +79,13 @@ _AIOCA_SOURCE = """
     async def connect(pvname, timeout=None, throw=True, **kwargs):
         return CANothing(pvname)
 
+    class _Info:
+        datatype = 6  # DBF_DOUBLE
+        count = 1
+
+    async def cainfo(pvname, timeout=None, throw=True, **kwargs):
+        return _Info()
+
     async def caput(pvname, value, wait=False, timeout=None, throw=True, **kwargs):
         calls.append((pvname, value, door_is_open()))
         return CANothing(pvname)

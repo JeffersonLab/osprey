@@ -80,6 +80,8 @@ async def contract(prefix: str) -> dict[str, Any]:
         "access_denied": (f"{prefix}:RO", 5.0, {}),
         "text_hex_to_long": (f"{prefix}:LONG", "0x10", {}),
         "text_exponent_to_long": (f"{prefix}:LONG", "1e3", {}),
+        "fraction_to_long": (f"{prefix}:LONG", 1.5, {}),
+        "overflow_to_long": (f"{prefix}:LONG", 2**31, {"confirm": False}),
         "text_exponent_to_ao": (f"{prefix}:AO", "2.5e0", {}),
         "text_to_char_waveform": (f"{prefix}:WF", "/data/run42", {}),
         "disabled_record": (f"{prefix}:DISABLED", 1.0, {}),
