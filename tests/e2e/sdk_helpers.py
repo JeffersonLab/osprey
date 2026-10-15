@@ -35,7 +35,9 @@ from typing import Any
 
 import yaml
 
+from osprey.facility.views.simulator import withdraw_scenarios
 from osprey.port_layout import BLOCK_SIZE
+from osprey_connectors.simulation.view import SimulatorView
 from tests import ci_diagnostics
 from tests.e2e.profile_edits import set_pairs
 from tests.e2e.provider import build_model, build_provider
@@ -681,28 +683,19 @@ def conceal_scenario_ground_truth(repo: Path, *scenarios: str) -> None:
     :data:`SCENARIO_INTEGRITY_DISALLOWED_TOOLS` alone.
 
     Raises:
-        AssertionError: if a named scenario is not listed in the view (template
-            drift — the caller believes it concealed something it did not).
+        KeyError: a named scenario is not listed in the view (template drift —
+            the caller believes it concealed something it did not); nothing is
+            concealed.
+        AssertionError: a concealed name is still readable from the agent's tree.
     """
     facility_dirs = (
         Path(repo) / "data" / "facility" / "scenarios",
         render_dir(repo) / "data" / "facility" / "scenarios",
     )
-    view = render_dir(repo) / "data" / "simulator"
-    listing = view / "scenarios.json"
-    document = json.loads(listing.read_text(encoding="utf-8"))
-    listed = {str(entry["name"]) for entry in document["scenarios"]}
+    view = SimulatorView.of_render(render_dir(repo))
+    withdraw_scenarios(view.path, scenarios)
     for name in scenarios:
-        assert name in listed, (
-            f"no scenario {name!r} in {listing} to conceal — the view layout may have "
-            "changed; the benchmark's answer key would stay readable by the agent"
-        )
-    document["scenarios"] = [
-        entry for entry in document["scenarios"] if str(entry["name"]) not in scenarios
-    ]
-    listing.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    for name in scenarios:
-        for directory in (*facility_dirs, view / "scenarios"):
+        for directory in facility_dirs:
             (directory / f"{name}.yaml").unlink(missing_ok=True)
             shutil.rmtree(directory / name, ignore_errors=True)
 
@@ -725,7 +718,9 @@ def conceal_scenario_ground_truth(repo: Path, *scenarios: str) -> None:
 
     # Self-check: prove the concealment rather than assume it. The state dir is
     # included because Read is deliberately allowed for agent-data artifacts.
-    trees = [tree for tree in (*facility_dirs, view, state_dir) if tree.is_dir()]
+    still_listed = {str(entry["name"]) for entry in SimulatorView.open(view.path).scenarios()}
+    assert not still_listed & set(scenarios), f"the simulator view still lists {still_listed}"
+    trees = [tree for tree in (*facility_dirs, view.path, state_dir) if tree.is_dir()]
     for name in scenarios:
         leaked = [
             p
