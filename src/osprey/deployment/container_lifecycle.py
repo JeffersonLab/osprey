@@ -44,6 +44,7 @@ from osprey.deployment.compose_generator import (
     resolve_repo_root,
     resolve_site_image_axes,
 )
+from osprey.deployment.compose_watch import watched_compose_up
 from osprey.deployment.deploy_summary import log_endpoint_summary
 from osprey.deployment.errors import (
     ArchiverClientMissingError,
@@ -5653,7 +5654,10 @@ def _stage_archiver_store(
     _report_group("archiver")
     up_cmd = base_cmd + ["up", "-d", _ARCHIVER_STORE_SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="archiver-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="archiver-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("archiver store started")
 
     # Assembled while the store boots, and before the health budget starts: this
@@ -5914,7 +5918,10 @@ def _stage_ariel_store(
     _report_group("ariel")
     up_cmd = base_cmd + ["up", "-d", _ARIEL_STORE_SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="ariel-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="ariel-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("ARIEL store started")
 
     ariel_config = _ariel_store_config(config, project_dir)
@@ -6290,7 +6297,10 @@ def _stage_graphdb_store(config, compose_files, env, project_dir, *, provider=No
     _report_group("graphdb")
     up_cmd = base_cmd + ["up", "-d", GRAPHDB_SERVICE_NAME]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="graphdb-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="graphdb-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("graph store started")
 
     try:
@@ -6347,7 +6357,10 @@ def _stage_openobserve_identity(config, compose_files, env, project_dir, *, prov
     _report_group("openobserve")
     up_cmd = base_cmd + ["up", "-d", openobserve_provision.SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="openobserve-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="openobserve-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("telemetry store started")
 
     outcome = openobserve_provision.provision_ingest_identity(
@@ -7092,7 +7105,7 @@ def _start_stack(
         run_env = runtime_env(config, {**env, **compose_provider_env(provider, repo_root)})
 
         base_cmd = compose_base_cmd(
-            with_plain_progress(get_runtime_command(config)),
+            with_plain_progress(get_runtime_command(config), provider=provider),
             compose_files,
             repo_root,
             _env_file_args(repo_root, provider),
@@ -7192,7 +7205,10 @@ def _start_stack(
 
         logger.debug(f"Running command:\n    {' '.join(cmd)}")
         if detached:
-            run_captured(cmd, env=run_env, spool_name="compose-up", repo_root=repo_root)
+            with watched_compose_up(cmd, config=config, env=run_env) as bounds:
+                run_captured(
+                    cmd, env=run_env, spool_name="compose-up", repo_root=repo_root, **bounds
+                )
             _report_step("containers started")
             log_endpoint_summary(config, compose_files)
         else:
@@ -8015,7 +8031,7 @@ def down_deployment(repo_root: Path | str) -> None:
     provider = _compose_provider(config)
 
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),
@@ -8175,7 +8191,7 @@ def deploy_down(config_path, dev_mode=False):
             logger.debug(f"  - {f}")
 
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),
@@ -8255,7 +8271,7 @@ def deploy_restart(config_path, detached=False, expose_network=False):
     repo_root = resolve_repo_root(config, config_path)
     provider = _compose_provider(config)
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),

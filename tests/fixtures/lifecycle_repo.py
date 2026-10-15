@@ -729,6 +729,9 @@ config:
   # Links from the agent's answers to each entry's page in your logbook: one
   # URL with an `{entry_id}` placeholder. Unset, the agent shows plain IDs.
   # ariel.entry_url_template: "https://logbook.example.org/entry/{entry_id}"
+  # The ARIEL tab inside the web terminal offers Browse and New Entry; the
+  # agent searches the logbook. true adds the Search view there and opens on it.
+  # ariel.embedded_search: false
   # osprey:panel-port ariel
   # The ARIEL tab's own web server. It launches when `ariel` is in
   # `web_panels:` above, on this deployment's ARIEL slot; OSPREY_ARIEL_PORT or
@@ -2797,7 +2800,8 @@ compose_project() {
 
 # The runtime `osprey up` uses: CONTAINER_RUNTIME, then container_runtime in
 # build/config.yml, then docker before podman — the first whose compose
-# and daemon both answer.
+# and daemon both answer. A `docker` that is podman's Docker-CLI emulation
+# (podman-docker) is passed over, as `osprey up` passes over it.
 container_runtime() {
   local pinned="${CONTAINER_RUNTIME:-}" runtime
   if [ -z "$pinned" ] && [ -f "$REPO_ROOT/build/config.yml" ]; then
@@ -2809,6 +2813,11 @@ container_runtime() {
     podman) printf podman; return ;;
   esac
   for runtime in docker podman; do
+    if [ "$runtime" = docker ] && command -v docker >/dev/null 2>&1 \\
+      && docker --version 2>&1 \\
+        | grep -qi -e '^podman version' -e 'emulate docker cli using podman'; then
+      continue
+    fi
     if command -v "$runtime" >/dev/null 2>&1 \\
       && "$runtime" compose version >/dev/null 2>&1 && "$runtime" ps >/dev/null 2>&1; then
       printf '%s' "$runtime"

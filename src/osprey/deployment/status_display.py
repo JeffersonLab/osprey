@@ -1358,7 +1358,7 @@ def logs_command(repo_root, *, service=None, follow=False, tail=None):
         _env_file_args(repo_root, provider) if (repo_root / COMPOSE_ENV_FILENAME).exists() else []
     )
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         env_file_args,

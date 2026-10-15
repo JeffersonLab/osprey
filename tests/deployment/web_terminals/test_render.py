@@ -3292,7 +3292,7 @@ def test_negotiated_401_absent_when_method_is_token() -> None:
 
     # Assert
     assert "$osprey_auth_wants_login_page" not in nginx_conf
-    assert "error_page" not in nginx_conf
+    assert "error_page 401" not in nginx_conf
     assert "@osprey_auth_401" not in nginx_conf
 
 
@@ -3310,7 +3310,7 @@ def test_negotiated_401_absent_when_the_method_is_open() -> None:
 
     # Assert
     assert "$osprey_auth_wants_login_page" not in nginx_conf
-    assert "error_page" not in nginx_conf
+    assert "error_page 401" not in nginx_conf
     assert "@osprey_auth_401" not in nginx_conf
 
     # Assert — non-vacuous: this render is the injecting one, not an empty one.

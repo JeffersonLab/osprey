@@ -190,7 +190,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11', '3.12', '3.14']
         os: [ubuntu-latest, macos-latest]
         # Each cell runs as two jobs. `cli` is tests/cli alone; `rest` is
         # everything else. Measured on the per-test event logs of a full run,
@@ -226,7 +226,12 @@ jobs:
         # coverage cell: same interpreter, different OS, so a failure isolates
         # to the OS. 3.11 stays covered on ubuntu, and on macOS everywhere
         # except pull requests.
-        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.11","os":"macos-latest"}]' || '[]') }}
+        #
+        # 3.14 runs on ubuntu only, on every event. It is in the matrix for the
+        # interpreter's own removals -- behaviour 3.11 and 3.12 only warn about
+        # and 3.14 raises on -- and those do not depend on the OS. A third macOS
+        # cell would put a main-push run at 6 macOS jobs against the ceiling of 5.
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python-version":"3.11","os":"macos-latest"},{"python-version":"3.14","os":"macos-latest"}]' || '[{"python-version":"3.14","os":"macos-latest"}]') }}
 
     steps:
     - name: Checkout repository
@@ -1622,6 +1627,8 @@ jobs:
             --ignore=tests/e2e/claude_code/test_channel_finder_mcp_benchmarks.py \
             --ignore=tests/e2e/test_openobserve_telemetry.py \
             --ignore=tests/e2e/test_sdk_helpers.py \
+            --ignore=tests/e2e/test_scripted_model.py \
+            --ignore=tests/e2e/claude_code/test_safety_gates_scripted.py \
             --ignore=tests/e2e/test_mcp_readiness.py \
             --ignore=tests/e2e/test_dispatch_deploy_render.py \
             --ignore=tests/e2e/web_terminals/test_scaffold_render_roundtrip.py \
@@ -1629,6 +1636,7 @@ jobs:
             --ignore=tests/e2e/web_terminals/test_loopback_chokepoint.py \
             --ignore=tests/e2e/web_terminals/test_session_restart_e2e.py \
             --ignore=tests/e2e/web_terminals/test_terminal_auth_e2e.py \
+            --ignore=tests/e2e/web_terminals/test_persona_permissions_scripted.py \
             --ignore=tests/e2e/tier2
         fi
     # On failure only: container logs, exit codes, `OOMKilled`, and runner
@@ -1659,7 +1667,7 @@ jobs:
     # the model-free proof off the pull requests that move the dependency
     # set, which is where it is worth the most.
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    # Not measured on a runner: no lane has run these ten files on their own.
+    # Not measured on a runner: no lane has run these files on their own.
     # Sized against tiled-roundtrip-e2e (30), the closest shape here — one
     # compose stack, no image build, no model call — with the step cap under
     # the job cap so a hang fails THIS step and leaves the capture step below
@@ -1731,6 +1739,8 @@ jobs:
         uv run pytest \
           tests/e2e/test_openobserve_telemetry.py \
           tests/e2e/test_sdk_helpers.py \
+          tests/e2e/test_scripted_model.py \
+          tests/e2e/claude_code/test_safety_gates_scripted.py \
           tests/e2e/test_mcp_readiness.py \
           tests/e2e/test_dispatch_deploy_render.py \
           tests/e2e/web_terminals/test_scaffold_render_roundtrip.py \
@@ -1738,6 +1748,7 @@ jobs:
           tests/e2e/web_terminals/test_loopback_chokepoint.py \
           tests/e2e/web_terminals/test_session_restart_e2e.py \
           tests/e2e/web_terminals/test_terminal_auth_e2e.py \
+          tests/e2e/web_terminals/test_persona_permissions_scripted.py \
           --deselect tests/e2e/test_openobserve_telemetry.py::test_live_agent_metric_lands \
           -v --tb=short --durations=15 -n 4 --dist loadfile \
           --junitxml=junit-e2e-no-model.xml
