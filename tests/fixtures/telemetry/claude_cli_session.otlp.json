@@ -1,7 +1,7 @@
 {
  "authorization": "Basic <identity>:<password>",
- "captured_at": "2026-10-15T14:56:48.496243Z",
- "cli_version": "2.1.294",
+ "captured_at": "2026-10-15T20:43:08.190589Z",
+ "cli_version": "2.1.300",
  "protocol": "http/json",
  "requests": [
   {
@@ -13,7 +13,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -43,7 +43,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -64,7 +64,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -76,7 +76,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -92,8 +92,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076203702000000",
-             "timeUnixNano": "1792076204701000000"
+             "startTimeUnixNano": "1792096983101000000",
+             "timeUnixNano": "1792096984101000000"
             }
            ],
            "isMonotonic": true
@@ -103,7 +103,7 @@
         ],
         "scope": {
          "name": "com.anthropic.claude_code",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -121,7 +121,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -151,7 +151,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -165,7 +165,7 @@
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -177,7 +177,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -195,7 +195,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.684Z"
+             "stringValue": "2026-10-15T20:43:03.081Z"
             }
            },
            {
@@ -241,15 +241,15 @@
            "stringValue": "claude_code.managed_settings_resolved"
           },
           "droppedAttributesCount": 0,
-          "observedTimeUnixNano": "1792076203684000000",
-          "timeUnixNano": "1792076203684000000"
+          "observedTimeUnixNano": "1792096983081000000",
+          "timeUnixNano": "1792096983081000000"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -261,7 +261,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -279,7 +279,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.698Z"
+             "stringValue": "2026-10-15T20:43:03.097Z"
             }
            },
            {
@@ -321,7 +321,7 @@
            {
             "key": "has_hooks",
             "value": {
-             "boolValue": false
+             "boolValue": true
             }
            },
            {
@@ -365,15 +365,15 @@
            "stringValue": "claude_code.plugin_loaded"
           },
           "droppedAttributesCount": 0,
-          "observedTimeUnixNano": "1792076203698000000",
-          "timeUnixNano": "1792076203698000000"
+          "observedTimeUnixNano": "1792096983097000000",
+          "timeUnixNano": "1792096983097000000"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -385,7 +385,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -403,7 +403,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.698Z"
+             "stringValue": "2026-10-15T20:43:03.097Z"
             }
            },
            {
@@ -445,7 +445,7 @@
            {
             "key": "has_hooks",
             "value": {
-             "boolValue": false
+             "boolValue": true
             }
            },
            {
@@ -489,15 +489,15 @@
            "stringValue": "claude_code.plugin_loaded"
           },
           "droppedAttributesCount": 0,
-          "observedTimeUnixNano": "1792076203698000000",
-          "timeUnixNano": "1792076203698000000"
+          "observedTimeUnixNano": "1792096983097000000",
+          "timeUnixNano": "1792096983097000000"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -509,7 +509,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -527,7 +527,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.698Z"
+             "stringValue": "2026-10-15T20:43:03.097Z"
             }
            },
            {
@@ -569,7 +569,7 @@
            {
             "key": "has_hooks",
             "value": {
-             "boolValue": false
+             "boolValue": true
             }
            },
            {
@@ -613,15 +613,15 @@
            "stringValue": "claude_code.plugin_loaded"
           },
           "droppedAttributesCount": 0,
-          "observedTimeUnixNano": "1792076203698000000",
-          "timeUnixNano": "1792076203698000000"
+          "observedTimeUnixNano": "1792096983097000000",
+          "timeUnixNano": "1792096983097000000"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -633,7 +633,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -651,7 +651,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.745Z"
+             "stringValue": "2026-10-15T20:43:03.148Z"
             }
            },
            {
@@ -663,7 +663,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -687,7 +687,7 @@
            {
             "key": "message.uuid",
             "value": {
-             "stringValue": "83894444-3db3-4b22-9dc8-c3d2bfa194c7"
+             "stringValue": "4eb23d74-a0f0-41f9-82cd-adb3efe73d3b"
             }
            }
           ],
@@ -696,17 +696,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076203745000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076203745000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096983148000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096983148000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -718,7 +718,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -736,7 +736,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:43.767Z"
+             "stringValue": "2026-10-15T20:43:03.165Z"
             }
            },
            {
@@ -748,7 +748,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -760,7 +760,7 @@
            {
             "key": "body_length",
             "value": {
-             "stringValue": "77802"
+             "stringValue": "78333"
             }
            },
            {
@@ -784,7 +784,7 @@
            {
             "key": "request_body_id",
             "value": {
-             "stringValue": "4b1745bb-7f7c-493f-a2ce-d74b93960e7a"
+             "stringValue": "7dc89889-26cc-4a9b-af86-8c5662611398"
             }
            }
           ],
@@ -793,15 +793,15 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076203767000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076203767000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096983165000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096983165000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          }
         ],
         "scope": {
          "name": "com.anthropic.claude_code.events",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -819,7 +819,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -849,7 +849,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -863,7 +863,7 @@
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -875,7 +875,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -893,7 +893,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:45.051Z"
+             "stringValue": "2026-10-15T20:43:04.260Z"
             }
            },
            {
@@ -905,7 +905,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -917,7 +917,7 @@
            {
             "key": "body_length",
             "value": {
-             "stringValue": "77736"
+             "stringValue": "78267"
             }
            },
            {
@@ -941,7 +941,7 @@
            {
             "key": "request_body_id",
             "value": {
-             "stringValue": "0e52c0a5-9e7a-4a60-9267-d1db89017f4f"
+             "stringValue": "105e2079-b0b9-4ba2-bfbe-2f49b294d3cd"
             }
            }
           ],
@@ -950,15 +950,15 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076205051000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076205051000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096984260000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096984260000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          }
         ],
         "scope": {
          "name": "com.anthropic.claude_code.events",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -976,7 +976,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -1006,7 +1006,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -1022,12 +1022,12 @@
            "aggregationTemporality": 1,
            "dataPoints": [
             {
-             "asDouble": 0.003394825,
+             "asDouble": 0.003416075,
              "attributes": [
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -1039,7 +1039,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -1067,8 +1067,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076206695000000",
-             "timeUnixNano": "1792076206701000000"
+             "startTimeUnixNano": "1792096986132000000",
+             "timeUnixNano": "1792096987105000000"
             }
            ],
            "isMonotonic": true
@@ -1087,7 +1087,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -1099,7 +1099,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -1133,8 +1133,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076206695000000",
-             "timeUnixNano": "1792076206701000000"
+             "startTimeUnixNano": "1792096986132000000",
+             "timeUnixNano": "1792096987105000000"
             },
             {
              "asDouble": 84,
@@ -1142,7 +1142,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -1154,7 +1154,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -1188,8 +1188,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076206695000000",
-             "timeUnixNano": "1792076206701000000"
+             "startTimeUnixNano": "1792096986132000000",
+             "timeUnixNano": "1792096987105000000"
             },
             {
              "asDouble": 0,
@@ -1197,7 +1197,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -1209,7 +1209,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -1243,16 +1243,16 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076206695000000",
-             "timeUnixNano": "1792076206701000000"
+             "startTimeUnixNano": "1792096986132000000",
+             "timeUnixNano": "1792096987105000000"
             },
             {
-             "asDouble": 26821,
+             "asDouble": 26991,
              "attributes": [
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -1264,7 +1264,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -1298,8 +1298,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076206695000000",
-             "timeUnixNano": "1792076206701000000"
+             "startTimeUnixNano": "1792096986132000000",
+             "timeUnixNano": "1792096987105000000"
             }
            ],
            "isMonotonic": true
@@ -1309,7 +1309,7 @@
         ],
         "scope": {
          "name": "com.anthropic.claude_code",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -1327,7 +1327,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -1357,7 +1357,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -1371,7 +1371,7 @@
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1383,7 +1383,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -1401,7 +1401,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:46.696Z"
+             "stringValue": "2026-10-15T20:43:06.132Z"
             }
            },
            {
@@ -1413,7 +1413,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -1437,7 +1437,7 @@
            {
             "key": "tool_use_id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
@@ -1458,17 +1458,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076206696000000",
-          "spanId": "c4b97dbaa5eee715",
-          "timeUnixNano": "1792076206696000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096986132000000",
+          "spanId": "57ca78fe2a590a3a",
+          "timeUnixNano": "1792096986132000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1480,7 +1480,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -1498,7 +1498,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:46.699Z"
+             "stringValue": "2026-10-15T20:43:06.137Z"
             }
            },
            {
@@ -1510,7 +1510,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -1540,31 +1540,43 @@
            {
             "key": "cache_creation_tokens",
             "value": {
-             "intValue": 26821
+             "intValue": 26991
+            }
+           },
+           {
+            "key": "cache_creation_5m_tokens",
+            "value": {
+             "intValue": 26991
+            }
+           },
+           {
+            "key": "cache_creation_1h_tokens",
+            "value": {
+             "intValue": 0
             }
            },
            {
             "key": "cost_usd",
             "value": {
-             "doubleValue": 0.003394825
+             "doubleValue": 0.003416075
             }
            },
            {
             "key": "cost_usd_micros",
             "value": {
-             "intValue": 3395
+             "intValue": 3416
             }
            },
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 1649
+             "intValue": 1878
             }
            },
            {
             "key": "ttft_ms",
             "value": {
-             "intValue": 1442
+             "intValue": 1657
             }
            },
            {
@@ -1591,17 +1603,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076206699000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076206699000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096986137000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096986137000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1613,7 +1625,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -1631,7 +1643,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:46.699Z"
+             "stringValue": "2026-10-15T20:43:06.137Z"
             }
            },
            {
@@ -1643,7 +1655,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -1673,19 +1685,19 @@
            {
             "key": "request_body_id",
             "value": {
-             "stringValue": "0e52c0a5-9e7a-4a60-9267-d1db89017f4f"
+             "stringValue": "105e2079-b0b9-4ba2-bfbe-2f49b294d3cd"
             }
            },
            {
             "key": "message.id",
             "value": {
-             "stringValue": "msg_bdrk_dj5dfgsfz3t5thaorugquuvff3rzsdpgxi2vremjggp7gf3744aa"
+             "stringValue": "msg_bdrk_wslrxg6bkzpb2qgmrcm6upbdg5tcxkj5h5svgtg3dle3yuyo72bq"
             }
            },
            {
             "key": "message.uuid",
             "value": {
-             "stringValue": "88ae38da-921f-47a8-a5a3-a4f8cfc5512f"
+             "stringValue": "cb36fc5f-5df9-4f21-be69-78d3f82c6f69"
             }
            }
           ],
@@ -1694,17 +1706,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076206699000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076206699000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096986137000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096986137000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1716,7 +1728,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -1734,7 +1746,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:47.035Z"
+             "stringValue": "2026-10-15T20:43:06.522Z"
             }
            },
            {
@@ -1746,7 +1758,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -1758,7 +1770,7 @@
            {
             "key": "tool_use_id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
@@ -1770,7 +1782,7 @@
            {
             "key": "duration_ms",
             "value": {
-             "stringValue": "339"
+             "stringValue": "389"
             }
            },
            {
@@ -1803,17 +1815,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076207035000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076207035000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096986522000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096986522000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1825,7 +1837,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -1843,7 +1855,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:47.043Z"
+             "stringValue": "2026-10-15T20:43:06.529Z"
             }
            },
            {
@@ -1855,7 +1867,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -1867,7 +1879,7 @@
            {
             "key": "body_length",
             "value": {
-             "stringValue": "75349"
+             "stringValue": "75880"
             }
            },
            {
@@ -1891,7 +1903,7 @@
            {
             "key": "request_body_id",
             "value": {
-             "stringValue": "c53f304d-acb1-48ed-a55d-6298860c4225"
+             "stringValue": "a7e45ef8-3dcb-45bf-a4b8-ebf52a70c737"
             }
            }
           ],
@@ -1900,15 +1912,15 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076207043000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076207043000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096986529000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096986529000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          }
         ],
         "scope": {
          "name": "com.anthropic.claude_code.events",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -1926,7 +1938,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -1956,7 +1968,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -1970,7 +1982,7 @@
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -1982,7 +1994,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -2000,7 +2012,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:48.356Z"
+             "stringValue": "2026-10-15T20:43:07.958Z"
             }
            },
            {
@@ -2012,7 +2024,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -2036,7 +2048,7 @@
            {
             "key": "cache_read_tokens",
             "value": {
-             "intValue": 26821
+             "intValue": 26991
             }
            },
            {
@@ -2046,27 +2058,39 @@
             }
            },
            {
+            "key": "cache_creation_5m_tokens",
+            "value": {
+             "intValue": 119
+            }
+           },
+           {
+            "key": "cache_creation_1h_tokens",
+            "value": {
+             "intValue": 0
+            }
+           },
+           {
             "key": "cost_usd",
             "value": {
-             "doubleValue": 0.000287285
+             "doubleValue": 0.000288985
             }
            },
            {
             "key": "cost_usd_micros",
             "value": {
-             "intValue": 287
+             "intValue": 289
             }
            },
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 1314
+             "intValue": 1429
             }
            },
            {
             "key": "ttft_ms",
             "value": {
-             "intValue": 1307
+             "intValue": 1413
             }
            },
            {
@@ -2093,17 +2117,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076208356000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076208356000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096987958000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096987958000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -2115,7 +2139,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -2133,7 +2157,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:48.357Z"
+             "stringValue": "2026-10-15T20:43:07.958Z"
             }
            },
            {
@@ -2145,7 +2169,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -2163,7 +2187,7 @@
            {
             "key": "message.uuid",
             "value": {
-             "stringValue": "ae7215fd-e2c1-4925-8b74-ab35b4ff4835"
+             "stringValue": "db73b130-eae8-47fd-81b6-cb6016f2bf9a"
             }
            },
            {
@@ -2184,17 +2208,17 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076208357000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076208357000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096987958000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096987958000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -2206,7 +2230,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -2224,7 +2248,7 @@
            {
             "key": "event.timestamp",
             "value": {
-             "stringValue": "2026-10-15T14:56:48.357Z"
+             "stringValue": "2026-10-15T20:43:07.958Z"
             }
            },
            {
@@ -2236,7 +2260,7 @@
            {
             "key": "prompt.id",
             "value": {
-             "stringValue": "df5d2787-7ea0-4dff-8230-cfadf6646563"
+             "stringValue": "548c2f8b-ff4c-4833-9104-de5f670ec4c7"
             }
            },
            {
@@ -2266,19 +2290,19 @@
            {
             "key": "request_body_id",
             "value": {
-             "stringValue": "c53f304d-acb1-48ed-a55d-6298860c4225"
+             "stringValue": "a7e45ef8-3dcb-45bf-a4b8-ebf52a70c737"
             }
            },
            {
             "key": "message.id",
             "value": {
-             "stringValue": "msg_bdrk_pz2nj5guxdcgc6qdyf7finhfuzkhqy6zrh3eitvtcgwxf5fczp5q"
+             "stringValue": "msg_bdrk_5p6hca2ekxfdrbg64rq7gkgbswtpo7ygakffbpq7jydqepkxsqyq"
             }
            },
            {
             "key": "message.uuid",
             "value": {
-             "stringValue": "ae7215fd-e2c1-4925-8b74-ab35b4ff4835"
+             "stringValue": "db73b130-eae8-47fd-81b6-cb6016f2bf9a"
             }
            }
           ],
@@ -2287,15 +2311,15 @@
           },
           "droppedAttributesCount": 0,
           "flags": 1,
-          "observedTimeUnixNano": "1792076208357000000",
-          "spanId": "054ab23cb2e46793",
-          "timeUnixNano": "1792076208357000000",
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "observedTimeUnixNano": "1792096987958000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "timeUnixNano": "1792096987958000000",
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          }
         ],
         "scope": {
          "name": "com.anthropic.claude_code.events",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -2313,7 +2337,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -2343,7 +2367,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -2359,12 +2383,12 @@
            "aggregationTemporality": 1,
            "dataPoints": [
             {
-             "asDouble": 0.000287285,
+             "asDouble": 0.000288985,
              "attributes": [
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2376,7 +2400,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2404,8 +2428,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208354000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987105000000",
+             "timeUnixNano": "1792096987965000000"
             }
            ],
            "isMonotonic": true
@@ -2424,7 +2448,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2436,7 +2460,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2470,8 +2494,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208354000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987105000000",
+             "timeUnixNano": "1792096987965000000"
             },
             {
              "asDouble": 8,
@@ -2479,7 +2503,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2491,7 +2515,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2525,16 +2549,16 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208354000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987105000000",
+             "timeUnixNano": "1792096987965000000"
             },
             {
-             "asDouble": 26821,
+             "asDouble": 26991,
              "attributes": [
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2546,7 +2570,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2580,8 +2604,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208354000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987105000000",
+             "timeUnixNano": "1792096987965000000"
             },
             {
              "asDouble": 119,
@@ -2589,7 +2613,7 @@
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2601,7 +2625,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2635,8 +2659,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208354000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987105000000",
+             "timeUnixNano": "1792096987965000000"
             }
            ],
            "isMonotonic": true
@@ -2650,12 +2674,12 @@
            "aggregationTemporality": 1,
            "dataPoints": [
             {
-             "asDouble": 4.649,
+             "asDouble": 4.848,
              "attributes": [
               {
                "key": "terminal.session",
                "value": {
-                "stringValue": "contract-f8e503ddc7a3"
+                "stringValue": "contract-d733b7c87b7d"
                }
               },
               {
@@ -2667,7 +2691,7 @@
               {
                "key": "session.id",
                "value": {
-                "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+                "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
                }
               },
               {
@@ -2683,8 +2707,8 @@
                }
               }
              ],
-             "startTimeUnixNano": "1792076208361000000",
-             "timeUnixNano": "1792076208365000000"
+             "startTimeUnixNano": "1792096987963000000",
+             "timeUnixNano": "1792096987965000000"
             }
            ],
            "isMonotonic": true
@@ -2694,7 +2718,7 @@
         ],
         "scope": {
          "name": "com.anthropic.claude_code",
-         "version": "2.1.294"
+         "version": "2.1.300"
         }
        }
       ]
@@ -2712,7 +2736,7 @@
         {
          "key": "terminal.session",
          "value": {
-          "stringValue": "contract-f8e503ddc7a3"
+          "stringValue": "contract-d733b7c87b7d"
          }
         },
         {
@@ -2742,7 +2766,7 @@
         {
          "key": "service.version",
          "value": {
-          "stringValue": "2.1.294"
+          "stringValue": "2.1.300"
          }
         }
        ],
@@ -2760,7 +2784,7 @@
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -2772,7 +2796,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -2782,9 +2806,21 @@
             }
            },
            {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
             "key": "span.type",
             "value": {
              "stringValue": "tool.blocked_on_user"
+            }
+           },
+           {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -2809,26 +2845,26 @@
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076206695783125",
+          "endTimeUnixNano": "1792096986132774417",
           "events": [],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.tool.blocked_on_user",
-          "parentSpanId": "9f6cd13a00d51947",
-          "spanId": "c4b97dbaa5eee715",
-          "startTimeUnixNano": "1792076206693000000",
+          "parentSpanId": "bbc7572dadb25900",
+          "spanId": "57ca78fe2a590a3a",
+          "startTimeUnixNano": "1792096986130000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -2840,13 +2876,19 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
             "key": "terminal.type",
             "value": {
              "stringValue": "ghostty"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
             }
            },
            {
@@ -2886,6 +2928,12 @@
             }
            },
            {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
+            }
+           },
+           {
             "key": "query_source_safe",
             "value": {
              "stringValue": "sdk"
@@ -2894,7 +2942,7 @@
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 2936
+             "intValue": 2974
             }
            },
            {
@@ -2918,7 +2966,7 @@
            {
             "key": "cache_creation_tokens",
             "value": {
-             "intValue": 26821
+             "intValue": 26991
             }
            },
            {
@@ -2936,13 +2984,13 @@
            {
             "key": "ttft_ms",
             "value": {
-             "intValue": 1442
+             "intValue": 1657
             }
            },
            {
             "key": "first_content_ms",
             "value": {
-             "intValue": 1443
+             "intValue": 1657
             }
            },
            {
@@ -2973,7 +3021,7 @@
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076206699129042",
+          "endTimeUnixNano": "1792096986137009083",
           "events": [
            {
             "attributes": [
@@ -2986,7 +3034,7 @@
             ],
             "droppedAttributesCount": 0,
             "name": "gen_ai.request.attempt",
-            "timeUnixNano": "1792076203766714084"
+            "timeUnixNano": "1792096983166159083"
            },
            {
             "attributes": [
@@ -2999,27 +3047,27 @@
             ],
             "droppedAttributesCount": 0,
             "name": "gen_ai.request.attempt",
-            "timeUnixNano": "1792076205050667292"
+            "timeUnixNano": "1792096984260337000"
            }
           ],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.llm_request",
-          "parentSpanId": "054ab23cb2e46793",
-          "spanId": "dd6e7291a5f8cbb5",
-          "startTimeUnixNano": "1792076203763000000",
+          "parentSpanId": "139c87f1ae8d2c9b",
+          "spanId": "ea8c0c0162480662",
+          "startTimeUnixNano": "1792096983163000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -3031,7 +3079,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -3041,27 +3089,39 @@
             }
            },
            {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
             "key": "span.type",
             "value": {
              "stringValue": "tool.execution"
             }
            },
            {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
+            }
+           },
+           {
             "key": "tool_use_id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
             "key": "gen_ai.tool.call.id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 339
+             "intValue": 389
             }
            },
            {
@@ -3074,26 +3134,26 @@
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076207034973042",
+          "endTimeUnixNano": "1792096986520899750",
           "events": [],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.tool.execution",
-          "parentSpanId": "9f6cd13a00d51947",
-          "spanId": "c3a477e707e10361",
-          "startTimeUnixNano": "1792076206696000000",
+          "parentSpanId": "bbc7572dadb25900",
+          "spanId": "546d30a01642557d",
+          "startTimeUnixNano": "1792096986132000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -3105,13 +3165,19 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
             "key": "terminal.type",
             "value": {
              "stringValue": "ghostty"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
             }
            },
            {
@@ -3130,6 +3196,24 @@
             "key": "tool_name_safe",
             "value": {
              "stringValue": "Bash"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "execute_tool"
+            }
+           },
+           {
+            "key": "gen_ai.tool.name",
+            "value": {
+             "stringValue": "Bash"
+            }
+           },
+           {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -3153,26 +3237,26 @@
            {
             "key": "tool_use_id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
             "key": "gen_ai.tool.call.id",
             "value": {
-             "stringValue": "toolu_bdrk_01FxwXvGwLMhPW4NC2v3md8e"
+             "stringValue": "toolu_bdrk_019LSXJ4MY6HGPDoZwVGX8iP"
             }
            },
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 342
+             "intValue": 392
             }
            }
           ],
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076207034912333",
+          "endTimeUnixNano": "1792096986520815292",
           "events": [
            {
             "attributes": [
@@ -3191,27 +3275,27 @@
             ],
             "droppedAttributesCount": 0,
             "name": "tool.output",
-            "timeUnixNano": "1792076207034846375"
+            "timeUnixNano": "1792096986520761417"
            }
           ],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.tool",
-          "parentSpanId": "054ab23cb2e46793",
-          "spanId": "9f6cd13a00d51947",
-          "startTimeUnixNano": "1792076206693000000",
+          "parentSpanId": "139c87f1ae8d2c9b",
+          "spanId": "bbc7572dadb25900",
+          "startTimeUnixNano": "1792096986129000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -3223,13 +3307,19 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
             "key": "terminal.type",
             "value": {
              "stringValue": "ghostty"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
             }
            },
            {
@@ -3269,6 +3359,12 @@
             }
            },
            {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
+            }
+           },
+           {
             "key": "query_source_safe",
             "value": {
              "stringValue": "sdk"
@@ -3277,7 +3373,7 @@
            {
             "key": "duration_ms",
             "value": {
-             "intValue": 1315
+             "intValue": 1430
             }
            },
            {
@@ -3295,7 +3391,7 @@
            {
             "key": "cache_read_tokens",
             "value": {
-             "intValue": 26821
+             "intValue": 26991
             }
            },
            {
@@ -3319,13 +3415,13 @@
            {
             "key": "ttft_ms",
             "value": {
-             "intValue": 1307
+             "intValue": 1413
             }
            },
            {
             "key": "first_content_ms",
             "value": {
-             "intValue": 1308
+             "intValue": 1414
             }
            },
            {
@@ -3356,7 +3452,7 @@
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076208356949334",
+          "endTimeUnixNano": "1792096987958351709",
           "events": [
            {
             "attributes": [
@@ -3369,27 +3465,27 @@
             ],
             "droppedAttributesCount": 0,
             "name": "gen_ai.request.attempt",
-            "timeUnixNano": "1792076207043199042"
+            "timeUnixNano": "1792096986529433375"
            }
           ],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.llm_request",
-          "parentSpanId": "054ab23cb2e46793",
-          "spanId": "a0a03fcce90eb1f1",
-          "startTimeUnixNano": "1792076207042000000",
+          "parentSpanId": "139c87f1ae8d2c9b",
+          "spanId": "40888d4115c6c058",
+          "startTimeUnixNano": "1792096986528000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          },
          {
           "attributes": [
            {
             "key": "terminal.session",
             "value": {
-             "stringValue": "contract-f8e503ddc7a3"
+             "stringValue": "contract-d733b7c87b7d"
             }
            },
            {
@@ -3401,7 +3497,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "1dc329dd-e61d-4241-8d83-45e31babbbd3"
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -3411,9 +3507,27 @@
             }
            },
            {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
             "key": "span.type",
             "value": {
              "stringValue": "interaction"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "invoke_agent"
+            }
+           },
+           {
+            "key": "gen_ai.conversation.id",
+            "value": {
+             "stringValue": "bb1af18d-a6d1-4ce8-a1f6-b088b297e9b8"
             }
            },
            {
@@ -3449,25 +3563,25 @@
            {
             "key": "interaction.duration_ms",
             "value": {
-             "intValue": 4649
+             "intValue": 4847
             }
            }
           ],
           "droppedAttributesCount": 0,
           "droppedEventsCount": 0,
           "droppedLinksCount": 0,
-          "endTimeUnixNano": "1792076208360818000",
+          "endTimeUnixNano": "1792096987962285500",
           "events": [],
           "flags": 257,
           "kind": 1,
           "links": [],
           "name": "claude_code.interaction",
-          "spanId": "054ab23cb2e46793",
-          "startTimeUnixNano": "1792076203712000000",
+          "spanId": "139c87f1ae8d2c9b",
+          "startTimeUnixNano": "1792096983115000000",
           "status": {
            "code": 0
           },
-          "traceId": "4e35051bc59d15d3683cf60e978fb1eb"
+          "traceId": "a509b693621c08253705b9eee5279ad1"
          }
         ]
        }
