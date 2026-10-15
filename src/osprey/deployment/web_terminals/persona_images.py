@@ -38,7 +38,7 @@ from osprey.deployment.web_terminals.personas import (
     effective_image_source,
 )
 from osprey.deployment.wheel_build import _staged_dev_artifact_paths
-from osprey.docs_links import installer_remedy
+from osprey.docs_links import setup_remedy
 from osprey.utils.config import ConfigBuilder
 from osprey.utils.dotenv import ENV_LOCAL_FILENAME
 from osprey.utils.log_filter import quiet_logger
@@ -150,8 +150,9 @@ def _resolve_persona_claude_cli_version(project_path: str) -> str | None:
     except Exception as exc:
         logger.warning("Could not read %s for CLAUDE_CLI_VERSION: %s", config_path, exc)
         return None
-    version = persona_config.get("claude_code", {}).get("cli_version")
-    return str(version) if version else None
+    from osprey.agent_runner.launcher import pinned_cli_version
+
+    return pinned_cli_version(persona_config.get("claude_code") or {})
 
 
 def _persona_image_build_cmd(
@@ -404,8 +405,8 @@ def _canonical_delta_reference(persona_name: str) -> str:
 #: rejected by either one is sent to the same fix.
 PREDATES_DELTA_REMEDY = (
     "A variant build that predates the persona-delta layout has no delta yet. "
-    + installer_remedy(
-        "the installer converts an existing variant into a persona delta over the "
+    + setup_remedy(
+        "the setup converts an existing variant into a persona delta over the "
         "profile this deployment is built from"
     )
 )
@@ -417,7 +418,7 @@ def _persona_delta_remedy(persona_name: str, profile_root: Path) -> str:
     Names both spellings the operator needs — the catalog value to write and the
     file it has to resolve to — from one place, so the several ways an entry can
     be wrong cannot end up recommending different fixes. Ends with
-    :data:`PREDATES_DELTA_REMEDY`, which links the installer's page, because the
+    :data:`PREDATES_DELTA_REMEDY`, which links the guided setup's page, because the
     operator most likely to read this is one whose project predates the
     persona-delta layout: they have a variant build in some older shape and
     need it converted, which is a bigger job than editing one catalog value.

@@ -44,6 +44,7 @@ from osprey.deployment.compose_generator import (
     resolve_repo_root,
     resolve_site_image_axes,
 )
+from osprey.deployment.compose_watch import watched_compose_up
 from osprey.deployment.deploy_summary import log_endpoint_summary
 from osprey.deployment.errors import (
     ArchiverClientMissingError,
@@ -67,6 +68,7 @@ from osprey.deployment.runtime_helper import (
     PODMAN_COMPOSE_PROVIDER_REMEDY,
     ComposeProvider,
     UnsupportedComposeProviderError,
+    buildkit_missing,
     detect_compose_provider,
     get_runtime_command,
     podman_compose_provider_advisory,
@@ -2077,9 +2079,11 @@ def _resolve_claude_cli_version(config: dict) -> str:
     single source of that fallback (``osprey.cli.templates.scaffolding``), so the
     build-time CLI pin never drifts from the value the Dockerfile documents.
     """
-    version = config.get("claude_code", {}).get("cli_version")
+    from osprey.agent_runner.launcher import pinned_cli_version
+
+    version = pinned_cli_version(config.get("claude_code") or {})
     if version:
-        return str(version)
+        return version
     # Lazy import: keep the CLI-templates package off the deploy import path
     # unless the fallback is actually needed.
     from osprey.cli.templates.scaffolding import _DEFAULT_CLAUDE_CLI_VERSION
@@ -4382,6 +4386,41 @@ def _preflight_bluesky_network_backend(config: dict) -> None:
     )
 
 
+def _preflight_buildkit(config: dict) -> None:
+    """Refuse a docker image build this host cannot parse, before anything is built.
+
+    See :func:`~osprey.deployment.runtime_helper.buildkit_missing` for what is
+    asked and why podman is exempt. A refusal rather than an advisory: unlike
+    the provider pairing below, a Docker without BuildKit fails every build of
+    every service image, so there is no host on which carrying on helps.
+
+    A host that runs prebuilt images builds nothing, so it is never asked.
+
+    Total on a host with no usable runtime, like its sibling below:
+    ``verify_runtime_is_running`` owns that refusal.
+
+    The environment is the one the build itself runs with -- the process
+    environment with the shell values the entry-time ``.env`` load replaced put
+    back -- so a ``DOCKER_BUILDKIT`` the build would see is the one read here.
+
+    :param config: Raw deploy config, for the runtime and the prebuilt switch.
+    :raises RuntimeError: Docker would build these images with the legacy builder.
+    """
+    if _resolve_prebuilt_images(config):
+        return
+
+    try:
+        runtime = get_runtime_command(config)[0]
+    except RuntimeError:
+        return
+
+    from osprey.utils.config import dotenv_shell_overrides
+
+    refusal = buildkit_missing(runtime, {**os.environ, **dotenv_shell_overrides()})
+    if refusal is not None:
+        raise RuntimeError(refusal)
+
+
 def _preflight_podman_compose_provider(config: dict, provider: ComposeProvider) -> None:
     """Name the podman + Docker-Compose-v2 registry break before anything is built.
 
@@ -5083,7 +5122,10 @@ def _stage_archiver_store(
     _report_group("archiver")
     up_cmd = base_cmd + ["up", "-d", _ARCHIVER_STORE_SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="archiver-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="archiver-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("archiver store started")
 
     # Assembled while the store boots, and before the health budget starts: this
@@ -5333,7 +5375,10 @@ def _stage_ariel_store(
     _report_group("ariel")
     up_cmd = base_cmd + ["up", "-d", _ARIEL_STORE_SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="ariel-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="ariel-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("ARIEL store started")
 
     ariel_config = _ariel_store_config(config, project_dir)
@@ -5701,7 +5746,10 @@ def _stage_graphdb_store(config, compose_files, env, project_dir, *, provider=No
     _report_group("graphdb")
     up_cmd = base_cmd + ["up", "-d", GRAPHDB_SERVICE_NAME]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="graphdb-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="graphdb-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("graph store started")
 
     try:
@@ -5758,7 +5806,10 @@ def _stage_openobserve_identity(config, compose_files, env, project_dir, *, prov
     _report_group("openobserve")
     up_cmd = base_cmd + ["up", "-d", openobserve_provision.SERVICE]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="openobserve-store-up", repo_root=project_dir)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="openobserve-store-up", repo_root=project_dir, **bounds
+        )
     _report_step("telemetry store started")
 
     outcome = openobserve_provision.provision_ingest_identity(
@@ -6302,6 +6353,10 @@ def _start_stack(
     # the image build, which is the only thing it is trying to get ahead of.
     _preflight_podman_compose_provider(config, provider)
 
+    # Asks the host too, so it sits below the own-file refusals for the same
+    # reason; above every build, which is what it exists to get ahead of.
+    _preflight_buildkit(config)
+
     # Advisory, and last of the .env preflights so it reads the files every
     # provisioner above has finished writing: the shell and the env chain can
     # disagree, and which side compose substitutes is provider-scoped, so a
@@ -6492,7 +6547,7 @@ def _start_stack(
         run_env = runtime_env(config, {**env, **compose_provider_env(provider, repo_root)})
 
         base_cmd = compose_base_cmd(
-            with_plain_progress(get_runtime_command(config)),
+            with_plain_progress(get_runtime_command(config), provider=provider),
             compose_files,
             repo_root,
             _env_file_args(repo_root, provider),
@@ -6592,7 +6647,10 @@ def _start_stack(
 
         logger.debug(f"Running command:\n    {' '.join(cmd)}")
         if detached:
-            run_captured(cmd, env=run_env, spool_name="compose-up", repo_root=repo_root)
+            with watched_compose_up(cmd, config=config, env=run_env) as bounds:
+                run_captured(
+                    cmd, env=run_env, spool_name="compose-up", repo_root=repo_root, **bounds
+                )
             _report_step("containers started")
             log_endpoint_summary(config, compose_files)
         else:
@@ -7415,7 +7473,7 @@ def down_deployment(repo_root: Path | str) -> None:
     provider = _compose_provider(config)
 
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),
@@ -7575,7 +7633,7 @@ def deploy_down(config_path, dev_mode=False):
             logger.debug(f"  - {f}")
 
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),
@@ -7655,7 +7713,7 @@ def deploy_restart(config_path, detached=False, expose_network=False):
     repo_root = resolve_repo_root(config, config_path)
     provider = _compose_provider(config)
     cmd = compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         compose_files,
         repo_root,
         _env_file_args(repo_root, provider),

@@ -1945,6 +1945,18 @@ keys:
       unset, or a template that does not format, emits no `entry_url` (the
       second is logged once) and the read itself never fails.
     default: null
+  ariel.embedded_search:
+    rendered: false
+    evidence: 'config_dict\.get\("embedded_search"\)'
+    note: >-
+      Whether the ARIEL panel embedded in the web terminal offers its Search
+      view and opens on it. Off by default: embedded, the agent searches the
+      logbook, so the panel opens on Browse and redirects a `#search` hash
+      there. The standalone page always offers Search. Commented in the two
+      presets that ship an `ariel:` block; parsed by ARIELConfig.from_dict and
+      reported to the page as `embedded_search` in GET /api/capabilities. A
+      value that is not a boolean is refused at config parse.
+    default: false
   ariel.entry_text:
     rendered: false
     evidence: 'config_dict\.get\("entry_text"\)'
@@ -2022,6 +2034,14 @@ keys:
     note: >-
       Default false, the opposite of its acronym sibling: expanding prose into
       operator shorthand adds noise far more often than recall.
+    default: false
+  ariel.vocabulary.expand_entries:
+    evidence: '_vocab_bool\(data, "expand_entries"'
+    note: >-
+      Default false: an entry is embedded as written. Turning it on changes the
+      text every existing embedding row was built from, so pair the switch with
+      `osprey ariel reembed --force`; the measured-best setup is on plus a
+      re-embed.
     default: false
   ariel.vocabulary.expand_modes:
     rendered: false
@@ -3653,7 +3673,7 @@ render_contexts:
     panels_on: web.panels.channel-finder.enabled
     default_panel_set: web.default_panel
     panel_presets_set: web.presets
-  expected_union_size: 346
+  expected_union_size: 347
   note_union_size: >-
     An assertion: the guard derives the union on every run and fails when this
     figure disagrees with it, or when it is missing. It moves whenever the

@@ -32,6 +32,7 @@ from tests.e2e import sdk_helpers
 from tests.e2e.provider import (
     E2E_MODEL,
     E2E_PROVIDER_ENV,
+    FORCE_MODEL_ENV,
     FORCE_PROVIDER_ENV,
     MODEL_FREE_MARKER,
     REFUSAL_LISTED_TESTS,
@@ -65,14 +66,16 @@ _REPO_ROOT = _TESTS_ROOT.parent
 
 @pytest.fixture(autouse=True)
 def _no_ambient_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Start every case from a shell that names no provider.
+    """Start every case from a shell that names no provider and forces no model.
 
-    A developer running the fast lane with either variable exported would
-    otherwise see cases pass or fail on their environment rather than on what
-    each case sets.
+    A developer running the fast lane with any of these variables exported —
+    or a CI workflow that forces one model onto every e2e lane and hands the
+    unit lane the same environment — would otherwise see cases pass or fail on
+    their environment rather than on what each case sets.
     """
     monkeypatch.delenv(E2E_PROVIDER_ENV, raising=False)
     monkeypatch.delenv(FORCE_PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(FORCE_MODEL_ENV, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +110,27 @@ def test_an_empty_override_is_unset_for_both_readers(monkeypatch: pytest.MonkeyP
 # ---------------------------------------------------------------------------
 
 
-def test_build_model_keeps_what_the_call_site_pinned() -> None:
+def test_build_model_keeps_what_the_call_site_pinned(monkeypatch) -> None:
+    monkeypatch.delenv(FORCE_MODEL_ENV, raising=False)
     assert build_model("claude-opus-5") == "claude-opus-5"
 
 
-def test_a_call_site_that_names_no_model_builds_with_haiku() -> None:
-    assert build_model(None) == "claude-haiku-4-5-20251001"
+def test_a_call_site_that_names_no_model_builds_with_haiku(monkeypatch) -> None:
+    monkeypatch.delenv(FORCE_MODEL_ENV, raising=False)
+    assert build_model(None) == "claude-haiku-5-5"
+
+
+@pytest.mark.parametrize("pinned", [None, "claude-opus-5"])
+def test_a_forced_model_replaces_the_build_model(monkeypatch, pinned) -> None:
+    """A subagent runs the model its definition was built with, so a run forced
+    onto one model has to build with it."""
+    monkeypatch.setenv(FORCE_MODEL_ENV, " forced-model-x ")
+    assert build_model(pinned) == "forced-model-x"
+
+
+def test_an_empty_forced_model_is_unset(monkeypatch) -> None:
+    monkeypatch.setenv(FORCE_MODEL_ENV, "  ")
+    assert build_model("claude-opus-5") == "claude-opus-5"
 
 
 def test_the_provider_ci_names_serves_the_lane_model() -> None:

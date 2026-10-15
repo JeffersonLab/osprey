@@ -23,6 +23,7 @@ import pytest
 
 from osprey.agent_runner import primitives, sdk_env
 from osprey.agent_runner.primitives import provider_env_for_project
+from tests._agent_cli import STUB_AGENT_CLI
 
 
 def _write_config(project_dir: Path, provider: str) -> None:
@@ -298,9 +299,17 @@ def test_native_provider_env_block_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression: a literal-URL native config still resolves to the exact
-    same env block as the raw resolver — locks the e2e no-op guarantee."""
+    same env block as the raw resolver — locks the e2e no-op guarantee.
+
+    The guarantee is about an UNFORCED run, so the e2e force variables are
+    cleared first: a shell (or a CI workflow) that forces one model onto every
+    e2e lane would otherwise rewrite the model vars and fail this on the
+    environment rather than on the resolver.
+    """
     from osprey.agent_runner.provider_env import ClaudeCodeModelResolver
 
+    monkeypatch.delenv("OSPREY_E2E_FORCE_MODEL", raising=False)
+    monkeypatch.delenv("OSPREY_E2E_PROXY_BASE_URL", raising=False)
     _write_config(tmp_path, "cborg")
     monkeypatch.setenv("CBORG_API_KEY", "sk-cborg-secret")
 
@@ -667,12 +676,92 @@ class TestBuildAgentOptions:
             permission_mode="bypassPermissions",
             max_turns=25,
             max_budget_usd=2.0,
-            env=dict(self._ROUTED_ENV),
+            env={**self._ROUTED_ENV, "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"},
             setting_sources=["project"],
             disallowed_tools=["Write"],
             mcp_servers=str(tmp_path / ".mcp.json"),
             strict_mcp_config=True,
+            cli_path=STUB_AGENT_CLI,
         )
+
+    @pytest.mark.parametrize("config", [None, "claude_code: {}\n"], ids=["no-config", "unpinned"])
+    @pytest.mark.parametrize("caller_env", [None, {}], ids=["routed", "caller-env"])
+    @pytest.mark.usefixtures("routing", "real_agent_cli")
+    def test_build_agent_options_always_sets_cli_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config: str | None,
+        caller_env: dict[str, str] | None,
+    ) -> None:
+        """An unset ``cli_path`` sends the SDK to the binary bundled in its package."""
+
+        if config is not None:
+            (tmp_path / "config.yml").write_text(config, encoding="utf-8")
+        monkeypatch.setattr("shutil.which", lambda *_a, **_k: "/opt/bin/claude")
+
+        options = primitives.build_agent_options(tmp_path, disallowed_tools=[], env=caller_env)
+
+        assert options.cli_path == "/opt/bin/claude"
+
+    @pytest.mark.usefixtures("routing", "real_agent_cli")
+    def test_build_agent_options_passes_the_projects_pinned_build_as_cli_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from osprey.agent_runner import launcher
+
+        (tmp_path / "config.yml").write_text(
+            "claude_code:\n  cli_version: '2.1.146'\n", encoding="utf-8"
+        )
+        monkeypatch.setattr("shutil.which", lambda *_a, **_k: "/usr/local/bin/claude")
+        monkeypatch.setattr(launcher, "_probe_cli_version", lambda _exe: "2.1.146")
+
+        options = primitives.build_agent_options(tmp_path, disallowed_tools=[])
+
+        assert options.cli_path == "/usr/local/bin/claude"
+
+    @pytest.mark.parametrize("resolved", [None, "", "claude", "bin/claude", Path("/x/claude")])
+    @pytest.mark.usefixtures("routing", "real_agent_cli")
+    def test_options_without_a_resolved_absolute_cli_path_cannot_be_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolved: Any
+    ) -> None:
+        """Whatever the resolver hands back, the SDK is never left to its bundle."""
+        from osprey.agent_runner import launcher
+        from osprey.agent_runner.errors import AgentCliUnavailableError
+
+        monkeypatch.setattr(launcher, "project_agent_cli_path", lambda _dir: resolved)
+
+        with pytest.raises(AgentCliUnavailableError, match="bundled inside its own package"):
+            primitives.build_agent_options(tmp_path, disallowed_tools=[], env={})
+
+    @pytest.mark.parametrize("found", ["2.1.999", None], ids=["another-version", "no-claude"])
+    @pytest.mark.parametrize("caller_env", [None, {}], ids=["routed", "caller-env"])
+    @pytest.mark.usefixtures("real_agent_cli")
+    def test_no_options_are_built_and_nothing_is_started_without_the_pinned_build(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        routing: dict[str, Any],
+        found: str | None,
+        caller_env: dict[str, str] | None,
+    ) -> None:
+        from osprey.agent_runner import launcher
+        from osprey.agent_runner.errors import AgentCliUnavailableError
+
+        (tmp_path / "config.yml").write_text(
+            "claude_code:\n  cli_version: '2.1.146'\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "shutil.which", lambda *_a, **_k: "/usr/local/bin/claude" if found else None
+        )
+        monkeypatch.setattr(launcher, "_probe_cli_version", lambda _exe: found)
+
+        with pytest.raises(AgentCliUnavailableError) as refused:
+            primitives.build_agent_options(tmp_path, disallowed_tools=[], env=caller_env)
+
+        assert "npm install -g @anthropic-ai/claude-code@2.1.146" in str(refused.value)
+        # The refusal comes before the run is routed: no proxy was started for it.
+        routing["start_proxy_for"].assert_not_called()
 
     @pytest.mark.parametrize("setting_sources", [None, ["project"], []], ids=repr)
     @pytest.mark.parametrize(
@@ -801,15 +890,15 @@ class TestBuildAgentOptions:
 
         assert options.hooks is None
 
-    def test_a_caller_env_is_used_verbatim_and_nothing_is_resolved(
+    def test_a_caller_env_is_kept_and_nothing_is_resolved(
         self, tmp_path: Path, routing: dict[str, Any]
     ) -> None:
         env = {"ANTHROPIC_BASE_URL": "https://caller.example", "ANTHROPIC_MODEL": "m-x"}
 
         options = primitives.build_agent_options(tmp_path, disallowed_tools=[], env=env)
 
-        assert options.env == env
-        assert options.env is not env
+        assert options.env == {**env, "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}
+        assert env == {"ANTHROPIC_BASE_URL": "https://caller.example", "ANTHROPIC_MODEL": "m-x"}
         assert options.model is None
         for name in (
             "sdk_env",

@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import yaml
 
 from tests.e2e.profile_edits import set_pairs
+from tests.e2e.provider import forced_model
 
 if TYPE_CHECKING:
     from click.testing import CliRunner, Result
@@ -368,6 +369,9 @@ def init_args(
         args += ["--set", f"port_base={port_base}"]
     if provider is not None:
         args += ["--set", f"provider={provider}"]
+    # A run told to use one model everywhere builds with it too: a subagent
+    # runs the model id the build wrote into its definition.
+    model = forced_model() or model
     if model is not None:
         args += ["--set", f"model={model}"]
     return args

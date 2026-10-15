@@ -1,5 +1,5 @@
 {
-  "cli_version": "2.1.228",
+  "cli_version": "2.1.294",
   "tools": [
     "Bash",
     "CronCreate",
@@ -8,6 +8,7 @@
     "Edit",
     "EnterWorktree",
     "ExitWorktree",
+    "ListAgents",
     "NotebookEdit",
     "Read",
     "ReportFindings",
@@ -18,7 +19,6 @@
     "TaskCreate",
     "TaskGet",
     "TaskList",
-    "TaskOutput",
     "TaskStop",
     "TaskUpdate",
     "WebFetch",
@@ -48,7 +48,6 @@
     "TaskCreate",
     "TaskGet",
     "TaskList",
-    "TaskOutput",
     "TaskStop",
     "TaskUpdate",
     "WebFetch",

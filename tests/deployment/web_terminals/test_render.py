@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from jinja2 import Environment, Template
+from jinja2 import BytecodeCache, Environment, Template
 
 from osprey.deployment.web_terminals import render as render_module
 from osprey.deployment.web_terminals.artifacts import web_artifacts_dir
@@ -64,6 +64,60 @@ from osprey.services.auth_sidecar.app import (
 )
 from osprey.services.auth_sidecar.roster_env import PW_HASH_VAR_PREFIX, env_var_suffix
 from osprey.utils.workspace import agent_data_base_dir
+
+
+class _InMemoryBytecodeCache(BytecodeCache):
+    """Jinja's own compiled-template cache, held in memory for this module."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+
+    def load_bytecode(self, bucket) -> None:  # type: ignore[no-untyped-def]
+        data = self._store.get(bucket.key)
+        if data is not None:
+            bucket.bytecode_from_string(data)
+
+    def dump_bytecode(self, bucket) -> None:  # type: ignore[no-untyped-def]
+        self._store[bucket.key] = bucket.bytecode_to_string()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _render_reuses_parsed_templates_and_tokens():
+    """Parse each template and load the token tree once per module, not per render.
+
+    Every render builds two fresh Jinja Environments and re-reads the packaged
+    design tokens three times, and those reparses are most of this module's
+    time. The Environments stay fresh -- a new one per render, with fresh
+    Template objects, so a test that wraps a template's ``render`` touches only
+    its own -- they just share a bytecode cache, one per ``autoescape`` setting
+    since that changes the compiled code. Jinja keys each entry by template and
+    checks it against the source's checksum, so an edited template recompiles.
+    The token tree is memoized for the packaged ``tokens/`` directory only.
+    """
+    from osprey.interfaces.design_system.generator import model
+    from osprey.interfaces.design_system.generator.build import DEFAULT_TOKENS_DIR
+
+    caches: dict[object, _InMemoryBytecodeCache] = {}
+
+    def environment(*args, **kwargs):  # type: ignore[no-untyped-def]
+        cache = caches.setdefault(kwargs.get("autoescape", False), _InMemoryBytecodeCache())
+        return Environment(*args, bytecode_cache=cache, **kwargs)
+
+    real_load_token_tree = model.load_token_tree
+    packaged: list = []
+
+    def load_token_tree(tokens_dir):  # type: ignore[no-untyped-def]
+        if Path(tokens_dir) != Path(DEFAULT_TOKENS_DIR):
+            return real_load_token_tree(tokens_dir)
+        if not packaged:
+            packaged.append(real_load_token_tree(tokens_dir))
+        return packaged[0]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(render_module, "Environment", environment)
+        mp.setattr(model, "load_token_tree", load_token_tree)
+        yield
+
 
 # The four classic config-set families; the effective per-family base set the
 # render actually allocates from also carries every registry default
@@ -3214,7 +3268,7 @@ def test_negotiated_401_absent_when_method_is_token() -> None:
 
     # Assert
     assert "$osprey_auth_wants_login_page" not in nginx_conf
-    assert "error_page" not in nginx_conf
+    assert "error_page 401" not in nginx_conf
     assert "@osprey_auth_401" not in nginx_conf
 
 
@@ -3232,7 +3286,7 @@ def test_negotiated_401_absent_when_the_method_is_open() -> None:
 
     # Assert
     assert "$osprey_auth_wants_login_page" not in nginx_conf
-    assert "error_page" not in nginx_conf
+    assert "error_page 401" not in nginx_conf
     assert "@osprey_auth_401" not in nginx_conf
 
     # Assert — non-vacuous: this render is the injecting one, not an empty one.

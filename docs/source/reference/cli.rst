@@ -1144,6 +1144,10 @@ Manage the ARIEL logbook search service.
 
 ``osprey ariel status [--json]``
    Show the database connection, embedding tables and enhancement counts.
+   Includes the vocabulary line (with the ``e1:…`` vocabulary key when entries
+   are expanded) and, per text-embedding table, one line for each group of
+   vectors built with other settings than the running ones, ending with the
+   ``reembed`` command that rebuilds them.
 
 ``osprey ariel migrate``
    Create or update the database tables the enabled modules need.
@@ -1171,7 +1175,8 @@ Manage the ARIEL logbook search service.
    the web interface, attachment uploads, and entries written through the
    logbook write service. ``--rebuild`` wipes the mirror and re-exports
    everything, which is what to run after ``purge``.
-   ``ingest`` and ``watch`` already do this pass on their own.
+   ``ingest`` and ``watch`` already do this pass on their own. Prints the
+   vocabulary key it used as its last row (``Expansion key``).
 
 ``osprey ariel models``
    List the embedding models and their tables.
@@ -1187,7 +1192,17 @@ Manage the ARIEL logbook search service.
    and lists every error when the file is broken; warnings never fail it.
 
 ``osprey ariel reembed --model NAME --dimension N [--batch-size N] [--dry-run] [--force]``
-   Re-embed entries with a different model.
+   Re-embed entries with a different model, or with the current vocabulary
+   settings after ``status`` reports stale vectors (``--force``). ``--dry-run``
+   prints the plan, including ``Running key: r1`` or ``Running key:
+   r1:e1:<hex>`` --- the key each new vector will record. ``reembed`` refuses
+   to start when ``ariel.vocabulary.expand_entries`` is on but the vocabulary
+   does not load; that refusal names the loader error and the remedy ``fix
+   ariel.vocabulary.path or set ariel.vocabulary.expand_entries: false``.
+   ``sync``, ``ingest``, ``watch``, ``enhance``, ``quickstart`` and
+   ``qmd-resync`` refuse the same way. Without ``--dry-run`` it also refuses
+   when the table predates the key column (``schema behind code: run osprey
+   ariel migrate``).
 
 ``osprey ariel web [--port N] [--host ADDR] [--reload]``
    Launch the web interface on the host and port ``ariel.web`` names (default

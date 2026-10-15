@@ -100,9 +100,9 @@ TWO_SHAPE_PROVIDER_STEP = "Step 0 — assert the compose provider is podman-comp
 #: it needs no container runtime, only a renderer and a YAML parser.
 PARSE_ONLY_JOB = "static-checks"
 PARSE_ONLY_STEP = "Parse the merged podman topology (podman-compose config, no containers)"
-#: Re-proves the recorded CLI tool inventories against the real pinned builds.
+#: Re-proves the recorded CLI tool inventory against the real pinned build.
 INVENTORY_JOB = "static-checks"
-INVENTORY_STEP = "Check the recorded CLI tool inventories against the pinned builds"
+INVENTORY_STEP = "Check the recorded CLI tool inventory against the pinned build"
 PODMAN_COMPOSE_PIN = "podman-compose==1.0.6"
 #: The containers.conf key that forces podman's choice of external provider.
 COMPOSE_PROVIDER_FORCE_KEY = "compose_providers"
@@ -122,6 +122,8 @@ CATALOG_JOB = "bluesky-catalog-e2e"
 SANDBOX_JOB = "bluesky-sandbox-escape-e2e"
 BENCHMARKS_JOB = "channel-finder-benchmarks"
 BENCHMARKS_TEST_FILE = "tests/e2e/claude_code/test_channel_finder_mcp_benchmarks.py"
+TIER2_JOB = "tier2-model-benchmark"
+TIER2_DIR = "tests/e2e/tier2"
 FLOOR_JOB = "dependency-floor"
 NEXTCLOUD_JOB = "nextcloud-talk-bridge-e2e"
 NEXTCLOUD_TEST_FILE = "tests/e2e/test_nextcloud_talk_bridge_e2e.py"
@@ -145,6 +147,8 @@ NO_MODEL_SKIP_GATE_STEP = "Fail the lane on any skipped test"
 NO_MODEL_TEST_FILES = (
     "tests/e2e/test_openobserve_telemetry.py",
     "tests/e2e/test_sdk_helpers.py",
+    "tests/e2e/test_scripted_model.py",
+    "tests/e2e/claude_code/test_safety_gates_scripted.py",
     "tests/e2e/test_mcp_readiness.py",
     "tests/e2e/test_dispatch_deploy_render.py",
     "tests/e2e/web_terminals/test_scaffold_render_roundtrip.py",
@@ -152,6 +156,7 @@ NO_MODEL_TEST_FILES = (
     "tests/e2e/web_terminals/test_loopback_chokepoint.py",
     "tests/e2e/web_terminals/test_session_restart_e2e.py",
     "tests/e2e/web_terminals/test_terminal_auth_e2e.py",
+    "tests/e2e/web_terminals/test_persona_permissions_scripted.py",
 )
 #: The one test in that set gated on a credential rather than on a model call.
 NO_MODEL_DESELECTED = "tests/e2e/test_openobserve_telemetry.py::test_live_agent_metric_lands"
@@ -2595,6 +2600,43 @@ def test_benchmarks_job_is_dispatch_gated__mutation_drops_ignore() -> None:
     assert _run_step_ignores_all(mutated, [BENCHMARKS_TEST_FILE]) == [BENCHMARKS_TEST_FILE]
 
 
+def test_tier2_job_is_dispatch_gated_and_lane_ignores_it(workflow: dict[str, Any]) -> None:
+    """Tier 2 tests score a model, not a change: a fair task a capable model may
+    still miss. The shared e2e-tests lane must ignore their directory, or a
+    model's miss reds a PR, AND the on-demand job must exist behind the
+    ``run_benchmarks`` input and run that directory, or the --ignore silently
+    deletes the only place Tier 2 runs."""
+    assert _run_step_ignores_all(workflow, [TIER2_DIR]) == []
+    job = _jobs(workflow)[TIER2_JOB]
+    assert "workflow_dispatch" in job["if"] and "run_benchmarks" in job["if"], (
+        f"'{TIER2_JOB}' must gate on the run_benchmarks dispatch input; got: {job['if']!r}"
+    )
+    run_text = "\n".join(step.get("run", "") for step in job["steps"])
+    assert f"pytest {TIER2_DIR}" in run_text, f"'{TIER2_JOB}' must run {TIER2_DIR}"
+
+
+def test_tier2_job_is_dispatch_gated__mutation_drops_ignore() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, E2E_TESTS_JOB, "Run E2E tests")
+    step["run"] = _drop_ignore_line(step["run"], TIER2_DIR)
+    with pytest.raises(AssertionError):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
+
+
+def test_tier2_job_is_dispatch_gated__mutation_drops_job() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    del _jobs(mutated)[TIER2_JOB]
+    with pytest.raises((AssertionError, KeyError)):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
+
+
+def test_tier2_job_is_dispatch_gated__mutation_runs_on_every_pr() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    _jobs(mutated)[TIER2_JOB]["if"] = "always()"
+    with pytest.raises(AssertionError):
+        test_tier2_job_is_dispatch_gated_and_lane_ignores_it(mutated)
+
+
 def _gate_run_text(wf: dict[str, Any]) -> str:
     return _find_named_step(wf, GATE_JOB, "Check all jobs status")["run"]
 
@@ -4598,10 +4640,10 @@ def test_scan_agentic_job_fails_on_any_skipped_test(workflow: dict[str, Any]) ->
     Every skip this module can take is a CI misconfiguration rather than a
     legitimate environment gap — absent docker, absent SDK, absent ``claude``
     CLI, absent provider key — and pytest exits 0 for all of them. The CLI one
-    is not hypothetical: claude-agent-sdk bundles its own CLI and installs no
-    ``claude`` console script, so ``is_claude_code_available()`` can skip both
-    live tests on a runner where the SDK would have worked, leaving the offline
-    floor and judge checks to carry a green check on their own. So the job
+    is not hypothetical: a fresh runner has no ``claude`` on PATH until the lane
+    installs the pinned one, so ``is_claude_code_available()`` can skip both
+    live tests, leaving the offline floor and judge checks to carry a green
+    check on their own. So the job
     reads the junit report and fails on any skip, and on an empty collection,
     which would otherwise satisfy a zero-skip check trivially. Every pytest
     step must write a report the gate actually reads: a run whose report
@@ -4675,74 +4717,124 @@ def test_all_checks_passed_needs_scan_agentic__mutation_drops_check_pr_lane_line
 
 
 # ---------------------------------------------------------------------------
-# (l) every CLI-dependent lane exposes the SDK's bundled Claude CLI
+# (l) every CLI-dependent lane installs the pinned Claude Code CLI
 # ---------------------------------------------------------------------------
 
-#: Lanes that run tests gated on ``is_claude_code_available()``. That helper
-#: shells ``claude --version`` off PATH, and ``claude-agent-sdk`` ships a
-#: working binary but installs no console script — so on a bare runner the
-#: gated tests skip and the lane greens having executed nothing. Each lane
-#: therefore puts the SDK's bundled CLI on PATH before running pytest.
+#: Lanes that run Claude Code on the runner itself: agent tests gated on
+#: ``is_claude_code_available()``, which shells ``claude --version`` off PATH,
+#: and the unit lane's real-binary checks. OSPREY points every agent run at an
+#: installed ``claude`` that reports the pinned version and refuses to start
+#: otherwise, so each lane installs that version before running pytest — on a
+#: bare runner the gated tests would skip and the lane green having executed
+#: nothing, and the ungated ones would fail. The chat-bridge lanes belong here
+#: too: each starts a real dispatch worker on the runner, and the worker refuses
+#: to start without that install.
 CLI_DEPENDENT_JOBS = (
+    "test",
+    "plugin-smoke",
     "agentic-per-preset",
     "e2e-tests",
     "channel-finder-benchmarks",
     NO_MODEL_JOB,
     SCAN_AGENTIC_JOB,
     TARGET_SWITCH_AGENTIC_JOB,
+    NEXTCLOUD_JOB,
+    GCHAT_JOB,
+    TEAMS_JOB,
 )
 
-BUNDLED_CLI_STEP = "Put the SDK's bundled Claude CLI on PATH"
+PINNED_CLI_STEP = "Install the pinned Claude Code CLI"
+PINNED_CLI_ACTION = "./.github/actions/install-pinned-claude-code"
+PINNED_CLI_ACTION_FILE = (
+    Path(__file__).resolve().parents[2]
+    / ".github"
+    / "actions"
+    / "install-pinned-claude-code"
+    / "action.yml"
+)
+
+
+def _pinned_cli_action() -> dict[str, Any]:
+    return yaml.safe_load(PINNED_CLI_ACTION_FILE.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("job_name", CLI_DEPENDENT_JOBS)
-def test_cli_dependent_lane_exposes_the_bundled_claude(
+def test_cli_dependent_lane_installs_the_pinned_claude(
     job_name: str, workflow: dict[str, Any] | None = None
 ) -> None:
-    """A lane running agent tests must make ``claude`` resolvable on PATH.
+    """A lane running Claude Code must install the pinned version first.
 
-    Without it the lane is vacuously green: pytest exits 0 having skipped
-    every test that needed an agent. Some of these lanes carry a zero-skip
-    gate that catches that at runtime; for the ones that do not, this guard is
-    the only thing standing between a silent skip and a green check.
-
-    Pinned by content, not just by step name: the step must both resolve the
-    SDK's ``_bundled`` directory and append it to ``GITHUB_PATH``. Appending
-    something else, or resolving without exporting, would leave the skips in
-    place while the step still looked present.
+    Without it the lane is vacuously green or needlessly red: pytest skips
+    every test gated on a ``claude`` on PATH, and fails every one that is not.
+    Pinned by content, not just by step name: the step must use the one action
+    that installs and verifies the pin, after the project venv is synced (the
+    action reads the pin out of it) and ahead of the lane's tests.
     """
     wf = workflow if workflow is not None else _load_workflow()
-    step = _find_named_step(wf, job_name, BUNDLED_CLI_STEP)
-    run = step["run"]
-    assert "_bundled" in run, f"{job_name}: step must resolve the SDK's bundled CLI directory"
-    assert "GITHUB_PATH" in run, f"{job_name}: step must append that directory to GITHUB_PATH"
+    step = _find_named_step(wf, job_name, PINNED_CLI_STEP)
+    assert step.get("uses") == PINNED_CLI_ACTION, (
+        f"{job_name}: the step must use {PINNED_CLI_ACTION}, got {step.get('uses')!r}"
+    )
+    steps = _jobs(wf)[job_name]["steps"]
+    at = steps.index(step)
+    assert any("uv sync" in (s.get("run") or "") for s in steps[:at]), (
+        f"{job_name}: the venv must be synced before the pinned CLI is installed"
+    )
+    uses_claude = "claude plugin" if job_name == "plugin-smoke" else "pytest"
+    assert any(uses_claude in (s.get("run") or "") for s in steps[at:]), (
+        f"{job_name}: nothing after the install step runs {uses_claude}"
+    )
 
 
 @pytest.mark.parametrize("job_name", CLI_DEPENDENT_JOBS)
-def test_cli_dependent_lane_exposes_the_bundled_claude__mutation_drops_step(job_name: str) -> None:
+def test_cli_dependent_lane_installs_the_pinned_claude__mutation_drops_step(job_name: str) -> None:
     mutated = copy.deepcopy(_load_workflow())
     steps = _jobs(mutated)[job_name]["steps"]
-    kept = [s for s in steps if s.get("name") != BUNDLED_CLI_STEP]
+    kept = [s for s in steps if s.get("name") != PINNED_CLI_STEP]
     assert len(kept) == len(steps) - 1, "expected exactly one step dropped"
     _jobs(mutated)[job_name]["steps"] = kept
     with pytest.raises(AssertionError):
-        test_cli_dependent_lane_exposes_the_bundled_claude(job_name, mutated)
+        test_cli_dependent_lane_installs_the_pinned_claude(job_name, mutated)
 
 
 @pytest.mark.parametrize("job_name", CLI_DEPENDENT_JOBS)
-def test_cli_dependent_lane_exposes_the_bundled_claude__mutation_drops_export(
+def test_cli_dependent_lane_installs_the_pinned_claude__mutation_other_action(
     job_name: str,
 ) -> None:
-    """The quiet half: the step stays and still resolves the directory, but
-    never exports it — so PATH is unchanged and every agent test skips again
-    behind a step whose name says otherwise."""
+    """The quiet half: the step keeps its name but no longer installs the pin."""
     mutated = copy.deepcopy(_load_workflow())
-    step = _find_named_step(mutated, job_name, BUNDLED_CLI_STEP)
-    step["run"] = "\n".join(line for line in step["run"].splitlines() if "GITHUB_PATH" not in line)
-    assert "_bundled" in step["run"], "the resolve line survives"
+    step = _find_named_step(mutated, job_name, PINNED_CLI_STEP)
+    step["uses"] = "actions/setup-node@v7"
     with pytest.raises(AssertionError):
-        test_cli_dependent_lane_exposes_the_bundled_claude(job_name, mutated)
+        test_cli_dependent_lane_installs_the_pinned_claude(job_name, mutated)
 
+
+def test_the_pinned_cli_action_installs_and_verifies_the_one_pinned_version() -> None:
+    """The action installs exactly the framework's pin and fails unless PATH yields it."""
+    action = _pinned_cli_action()
+    assert action["runs"]["using"] == "composite"
+    steps = action["runs"]["steps"]
+    assert any(str(s.get("uses", "")).startswith("actions/setup-node@") for s in steps)
+    (install,) = [s for s in steps if "npm install" in (s.get("run") or "")]
+    run = install["run"]
+    assert "set -euo pipefail" in run
+    # The pin is read from the one constant that names it, never spelled here.
+    assert "_DEFAULT_CLAUDE_CLI_VERSION" in run
+    assert not re.search(r"claude-code@[0-9]", run), "the action spells a version of its own"
+    assert 'npm install -g "@anthropic-ai/claude-code@$pin"' in run
+    # Verified, so a registry or PATH surprise fails here and not in a test.
+    assert "claude --version" in run
+    assert "exit 1" in run
+
+
+def test_no_lane_reaches_for_the_agent_sdks_bundled_cli() -> None:
+    """One Claude Code per lane: nothing puts the SDK's own copy on PATH."""
+    text = CI_YML.read_text(encoding="utf-8")
+    assert "_bundled" not in text
+    assert "_bundled" not in PINNED_CLI_ACTION_FILE.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # (g) the archiver-world lane: its own job, secret-free, and gated on both halves
@@ -6572,10 +6664,12 @@ PRIVSPLIT_JOB = "privilege-split-e2e"
 #: Jobs deliberately OUTSIDE ``all-checks-passed.needs``. Every entry needs a
 #: reason: ``channel-finder-benchmarks`` is a manually dispatched quality score
 #: (pinned by ``test_benchmarks_job_is_dispatch_gated_and_lane_ignores_it``),
-#: and the gate cannot depend on itself. Anything else that is not in
+#: ``tier2-model-benchmark`` is a manually dispatched model benchmark (pinned
+#: by ``test_tier2_job_is_dispatch_gated_and_lane_ignores_it``), and the gate
+#: cannot depend on itself. Anything else that is not in
 #: ``needs`` can go red forever inside a green check — the 17 privilege-split
 #: Docker tests did exactly that for a phase.
-JOBS_OUTSIDE_THE_GATE = frozenset({BENCHMARKS_JOB, GATE_JOB})
+JOBS_OUTSIDE_THE_GATE = frozenset({BENCHMARKS_JOB, TIER2_JOB, GATE_JOB})
 
 
 def test_all_checks_passed_needs_privilege_split(workflow: dict[str, Any]) -> None:
@@ -6676,9 +6770,9 @@ def test_all_checks_passed_needs_target_switch__mutation_drops_check_pr_lane_lin
 # ---------------------------------------------------------------------------
 #
 # Its sibling above needs no secrets; this one needs the LLM key AND the SDK's
-# bundled CLI, which is two more ways to go vacuously green. Two of those are
+# pinned CLI, which is two more ways to go vacuously green. Two of those are
 # covered elsewhere in this file and both cover this lane by construction: the
-# ``CLI_DEPENDENT_JOBS`` parametrization (the bundled-CLI step) and
+# ``CLI_DEPENDENT_JOBS`` parametrization (the pinned-CLI step) and
 # ``_als_apg_probe_steps`` discovery (the pre-flight probe honours
 # ``ALS_APG_BASE_URL``). What is left is the gate wiring, pinned here.
 
@@ -8874,10 +8968,11 @@ SPENDING_LANES = frozenset(
 )
 # Lanes that carry the secret but spend nothing worth gating: deploy-e2e needs
 # the key only for `osprey up`'s .env preflight and never calls a model;
-# dockerfile-e2e drives a single haiku turn. Gating them by label would drop
+# dockerfile-e2e drives a single haiku turn; the two benchmark jobs run only on
+# a deliberate run_benchmarks dispatch, never on a PR. Gating them by label would drop
 # per-PR deploy coverage for no saving, so they keep the per-PR shape — and a
 # NEW secret-bearing lane must be listed in one set or the other, on purpose.
-SECRET_FREE_LANES = frozenset({"deploy-e2e", "dockerfile-e2e", BENCHMARKS_JOB})
+SECRET_FREE_LANES = frozenset({"deploy-e2e", "dockerfile-e2e", BENCHMARKS_JOB, TIER2_JOB})
 FULL_CI_LABEL_CLAUSE = "contains(github.event.pull_request.labels.*.name, 'full-ci')"
 SCHEDULE_ARM = "github.event_name == 'schedule'"
 # The pre-gating shape: the PR conjunction closed right after the actor guard.

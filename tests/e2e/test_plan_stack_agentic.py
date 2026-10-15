@@ -1335,8 +1335,8 @@ def _judge_expectations(measurement: str, data_examples: str) -> str:
         "statements that would be equally true of any run of this kind. "
         "Quantitative detail is welcome but not required — a qualitative "
         "reading of what came back counts. IMPORTANT: the execution trace you "
-        "are shown is abbreviated and its tool results are truncated, so the "
-        "underlying numbers are usually NOT visible to you. Do not require "
+        "are shown is abbreviated and long tool results are cut, so some "
+        "underlying numbers may NOT be visible to you. Do not require "
         "them to be, and never fail a conclusion merely because you cannot "
         "re-verify its figures against the trace — you are judging whether "
         "the agent reports findings, not auditing its arithmetic.\n"
@@ -1528,8 +1528,8 @@ def _start(*, is_error: bool = False) -> ToolTrace:
 
 # A healthy orbit-response readback: diagonal-dominant response slopes, every
 # corrector steering its nearest BPM hardest, nothing sign-flipped or weak.
-# Small enough to survive `_to_workflow_result`'s 300-char result preview, so
-# the judge dry tests below see real numbers rather than an ellipsis.
+# Small enough to survive the judge's result preview (`judge_result_preview`),
+# so the judge dry tests below see real numbers rather than an ellipsis.
 _ORM_RUN_DATA = (
     '{"run_id":"run-1","points":27,"slopes_mm_per_A":'
     '{"corrector_01":{"bpm_01":1.82,"bpm_17":0.61,"bpm_23":0.55},'
@@ -3375,9 +3375,13 @@ def clean_queue(request: pytest.FixtureRequest) -> None:
        test's arming step rather than merely dirty the queue. Removal goes
        through the bridge's own ``DELETE /queue/items/{uid}`` — never into
        Redis, which is a different path from the one an operator has.
-    5. ``DELETE /plans/session/{name}`` for every plan ``GET /plans`` reports
-       at ``session`` provenance — retire whatever a previous attempt
-       authored. Same class of leak as the draft above, and it bites HARDER,
+    5. ``DELETE /plans/session/{name}`` for every plan ``GET /plans/session``
+       lists — retire whatever a previous attempt authored. The listing is
+       the session directory itself, not the registry: ``GET /plans`` hides a
+       session plan whose validation is still in flight, and a dry run the
+       previous attempt's client gave up on can still pass after this
+       cleanup, so a cleanup that read the registry would retire nothing and
+       hand this attempt a ready-made validated plan. Same class of leak as the draft above, and it bites HARDER,
        because it inverts what a rerun means for the authoring test: attempt 1
        writes and validates a plan, that plan outlives the attempt (the
        session directory is bridge state, dropped only on a container
@@ -3416,23 +3420,21 @@ def clean_queue(request: pytest.FixtureRequest) -> None:
     )
 
     # Session plans are bridge state like the draft, so they are retired here
-    # rather than in the queue drain below. Filtered on provenance rather than
-    # deleting every listed name: the route is scoped to the session directory
-    # and would answer `deleted: false` for a shipped/preset/facility plan
-    # anyway, but asking only for what this fixture is entitled to remove
-    # keeps the intent legible and the request count to the leak's real size
-    # (normally zero).
-    status, plans = _queue_drive.request(BRIDGE_URL, "/plans", "GET")
+    # rather than in the queue drain below. The listing is scoped to the
+    # session directory, so every name it returns is one this fixture is
+    # entitled to remove — validated or not, which is the point: the registry
+    # would hide a plan whose validation is still in flight.
+    status, plans = _queue_drive.request(BRIDGE_URL, "/plans/session", "GET")
     assert status == 200 and isinstance(plans, list), (
-        f"GET /plans answered {status}: {plans}. The session-tier plans a "
-        "previous attempt authored cannot be retired without reading the "
-        "catalog, and leaving them standing lets this test's agent satisfy an "
-        "authoring floor with someone else's plan"
+        f"GET /plans/session answered {status}: {plans}. The session-tier plans "
+        "a previous attempt authored cannot be retired without listing them, "
+        "and leaving them standing lets this test's agent satisfy an authoring "
+        "floor with someone else's plan"
     )
-    for spec in plans:
-        if not isinstance(spec, dict) or spec.get("provenance") != "session":
+    for entry in plans:
+        if not isinstance(entry, dict):
             continue
-        name = spec.get("name")
+        name = entry.get("name")
         if not isinstance(name, str):
             continue
         status, body = _queue_drive.request(BRIDGE_URL, f"/plans/session/{name}", "DELETE")
@@ -3564,7 +3566,7 @@ async def test_agent_measures_orbit_response_on_a_healthy_stack(
     # machine recorded, independent of how (or how much of) the run the agent
     # read back. Without it nothing in this test grades a single measured
     # value: the floor above checks the call sequence, and the judge is handed
-    # tool results truncated to 300 characters. Skipped only when the add's
+    # tool results cut at JUDGE_RESULT_CHARS. Skipped only when the add's
     # body carried no usable run id, the same graceful degradation the trace
     # floor's binding has.
     if run_id is not None:

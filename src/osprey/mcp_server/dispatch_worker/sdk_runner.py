@@ -39,6 +39,7 @@ from osprey.agent_runner.artifact_resolve import (
     dispatch_claude_config_dir,
 )
 from osprey.agent_runner.claude_state import is_untrusted_allow_rules_notice
+from osprey.agent_runner.errors import AgentCliUnavailableError
 from osprey.audit.posture import OSPREY_AGENT_DATA_ROOT
 from osprey.mcp_server.dispatch_worker import failure_class, run_stats
 from osprey.mcp_server.dispatch_worker.prior_answers import (
@@ -94,7 +95,7 @@ _MIN_SECRET_LEN = 12
 # within seconds of CLI startup and then streams text/tool events continuously,
 # so each record resets this clock — only a true stall trips it. The classic
 # trigger is a bad/expired provider credential or an unreachable base URL: the
-# bundled CLI does not fast-fail on those, it simply produces no output. Without
+# CLI does not fast-fail on those, it simply produces no output. Without
 # this guard such a run stalls all the way to the dispatch worker's outer
 # DISPATCH_TIMEOUT_SEC (default 300s) and surfaces only a generic "timed out"
 # error that masks the auth cause. Generous default so legitimately slow single
@@ -103,8 +104,15 @@ _INACTIVITY_TIMEOUT_SEC = float(os.environ.get("DISPATCH_INACTIVITY_SEC", "120")
 
 
 def _secret_values() -> list[str]:
-    """Collect non-trivial secret env values to scrub from run output."""
-    vals: set[str] = set()
+    """Collect non-trivial secret values to scrub from run output.
+
+    The worker's own bearers live in the credential holder, not in
+    ``os.environ``, so they are taken from there; everything else that looks
+    like a secret is still read from the environment.
+    """
+    from osprey.mcp_server.dispatch_worker.credentials import worker_credentials
+
+    vals: set[str] = set(worker_credentials().scrub_values)
     for name, val in os.environ.items():
         if (
             val
@@ -840,11 +848,14 @@ async def run_dispatch(
         except Exception:
             logger.debug("agen.aclose() raised during cancellation", exc_info=True)
         raise
-    except McpNotReadyError as exc:
-        # The worker's own machinery — the CLI's MCP servers — was not ready
-        # before the run: a known-cause infrastructure fault (retryable once the
-        # host catches up), stamped here rather than routed through the generic
-        # classifier, which reserves that class for call sites that know it.
+    except (McpNotReadyError, AgentCliUnavailableError) as exc:
+        # The worker's own machinery was not ready before the run — the CLI's
+        # MCP servers, or the Claude Code the project pins, which is not
+        # installed: a known-cause infrastructure fault (retryable once the
+        # host catches up or the version is installed), stamped here rather
+        # than routed through the generic classifier, which reserves that
+        # class for call sites that know it. The message is the whole story,
+        # so no traceback is logged.
         duration_sec = time.monotonic() - t0
         logger.error("Dispatch refused after %.1fs: %s", duration_sec, exc)
         await _push({"type": "error", "message": _scrub(str(exc), secret_values)})

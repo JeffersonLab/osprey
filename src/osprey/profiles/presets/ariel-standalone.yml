@@ -245,6 +245,9 @@ config:
   # Links from the agent's answers to each entry's page in your logbook: one
   # URL with an `{entry_id}` placeholder. Unset, the agent shows plain IDs.
   # ariel.entry_url_template: "https://logbook.example.org/entry/{entry_id}"
+  # The ARIEL tab inside the web terminal offers Browse and New Entry; the
+  # agent searches the logbook. true adds the Search view there and opens on it.
+  # ariel.embedded_search: false
   # Which module answers a search that names no mode: the web interface's
   # opening tab, `osprey ariel search` without `--mode`, and the service API.
   # Naming a module that is off below is refused at startup.
@@ -274,6 +277,10 @@ config:
   ariel.vocabulary.canonical_to_shorthand: false
   # `kind: synonym` concepts ignore both switches: every member reaches every
   # other member --- phrasings of one event have no noisy direction to gate.
+  # Entry-side expansion: embed each entry with the vocabulary's canonical
+  # phrases inserted beside the forms it wrote. Off ships entries as written;
+  # turning it on needs `osprey ariel reembed --force` so existing rows match.
+  ariel.vocabulary.expand_entries: false
   # Search modules. Knobs MUST sit under `settings`: the loader keeps only
   # `enabled`, `provider`, `model` and `settings` and drops any other key
   # silently.

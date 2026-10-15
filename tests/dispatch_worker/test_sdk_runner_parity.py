@@ -33,11 +33,13 @@ from claude_agent_sdk import (
 )
 
 from osprey.mcp_server.dispatch_worker import dispatch_api, run_stats, sdk_runner
+from tests._agent_cli import STUB_AGENT_CLI
 
 _TOOL = "mcp__controls__channel_read"
 
 _ENV_KEYS = [
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS",
     "CLAUDE_CONFIG_DIR",
     "CONFIG_FILE",
     "MCP_TIMEOUT",
@@ -205,6 +207,7 @@ async def test_the_agent_options_are_the_ones_dispatch_always_built(monkeypatch,
         session_id=sid,
         mcp_servers=str(render_dir / ".mcp.json"),
         strict_mcp_config=True,
+        cli_path=STUB_AGENT_CLI,
     )
     assert sorted(options.env) == _ENV_KEYS
 

@@ -32,7 +32,7 @@ template that stopped emitting the auth surface would otherwise still "pass"
 `nginx -t` and report a vacuous green.
 
 Skipped entirely when docker (or openssl) is unavailable, with the docker half
-probed through the shared ``docker_cli_unavailable_reason`` helper.
+probed through the shared ``docker_cli_unavailable_reason_once`` helper.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from osprey.deployment.web_terminals.render import (
     terminal_secret_env_var,
 )
 from osprey.port_layout import default_port
-from tests._container_support import docker_cli_unavailable_reason
+from tests._container_support import docker_cli_unavailable_reason_once
 
 #: The per-user family bases these renders run on. Nothing in the configs below
 #: moves them, so they are the layout's own — derived here so a cookie name or a
@@ -90,7 +90,7 @@ _ENVSUBST_OUTPUT_MODE = "0700"
 _DEFAULT_CONF_PATH = "/etc/nginx/conf.d/default.conf"
 
 
-_DOCKER_UNAVAILABLE = docker_cli_unavailable_reason()
+_DOCKER_UNAVAILABLE = docker_cli_unavailable_reason_once()
 
 
 pytestmark = [
@@ -560,8 +560,9 @@ def test_every_other_name_is_redirected_by_real_nginx() -> None:
             # Assert
             assert result.returncode == 0, result.stderr
             answers = _probe_answers(result.stdout)
-            # The origin's host reaches the content server; no upstream runs.
-            assert answers[(origin_host, url)].split(" ")[0] == "502", answers
+            # The origin's host reaches the content server; no upstream runs, so
+            # it answers with the terminal-starting page's 503.
+            assert answers[(origin_host, url)].split(" ")[0] == "503", answers
             for name in _OTHER_NAMES:
                 assert answers[(name, url)] == f"301 {origin}{_REDIRECT_PROBE_PATH}", answers
             # Under TLS the plain port sends every name, the origin's included,
@@ -1077,3 +1078,59 @@ def test_a_blank_terminal_secret_takes_down_only_that_users_terminal() -> None:
         )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_a_terminal_with_nothing_listening_answers_with_the_starting_page() -> None:
+    """While a terminal's app is still starting, nginx answers for it with a
+    self-reloading 503 page — and a 502 the app returns itself is still the app's.
+
+    Run through real nginx because the split rests on nginx's own semantics:
+    `error_page` covers the 502 nginx generates when it cannot connect, and
+    reaches an upstream's own 502 only under `proxy_intercept_errors`, which the
+    render leaves off. The second half stands an upstream up on the second
+    user's port that answers 502 itself.
+    """
+    origin_host = "dls-deploy.dls.example.org"
+    nginx_conf = render_web_terminals(_config())["nginx/nginx.conf"]
+    upstream_ports = re.findall(r"proxy_pass http://127\.0\.0\.1:(\d+)/;", nginx_conf)
+    assert len(upstream_ports) == 2, upstream_ports
+    bob_port = upstream_ports[1]
+    app_502 = (
+        f"\nserver {{ listen 127.0.0.1:{bob_port}; "
+        "location / { return 502 'the app says 502'; } }\n"
+    )
+    port = default_port("nginx")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        conf_dir = Path(tmp)
+        (conf_dir / "default.conf").write_text(nginx_conf + app_502)
+
+        # Act
+        result = _run_nginx_t(
+            conf_dir,
+            certs_dir=None,
+            entrypoint="sh",
+            command=(
+                "-c",
+                "nginx && sleep 1\n"
+                f"curl -s -D - -H 'Host: {origin_host}' http://127.0.0.1:{port}/u/alice/\n"
+                "echo '=====BOB'\n"
+                f"curl -s -D - -H 'Host: {origin_host}' http://127.0.0.1:{port}/u/bob/\n",
+            ),
+        )
+
+    # Assert
+    assert result.returncode == 0, result.stderr
+    alice, bob = result.stdout.split("=====BOB", 1)
+    assert _status(alice) == "503", alice
+    assert "Retry-After: 5" in alice
+    assert 'http-equiv="refresh"' in alice
+    assert "This terminal is not answering yet" in alice
+    assert _status(bob) == "502", bob
+    assert "the app says 502" in bob
+
+
+def _status(response: str) -> str:
+    """The status code of the one HTTP response in *response* (nginx's access
+    log shares the container's stdout, so lines around it are not the response)."""
+    return next(line for line in response.splitlines() if line.startswith("HTTP/")).split(" ")[1]

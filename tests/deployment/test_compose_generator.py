@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import errno
+import functools
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 from unittest import mock
 
 import pytest
@@ -2002,6 +2003,11 @@ def test_bluesky_tiled_absent_when_disabled() -> None:
 
 _TILED_KEY = "k3y"
 
+#: How long a held start script is given to report its failed upgrade, the
+#: reason it is not serving. Far above what a loaded host needs to start the
+#: stub, so only a script that never reports it runs into it.
+_TILED_REASON_TIMEOUT_S = 30.0
+
 
 def _run_tiled_start(
     storage: Path, *, upgrade_rc: int = 0, hold_s: float | None = None
@@ -2014,6 +2020,8 @@ def _run_tiled_start(
     ``upgrade-database``. With *hold_s* set the script is expected NOT to exit:
     once its stderr carries the failed-upgrade line it is checked alive for
     *hold_s* more, then sent SIGTERM, and the completed process is ``None``.
+    The hold is timed from that line, not from the spawn, so how long the
+    stub takes to start never eats into it.
 
     Returns the recorded invocations, the completed process, and stderr.
     """
@@ -2045,35 +2053,36 @@ def _run_tiled_start(
         stderr = done.stderr
     else:
         proc = subprocess.Popen(["sh", "-c", script], env=env, stderr=subprocess.PIPE, text=True)
+        assert proc.stderr is not None
         lines: list[str] = []
         failed_line = threading.Event()
 
-        def _read_stderr() -> None:
-            assert proc.stderr is not None
-            for line in proc.stderr:
+        def _collect(stream: IO[str]) -> None:
+            for line in stream:
                 lines.append(line)
                 if "upgrade-database failed" in line:
                     failed_line.set()
 
-        reader = threading.Thread(target=_read_stderr, daemon=True)
+        reader = threading.Thread(target=_collect, args=(proc.stderr,), daemon=True)
         reader.start()
-        deadline = time.monotonic() + 30
-        while not failed_line.wait(timeout=0.05):
-            if proc.poll() is not None or time.monotonic() > deadline:
-                proc.kill()
-                proc.wait(timeout=5)
-                reader.join(timeout=5)
-                pytest.fail(
-                    "the start script never reported the failed upgrade "
-                    f"(exit {proc.returncode}); stderr: {''.join(lines)!r}"
-                )
         try:
-            proc.wait(timeout=hold_s)
-            pytest.fail(f"the start script exited ({proc.returncode}) instead of holding")
-        except subprocess.TimeoutExpired:
-            pass
-        proc.terminate()
-        proc.wait(timeout=5)
+            deadline = time.monotonic() + _TILED_REASON_TIMEOUT_S
+            while not failed_line.wait(timeout=0.05):
+                if proc.poll() is not None or time.monotonic() > deadline:
+                    pytest.fail(
+                        "the start script never reported the failed upgrade within "
+                        f"{_TILED_REASON_TIMEOUT_S:.0f} s (exit {proc.poll()}); "
+                        f"stderr: {''.join(lines)!r}"
+                    )
+            try:
+                proc.wait(timeout=hold_s)
+                pytest.fail(f"the start script exited ({proc.returncode}) instead of holding")
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=5)
         reader.join(timeout=5)
         stderr = "".join(lines)
         done = None
@@ -3260,13 +3269,23 @@ def _packaged_compose_template(rel_path: str):
     Undefined mode is production's, so ``| default(...)`` chains behave exactly
     as they do under ``osprey up``, and the lookup stays CWD-independent.
     """
+    return _packaged_templates_environment().get_template(rel_path)
+
+
+@functools.cache
+def _packaged_templates_environment():
+    """The one Environment :func:`_packaged_compose_template` compiles through.
+
+    Shared so each template, and each macro file it imports, is parsed once per
+    module rather than once per call; Jinja's own cache still reloads a template
+    whose file changed.
+    """
     from importlib import resources
 
     from jinja2 import Environment, FileSystemLoader
 
     templates_root = resources.files("osprey").joinpath("templates")
-    env = Environment(loader=FileSystemLoader(str(templates_root)), autoescape=False)
-    return env.get_template(rel_path)
+    return Environment(loader=FileSystemLoader(str(templates_root)), autoescape=False)
 
 
 def _render_service_template(rel_path: str, project_name: str, **overrides: object) -> str:

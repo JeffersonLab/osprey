@@ -283,7 +283,9 @@ def _write_persona_project(root: Path) -> Path:
     (root / "Dockerfile").write_text(
         "FROM alpine:3.20\n"
         # busybox-extras carries the httpd applet; the base busybox does not.
-        "RUN apk add --no-cache busybox-extras \\\n"
+        # curl runs the per-user service's healthcheck (`curl -fsS
+        # http://<bind>:<port>/health`), which `osprey up` waits on.
+        "RUN apk add --no-cache busybox-extras curl \\\n"
         "    && adduser -D dispatch \\\n"
         "    && mkdir -p /data/claude-config \\\n"
         # var/agent_data, not a literal of this test's own choosing: the render
@@ -297,7 +299,9 @@ def _write_persona_project(root: Path) -> Path:
         f"    && chown -R dispatch:dispatch /data/claude-config {container_dir} \\\n"
         # /srv belongs to dispatch too: the CMD writes index.html at start-up,
         # and a root-owned directory would make that write the next crashloop.
+        # /srv/health is the page that healthcheck asks for.
         "    && mkdir -p /srv \\\n"
+        "    && echo ok > /srv/health \\\n"
         "    && chown -R dispatch:dispatch /srv\n"
         # Written at START-UP, not build time: OSPREY_TERMINAL_USER and
         # OSPREY_TERMINAL_WEB_PORT are per-user values compose supplies to the

@@ -37,6 +37,7 @@ the rest are unit tests of the two merges and cost nothing.
 from __future__ import annotations
 
 import copy
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +195,8 @@ def built_project(
 
     project: Path = scratch / PROJECT_NAME
     result = _run_cli(["build"], cwd=project, env={**env, **offline_build_env})
+    # Every reader of this project reads its rendered files, never the venv.
+    shutil.rmtree(project / "build" / ".venv", ignore_errors=True)
     assert result.returncode == 0, f"osprey build refused the cell:\n{_failure_reason(result)}"
     return project
 
@@ -255,6 +258,8 @@ def external_store_render(
 
     project: Path = scratch / PROJECT_NAME
     result = _run_cli(["build"], cwd=project, env={**env, **offline_build_env})
+    # Only the rendered config is read, never the venv.
+    shutil.rmtree(project / "build" / ".venv", ignore_errors=True)
     assert result.returncode == 0, (
         "osprey build refused an attached profile that names an external graph store:\n"
         f"{_failure_reason(result)}"

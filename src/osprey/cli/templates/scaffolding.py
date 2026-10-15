@@ -26,7 +26,7 @@ logger = logging.getLogger("osprey.cli.templates")
 # The value is npm's `stable` dist-tag for @anthropic-ai/claude-code, never
 # `latest` or `next`; read the channel with
 # `npm view @anthropic-ai/claude-code dist-tags`.
-_DEFAULT_CLAUDE_CLI_VERSION = "2.1.267"
+_DEFAULT_CLAUDE_CLI_VERSION = "2.1.294"
 
 CONFIG_TEMPLATE = "config.yml.j2"
 """The project-file template that renders ``config.yml``."""
@@ -40,10 +40,15 @@ def _default_cli_version(ctx: dict) -> None:
     ``ctx["claude_code_cli_version"]`` (flat) or ``ctx["claude_code"]["cli_version"]``
     (nested, mirroring config.yml's shape); absent either, fall back to the
     framework's last verified pin."""
-    if "claude_code_cli_version" not in ctx:
-        ctx["claude_code_cli_version"] = (
-            ctx.get("claude_code", {}).get("cli_version") or _DEFAULT_CLAUDE_CLI_VERSION
-        )
+    from osprey.agent_runner.launcher import pinned_cli_version, validate_cli_version
+
+    # The value becomes the image's ``npm install`` target, so it passes the
+    # one check of the pin whichever key carried it.
+    if "claude_code_cli_version" in ctx:
+        version: str | None = validate_cli_version(ctx["claude_code_cli_version"])
+    else:
+        version = pinned_cli_version(ctx.get("claude_code") or {})
+    ctx["claude_code_cli_version"] = version or _DEFAULT_CLAUDE_CLI_VERSION
 
 
 def project_template_for(template_root: Path, template_file: str) -> str | None:

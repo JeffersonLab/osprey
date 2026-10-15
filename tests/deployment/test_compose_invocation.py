@@ -757,6 +757,7 @@ def _podman_web_host(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         "verify_persona_renders",
         "_reconcile_web_stack_recreates",
         "enable_linger",
+        "wait_until_ready",
         "seed_user_containers",
         "run_verify_script",
         "warn_if_web_stack_unreachable",

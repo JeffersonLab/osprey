@@ -96,6 +96,7 @@ and no ``xdist_group`` is needed.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -505,6 +506,33 @@ def _embedding_input_limit_deltas(*documents: str) -> tuple[Delta, ...]:
             path="ariel.enhancement_modules.text_embedding.models",
             fixture=[{"dimension": 768, "name": "nomic-embed-text"}],
             live=[{"dimension": 768, "max_input_tokens": 2048, "name": "nomic-embed-text"}],
+        )
+        for document in documents
+    )
+
+
+def _expand_entries_deltas(*documents: str) -> tuple[Delta, ...]:
+    """The entry-side vocabulary expansion switch the presets now state.
+
+    ``ariel.vocabulary.expand_entries`` decides whether an entry's embedding
+    input is expanded with the vocabulary's canonical phrases. Both root presets
+    that carry a vocabulary block now state it, off, beside its
+    ``canonical_to_shorthand`` sibling, so every document they render gains the
+    key. The fixtures were frozen before the key existed.
+
+    Args:
+        documents: The rendered documents the cell emits, ``root`` plus one per
+            persona.
+
+    Returns:
+        One delta per document.
+    """
+    return tuple(
+        Delta(
+            document=document,
+            path="ariel.vocabulary.expand_entries",
+            fixture=ABSENT,
+            live=False,
         )
         for document in documents
     )
@@ -1366,6 +1394,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _embedding_input_limit_deltas("root")
     + _simulation_models_deltas("root")
     + _simulation_tick_deltas("root")
+    + _expand_entries_deltas("root")
     + _picture_module_deltas("root")
     + _standalone_picker_deltas(),
     "channel-finder-standalone/in_context": _standalone_catalog_delta()
@@ -1418,6 +1447,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _simulation_tick_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _simulation_file_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _default_scenarios_deltas()
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _lattice_panel_deltas("root", "admin", "readonly", "readwrite")
@@ -1451,6 +1481,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _simulation_tick_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _simulation_file_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _default_scenarios_deltas()
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _lattice_panel_deltas("root", "admin", "readonly", "readwrite")
@@ -1484,6 +1515,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _simulation_tick_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _simulation_file_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _default_scenarios_deltas()
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _lattice_panel_deltas("root", "admin", "readonly", "readwrite")
@@ -1517,6 +1549,7 @@ CELL_DELTAS: dict[str, tuple[Delta, ...]] = {
     + _simulation_tick_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _simulation_file_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _default_scenarios_deltas()
+    + _expand_entries_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _picture_module_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _mcp_health_address_deltas(*_CONTROL_ASSISTANT_DOCUMENTS)
     + _lattice_panel_deltas("root", "admin", "readonly", "readwrite")
@@ -1691,6 +1724,9 @@ class CellRenderer:
 
         project = scratch / PROJECT_NAME
         result = _run_cli(["build"], cwd=project, env={**env, **self._build_env})
+        # The comparison reads only rendered documents, never the venv, and a
+        # refused build has no reader at all.
+        shutil.rmtree(project / "build" / ".venv", ignore_errors=True)
         if result.returncode != 0:
             return Refused("build", _failure_reason(result))
 

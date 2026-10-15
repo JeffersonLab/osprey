@@ -404,7 +404,10 @@ def test_root_render_is_partitioned_between_its_sources(
     # machine gains `web.control_target_picker`, which did not exist when the
     # freeze ran; and every preset that carries an `ariel:` block gains the
     # picture modules (`image_caption`, `image_embedding`) and the two
-    # `ariel.attachments` switches, none of which existed when the freeze ran.
+    # `ariel.attachments` switches, none of which existed when the freeze ran;
+    # and every preset that carries an `ariel:` block gains
+    # `ariel.vocabulary.expand_entries`, the entry-side vocabulary switch,
+    # which did not exist when the freeze ran.
     missing = set(config) - set(render)
     expected_gain = {"hooks.debug"} if preset == "hello-world" else set()
     if "approval.tools.entry_publish" in config:
@@ -440,6 +443,8 @@ def test_root_render_is_partitioned_between_its_sources(
     for key in _PICTURE_MODULE_KEYS:
         if key in config:
             expected_gain = expected_gain | {key}
+    if "ariel.vocabulary.expand_entries" in config:
+        expected_gain = expected_gain | {"ariel.vocabulary.expand_entries"}
     assert missing == expected_gain, (
         f"{directory}: preset keys absent from the render: {sorted(missing)}"
     )
