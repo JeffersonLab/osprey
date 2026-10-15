@@ -57,12 +57,12 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from osprey.facility import TEXTURE
+from osprey.facility import DEFAULT_ROLE, TEXTURE
 from osprey.facility.build import FacilityDocument
 from osprey.facility.errors import FacilityBuildError
 from osprey.facility.scenarios import scenario_logbook
 from osprey.facility.views import ViewInputs, view_bytes
-from osprey_connectors.simulation import STILL_SCENARIO
+from osprey_connectors.simulation import STILL_ALL, STILL_SCENARIO
 from osprey_connectors.simulation.values import DEFAULT_VALUE_TYPE
 from osprey_connectors.simulation.view import (
     ADDRESSES_FILE,
@@ -123,7 +123,7 @@ _SCENARIO_BLOCKS = (
 _BUILT_IN_STILL = {
     "name": STILL_SCENARIO,
     "description": "Every reading serves without drift, couplings or noise.",
-    "still": "all",
+    "still": STILL_ALL,
 }
 
 #: The keys a wiring entry may carry, in emission order: the wiring record's
@@ -347,7 +347,7 @@ def _variables_document(inputs: ViewInputs) -> dict[str, Any]:
     channels: list[dict[str, Any]] = []
     for record in sorted(doc.get("channels", []), key=lambda channel: str(channel["id"])):
         address = str(record["id"])
-        role = record.get("role", "readback")
+        role = record.get("role", DEFAULT_ROLE)
         entry = limits.get(address)
         if entry is not None:
             writable = bool(entry["writable"])

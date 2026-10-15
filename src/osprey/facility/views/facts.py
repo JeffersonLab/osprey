@@ -46,7 +46,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from osprey.facility import TEXTURE
+from osprey.facility import DEFAULT_ROLE, TEXTURE
 from osprey.facility.views import ViewInputs, view_bytes
 
 __all__ = [
@@ -71,9 +71,6 @@ FACTS_SCHEMA = "osprey.facility.facility_facts/2"
 
 #: The class a classless device is counted under.
 NO_CLASS = "-"
-
-#: The role a channel that states none has.
-DEFAULT_ROLE = "readback"
 
 #: The page's template, relative to the packaged templates directory.
 FACTS_TEMPLATE = "claude_code/_facility_facts.md.j2"
@@ -412,9 +409,9 @@ def hook_measurement(facts: Mapping[str, Any], render_root: Path) -> dict[str, d
         measurement = models[str(model)].get("measurement") or {}
         names = view_names(doc, str(model))
         array_of = {
-            str(role): names.array_name(str(role), str(group))
-            for role, group in (measurement.get("groups") or {}).items()
-            if names.array_name(str(role), str(group)) in arrays
+            str(role): names.array_name(str(role))
+            for role in measurement.get("groups") or {}
+            if names.array_name(str(role)) in arrays
         }
         rf: list[str] = []
         plant = None
