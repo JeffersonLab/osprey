@@ -38,11 +38,14 @@ import copy
 import functools
 import importlib.util
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -185,25 +188,117 @@ SCHEDULER_CLASS = "FileOrGroupScheduling"
 #: either. The lookbehind keeps it from matching inside a longer flag.
 _XDIST_WORKERS_RE = re.compile(r"(?<!\S)-n\s+\d")
 
-PTY_STEP = "Run real-terminal pty suite serially"
-PTY_MARKER = "pty"
-#: The directory the serial step selects, and therefore the only place a
-#: ``pty``-marked test can live and still be run by anything.
-PTY_TESTS_DIR = "tests/pty/"
-#: Exact spellings, matched as literal substrings on the two invocations that
-#: form the pair: the parallel lane hands the marker away, the serial step
-#: picks it up. Single spaces and the quoting are part of the pin.
-PTY_DESELECT = '-m "not pty"'
-PTY_SELECT = "-m pty"
-_PTY_MARK_RE = re.compile(r"pytest\.mark\.pty\b")
-#: The local check scripts that run the same wholesale `pytest tests/` sweep the
-#: CI lane does, and therefore inherit the same problem. Matched on the term
+
+@dataclass(frozen=True)
+class SerialHost:
+    """The one CI step that runs a lane-leaving marker, alone."""
+
+    #: ci.yml job id.
+    job: str
+    #: The step's name inside that job.
+    step: str
+    #: What the step collects. A marked file must live under it, because the
+    #: parallel lane deselects the marker everywhere and nothing else runs it.
+    path: str
+    #: The literal on the step's pytest line that picks the marker back up.
+    #: A step may hold other pytest lines beside that one; each of them
+    #: deselects the marker.
+    select: str
+
+
+@dataclass(frozen=True)
+class LaneLeavingMarker:
+    """A marker whose tests cannot share a machine with xdist workers.
+
+    Each row holds the pair: every invocation that can reach a marked file is
+    one of the row's hosts or deselects the marker, and the local check
+    scripts mirror both halves. A row with no marked file left is dead wiring
+    and fails the module, so deleting a marker's last test deletes its row and
+    its host step with it.
+    """
+
+    marker: str
+    hosts: tuple[SerialHost, ...]
+
+    def deselect_term(self) -> str:
+        return f"not {self.marker}"
+
+    def select(self) -> str:
+        return f"-m {self.marker}"
+
+    def mark_re(self) -> re.Pattern[str]:
+        return re.compile(rf"pytest\.mark\.{re.escape(self.marker)}\b")
+
+
+#: Every marker that leaves the parallel lane, one row each. A new one is a row
+#: here plus its serial step in ci.yml; every case below is parametrised over
+#: this table.
+LANE_LEAVING_MARKERS = (
+    # The real-terminal suite: scenarios that assert on repaint cadence and on a
+    # spinner advancing between frames.
+    LaneLeavingMarker(
+        "pty",
+        (SerialHost("test", "Run real-terminal pty suite serially", "tests/pty/", "-m pty"),),
+    ),
+    # Absolute wall-clock budgets: a budget timed beside loaded workers
+    # measures the workers.
+    LaneLeavingMarker(
+        "wallclock",
+        (
+            SerialHost(
+                "qmd-sidecar-e2e",
+                "Run the wall-clock budgets serially",
+                "tests/integration/",
+                "-m wallclock",
+            ),
+            # On demand: the module is slow, so no per-PR step collects it.
+            SerialHost(
+                "channel-finder-benchmarks",
+                "Search-index scale guard (no LLM, no store)",
+                "tests/services/channel_finder/graph_index/test_scale.py",
+                "-m wallclock",
+            ),
+        ),
+    ),
+)
+
+
+def _row(marker: str) -> LaneLeavingMarker:
+    return next(row for row in LANE_LEAVING_MARKERS if row.marker == marker)
+
+
+def _lane_deselect(rows: tuple[LaneLeavingMarker, ...]) -> str:
+    """The parallel lane's marker expression for *rows*."""
+    return '-m "' + " and ".join(row.deselect_term() for row in rows) + '"'
+
+
+#: The parallel lane's marker expression, derived from the table. Matched as a
+#: literal substring: single spaces and the quoting are part of the pin.
+UNIT_LANE_DESELECT = _lane_deselect(LANE_LEAVING_MARKERS)
+assert UNIT_LANE_DESELECT == '-m "not pty and not wallclock"', UNIT_LANE_DESELECT
+
+#: The row the terminal-only cases read (Linux gate, files that open a pty).
+TERMINAL_ROW = _row("pty")
+TERMINAL_HOST = TERMINAL_ROW.hosts[0]
+#: The merge gate's one tracked entrypoint, held to the lane's exact expression.
+GATE_SCRIPT = "scripts/gate.sh"
+#: The local scripts that run a parallel sweep over the suite the way the CI
+#: lane does, and therefore inherit the same problem. Every wholesale
+#: `pytest tests/` sweep a script holds is checked, so a script with a second,
+#: narrower sweep is held on the one that covers the suite. Matched per term
 #: rather than on the CI lane's exact spelling because quick_check.sh combines
-#: it with another one (`-m "not slow and not pty"`).
-LANE_SCRIPTS = ("scripts/quick_check.sh", "scripts/premerge_check.sh", "scripts/ci_check.sh")
+#: the terms with another one (`not slow`).
+LANE_SCRIPTS = (
+    "scripts/quick_check.sh",
+    "scripts/premerge_check.sh",
+    "scripts/ci_check.sh",
+    GATE_SCRIPT,
+)
 #: The one that claims to mirror the lane, and so must also run what it drops.
 CI_CHECK_SCRIPT = "scripts/ci_check.sh"
-PTY_DESELECT_TERM = "not pty"
+#: The scripts that run what they deselect: each marker the sweep hands away
+#: has a serial run of its own in the same script.
+SERIAL_MIRROR_SCRIPTS = (CI_CHECK_SCRIPT, GATE_SCRIPT)
 
 
 @functools.cache
@@ -1027,10 +1122,12 @@ def test_every_boot_smoke_test_runs_in_one_cell__mutation_hides_the_case_in_a_cl
 #:    that is gated on a single matrix cell. libca is process-global and not
 #:    thread-safe, so a shared xdist worker is precisely what they cannot have,
 #:    and the gate — not a path in a run step — is what proves they ran;
-#:  * the search-index scale guard holds latency budgets taken on a workstation
-#:    that four workers sharing a runner miss by design, so it runs alone in the
-#:    on-demand benchmark job. The `channel_finder_benchmark` marker text in
-#:    pyproject.toml states the same rule from the other side.
+#:  * the search-index scale guard is `slow` and runs on demand, alone in the
+#:    benchmark job, so the lane ignores the module by path. Its absolute
+#:    budgets are not held by that ignore: they carry the `wallclock` marker,
+#:    and the marker's row in LANE_LEAVING_MARKERS names the benchmark step as
+#:    their serial host. The `channel_finder_benchmark` marker text in
+#:    pyproject.toml states the on-demand rule from the other side.
 UNIT_LANE_IGNORE_EXEMPTIONS = frozenset(
     {
         "tests/va/test_apply_fault.py",
@@ -1391,128 +1488,139 @@ def test_conftest_scheduler_override__mutation_drops_loadgroup_guard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The real-terminal suite: out of the parallel lane, into a serial step
+# Lane-leaving markers: out of the parallel lane, into a serial step
 # ---------------------------------------------------------------------------
 
-# ``tests/pty/`` runs osprey's own verbs on a real terminal and asserts on the
-# bytes that reached it, including that a spinner ADVANCED between two frames
-# (which is how the monitor thread is proven to be running). Assertions like
-# that read the machine as much as they read the code, so the suite is handed
-# out of the four-worker lane and given a step of its own.
+# Some tests read the machine as much as the code. ``tests/pty/`` runs osprey's
+# own verbs on a real terminal and asserts that a spinner ADVANCED between two
+# frames; a ``wallclock`` test asserts an absolute time budget. Beside three
+# loaded xdist workers both measure the workers, so each marker is handed out
+# of the four-worker lane and given a serial step of its own.
 #
 # Both halves of that handover are silently droppable, in opposite directions,
-# which is why each is pinned here. Lose the deselection and the scenarios go
-# back to running beside three loaded workers, where they do not fail now but
-# flake in someone else's PR weeks later. Lose the step and they run nowhere
-# at all, with every check still green: the same "an unnamed suite never runs"
-# shape the rest of this module exists to prevent.
+# which is why each is pinned here for every row of LANE_LEAVING_MARKERS. Lose
+# the deselection and the tests go back to running beside loaded workers, where
+# they do not fail now but flake in someone else's PR weeks later. Lose the step
+# and they run nowhere at all, with every check still green: the same "an
+# unnamed suite never runs" shape the rest of this module exists to prevent.
+
+_ROW_IDS = [row.marker for row in LANE_LEAVING_MARKERS]
+_HOSTED = [(row, host) for row in LANE_LEAVING_MARKERS for host in row.hosts]
+_HOSTED_IDS = [f"{row.marker}-{host.job}" for row, host in _HOSTED]
+_HOSTS = [host for _, host in _HOSTED]
+
+#: A pytest invocation in a ci.yml run block, in both spellings the file uses.
+_CI_PYTEST_RE = re.compile(r"uv run (?:--no-sync )?pytest\b")
+#: Where one shell command ends and the next (or a pipe) begins.
+_SHELL_SEPARATOR_RE = re.compile(r"\|\||&&|[|;]")
 
 
-def _pty_step(wf: dict[str, Any]) -> dict[str, Any]:
-    return _find_named_step(wf, UNIT_TEST_JOB, PTY_STEP)
+def _ci_pytest_invocations(wf: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Every pytest invocation in ci.yml as ``(job, step, command)``.
+
+    Everything from a ``#`` onward is dropped first, so a flag parked in a shell
+    comment never counts (the same safe-direction split
+    ``_unit_test_pytest_line`` makes). Backslash continuations are joined, so an
+    invocation whose paths sit on the following lines is read whole. A step may
+    hold more than one invocation; each is returned, cut at the next shell
+    separator.
+    """
+    found = []
+    for job, spec in _jobs(wf).items():
+        for step in spec.get("steps") or []:
+            run = step.get("run")
+            if not run:
+                continue
+            text = "\n".join(line.split("#", 1)[0] for line in str(run).splitlines())
+            text = re.sub(r"\\[ \t]*\n", " ", text)
+            for line in text.splitlines():
+                for match in _CI_PYTEST_RE.finditer(line):
+                    command = _SHELL_SEPARATOR_RE.split(line[match.start() :], maxsplit=1)[0]
+                    found.append((job, str(step.get("name", "")), command.strip()))
+    return found
 
 
-def test_unit_lane_hands_the_pty_suite_away(workflow: dict[str, Any]) -> None:
-    """The parallel lane must deselect the marker. It collects ``tests/``
-    wholesale, so without this the pty scenarios are simply part of it."""
-    line = _unit_test_pytest_line(workflow)
-    assert PTY_DESELECT in line, (
-        f"the '{UNIT_TEST_JOB}' job must run pytest with {PTY_DESELECT} so the "
-        f"real-terminal scenarios are left to the '{PTY_STEP}' step; got: {line.strip()!r}"
-    )
+def _invocation_reaches(command: str, test_file: str) -> bool:
+    """Whether *command* collects *test_file*.
+
+    A path argument covers the file when the file is it or lies under it; a
+    ``--ignore=`` argument takes it back out. A path argument holding a shell
+    variable (``tests/$SHARD_PATH``) is read as its literal prefix, so the
+    sharded unit lane counts as the whole-tree sweep it is. An invocation
+    whose only path is a bare variable (``$E2E_FILTER``) is an operator-chosen
+    debug path on a manual dispatch, not a lane, and reaches nothing here; an
+    invocation with no path at all collects ``testpaths``, which is ``tests``.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    paths = [t for t in tokens if t == "tests" or t.startswith("tests/")]
+    ignores = [t.removeprefix("--ignore=") for t in tokens if t.startswith("--ignore=")]
+    if not paths:
+        if any(t.startswith("$") for t in tokens):
+            return False
+        paths = ["tests"]
+
+    def _covers(path: str) -> bool:
+        path = path.split("::", 1)[0]
+        if "$" in path:
+            return test_file.startswith(path.split("$", 1)[0])
+        path = path.rstrip("/")
+        return test_file == path or test_file.startswith(f"{path}/")
+
+    return any(_covers(p) for p in paths) and not any(_covers(i) for i in ignores)
 
 
-def test_unit_lane_hands_the_pty_suite_away__mutation_drops_the_deselection() -> None:
-    mutated = copy.deepcopy(_load_workflow())
-    step = _find_named_step(mutated, UNIT_TEST_JOB, "Run unit tests")
-    original = step["run"]
-    step["run"] = original.replace(f" {PTY_DESELECT}", "")
-    assert step["run"] != original, "deselection not found; mutation is stale"
-    with pytest.raises(AssertionError):
-        test_unit_lane_hands_the_pty_suite_away(mutated)
+def _carriers(row: LaneLeavingMarker, sources: dict[str, str]) -> list[str]:
+    """Test files whose source carries the row's marker. Text scan, not a
+    collection run: this module runs in the parallel lane, and importing the
+    marked modules would need their optional dependencies."""
+    pattern = row.mark_re()
+    return sorted(name for name, source in sources.items() if pattern.search(source))
 
 
-def test_unit_lane_hands_the_pty_suite_away__mutation_parks_it_in_a_comment() -> None:
-    """Same hole the parallel-flag pin found: a deselection that survives only
-    in a trailing shell comment, which is exactly how a temporary revert gets
-    written. ``_unit_test_pytest_line`` strips comments, so it must not count."""
-    mutated = copy.deepcopy(_load_workflow())
-    step = _find_named_step(mutated, UNIT_TEST_JOB, "Run unit tests")
-    original = step["run"]
-    step["run"] = original.replace(f" {PTY_DESELECT}", f"  # TODO restore {PTY_DESELECT}")
-    assert step["run"] != original, "deselection not found; mutation is stale"
-    with pytest.raises(AssertionError):
-        test_unit_lane_hands_the_pty_suite_away(mutated)
+def _unhosted_carriers(row: LaneLeavingMarker, sources: dict[str, str]) -> list[str]:
+    """Marked files no host step's path reaches (empty = all reachable)."""
+    return [
+        name
+        for name in _carriers(row, sources)
+        if not any(name.startswith(host.path) for host in row.hosts)
+    ]
 
 
-def test_pty_suite_runs_in_its_own_serial_step(workflow: dict[str, Any]) -> None:
-    """And the step must actually pick the marker back up, serially. No worker
-    count and no dist mode: a second scenario running alongside is the load the
-    deselection was for, and running it inside this step would be no better
-    than leaving it in the lane."""
-    step = _pty_step(workflow)
-    run = step["run"]
-    assert "uv run pytest " in run, f"'{PTY_STEP}' must invoke pytest; got: {run!r}"
-    assert PTY_TESTS_DIR in run, f"'{PTY_STEP}' must select {PTY_TESTS_DIR}; got: {run!r}"
-    assert PTY_SELECT in run, (
-        f"'{PTY_STEP}' must select the marker with {PTY_SELECT!r}, so the unmarked "
-        f"files under {PTY_TESTS_DIR} are not run a second time here; got: {run!r}"
-    )
-    assert not _XDIST_WORKERS_RE.search(run), (
-        f"'{PTY_STEP}' runs pytest with xdist workers; the scenarios time their own "
-        f"repaints and must not compete with each other"
-    )
-    assert "--dist" not in run, f"'{PTY_STEP}' sets an xdist dist mode; it must stay serial"
+def _undeselected_reaches(
+    wf: dict[str, Any], row: LaneLeavingMarker, carriers: list[str]
+) -> list[str]:
+    """Non-host invocations that reach a marked file without deselecting the
+    marker (empty = the row's tests run in its hosts and nowhere else)."""
+    hosts = {(host.job, host.step) for host in row.hosts}
+    return [
+        f"{job} · {step}: {command}"
+        for job, step, command in _ci_pytest_invocations(wf)
+        if (job, step) not in hosts
+        and any(_invocation_reaches(command, f) for f in carriers)
+        and row.deselect_term() not in command
+    ]
 
 
-def test_pty_suite_runs_in_its_own_serial_step__mutation_drops_the_step() -> None:
-    """Deleting the step is the failure that costs nothing at the time: the
-    deselection above keeps the suite out of the lane, so CI goes green over a
-    suite nobody runs."""
-    mutated = copy.deepcopy(_load_workflow())
-    _jobs(mutated)[UNIT_TEST_JOB]["steps"].remove(_pty_step(mutated))
-    with pytest.raises(AssertionError):
-        test_pty_suite_runs_in_its_own_serial_step(mutated)
+def _host_invocations(wf: dict[str, Any], host: SerialHost) -> list[str]:
+    _find_named_step(wf, host.job, host.step)
+    return [
+        command
+        for job, step, command in _ci_pytest_invocations(wf)
+        if (job, step) == (host.job, host.step)
+    ]
 
 
-def test_pty_suite_runs_in_its_own_serial_step__mutation_adds_xdist_workers() -> None:
-    """Speeding the step up with ``-n 2`` reinstates precisely the contention
-    the suite was moved here to escape."""
-    mutated = copy.deepcopy(_load_workflow())
-    step = _pty_step(mutated)
-    step["run"] = step["run"].replace("--tb=short", "--tb=short -n 2")
-    with pytest.raises(AssertionError, match="xdist workers"):
-        test_pty_suite_runs_in_its_own_serial_step(mutated)
+def _per_pr_hosts(wf: dict[str, Any], row: LaneLeavingMarker) -> tuple[SerialHost, ...]:
+    """The row's hosts whose job gates the merge (``all-checks-passed.needs``).
 
-
-def test_pty_suite_runs_in_its_own_serial_step__mutation_drops_the_marker() -> None:
-    """Selecting the bare directory instead would re-run the unmarked
-    ``test_stub_coverage.py``, which already ran in the parallel lane."""
-    mutated = copy.deepcopy(_load_workflow())
-    step = _pty_step(mutated)
-    original = step["run"]
-    step["run"] = original.replace(f" {PTY_SELECT}", "")
-    assert step["run"] != original, "marker selection not found; mutation is stale"
-    with pytest.raises(AssertionError):
-        test_pty_suite_runs_in_its_own_serial_step(mutated)
-
-
-def test_pty_step_runs_only_where_a_terminal_is_real(workflow: dict[str, Any]) -> None:
-    """Pinned to the Linux cells. The scenarios self-skip where a pty is not a
-    thing, and a step whose whole suite skipped reports green over nothing, so
-    the venue is chosen rather than discovered, by the same rule the live Channel
-    Access step in this job already follows."""
-    condition = _pty_step(workflow).get("if", "")
-    assert "matrix.os" in condition and "ubuntu-latest" in condition, (
-        f"'{PTY_STEP}' must be gated on the Linux matrix cells; got if: {condition!r}"
-    )
-
-
-def test_pty_step_runs_only_where_a_terminal_is_real__mutation_drops_the_gate() -> None:
-    mutated = copy.deepcopy(_load_workflow())
-    del _pty_step(mutated)["if"]
-    with pytest.raises(AssertionError):
-        test_pty_step_runs_only_where_a_terminal_is_real(mutated)
+    A host outside the merge gate runs on demand, so nothing a pull request
+    triggers times its files; a local mirror owes exactly the files under the
+    hosts this returns."""
+    needs = set(_jobs(wf)[GATE_JOB]["needs"])
+    return tuple(host for host in row.hosts if host.job in needs)
 
 
 def _registered_markers(pyproject: dict[str, Any]) -> list[str]:
@@ -1522,26 +1630,30 @@ def _registered_markers(pyproject: dict[str, Any]) -> list[str]:
     return [entry.split(":", 1)[0].strip() for entry in declared]
 
 
-def test_pty_marker_is_registered(pyproject: dict[str, Any]) -> None:
-    """Both invocations above name the marker as a bare string, and pyproject is
-    the only place that says what it means. Unregistered, the suite collects
-    with an unknown-mark warning under the lane's own invocation (measured) and
-    errors outright under an explicit ``--strict-markers`` run, while the
-    deselection and the selection go on matching nothing but each other."""
-    assert PTY_MARKER in _registered_markers(pyproject), (
-        f"register the '{PTY_MARKER}' marker in [tool.pytest.ini_options].markers; "
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_lane_leaving_marker_is_registered(
+    row: LaneLeavingMarker, pyproject: dict[str, Any]
+) -> None:
+    """ci.yml and the scripts name the marker as a bare string, and pyproject
+    is the only place that says what it means. Unregistered, the marked files
+    collect with an unknown-mark warning under the lane's own invocation and
+    error outright under ``--strict-markers``, while the deselection and the
+    selection go on matching nothing but each other."""
+    assert row.marker in _registered_markers(pyproject), (
+        f"register the '{row.marker}' marker in [tool.pytest.ini_options].markers; "
         f"ci.yml selects and deselects it by name"
     )
 
 
-def test_pty_marker_is_registered__mutation_drops_it() -> None:
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_lane_leaving_marker_is_registered__mutation_drops_it(row: LaneLeavingMarker) -> None:
     mutated = _load_pyproject()
     ini = mutated["tool"]["pytest"]["ini_options"]
     original = ini["markers"]
-    ini["markers"] = [e for e in original if e.split(":", 1)[0].strip() != PTY_MARKER]
+    ini["markers"] = [e for e in original if e.split(":", 1)[0].strip() != row.marker]
     assert ini["markers"] != original, "marker not registered; mutation is stale"
     with pytest.raises(AssertionError):
-        test_pty_marker_is_registered(mutated)
+        test_lane_leaving_marker_is_registered(row, mutated)
 
 
 @functools.cache
@@ -1570,8 +1682,8 @@ def _test_module_sources() -> dict[str, str]:
     """Every test module under ``tests/``, keyed by repo-relative posix path.
 
     This module excludes itself: it is the scanner, and its own source spells
-    the marker it searches for: in the constant above, in these docstrings,
-    and in the synthetic file the mutation below invents. A scanner that found
+    the markers it searches for: in the table above, in these docstrings, and
+    in the synthetic files the mutations below invent. A scanner that found
     itself would report a permanent false positive.
     """
     root = CI_YML.parents[2]
@@ -1583,42 +1695,224 @@ def _test_module_sources() -> dict[str, str]:
     }
 
 
-def _pty_marked_files_outside_the_step(sources: dict[str, str]) -> list[str]:
-    """Marked files the serial step's path does not reach (empty = all reachable)."""
-    return sorted(
-        name
-        for name, source in sources.items()
-        if _PTY_MARK_RE.search(source) and not name.startswith(PTY_TESTS_DIR)
+def _check_carried(row: LaneLeavingMarker, sources: dict[str, str]) -> None:
+    assert _carriers(row, sources), (
+        f"no test file carries {row.marker!r} any more. Either its last test was "
+        f"removed (drop the row and its serial step with it) or the marker scan broke"
     )
 
 
-def test_every_pty_marked_file_lives_where_the_serial_step_looks() -> None:
-    """The deselection is repo-wide but the step selects one directory, so a
-    ``pty``-marked file written anywhere else is dropped by the lane and picked
-    up by nothing. It would not fail, it would not skip, and it would not
-    appear in any summary: it would simply stop being run, which is the one
-    outcome this module exists to make impossible."""
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_lane_leaving_marker_is_carried(row: LaneLeavingMarker) -> None:
+    """A row whose marker no test carries is wiring for nothing: a serial step
+    that selects zero tests and a deselection that guards no file."""
+    _check_carried(row, _test_module_sources())
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_lane_leaving_marker_is_carried__mutation_drops_the_carriers(
+    row: LaneLeavingMarker,
+) -> None:
     sources = _test_module_sources()
-    marked = [name for name, source in sources.items() if _PTY_MARK_RE.search(source)]
-    assert marked, (
-        f"no test file carries {PTY_MARKER!r} any more. Either the suite was removed "
-        f"(drop the lane wiring with it) or the marker scan broke"
-    )
-    stray = _pty_marked_files_outside_the_step(sources)
+    carriers = set(_carriers(row, sources))
+    assert carriers, f"no file carries {row.marker!r}; mutation is stale"
+    mutated = {name: src for name, src in sources.items() if name not in carriers}
+    with pytest.raises(AssertionError):
+        _check_carried(row, mutated)
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_every_marked_file_lives_where_a_serial_step_looks(row: LaneLeavingMarker) -> None:
+    """The deselection is repo-wide but each host selects one directory, so a
+    marked file written anywhere else is dropped by the lane and picked up by
+    nothing. It would not fail, it would not skip, and it would not appear in
+    any summary: it would simply stop being run, which is the one outcome this
+    module exists to make impossible."""
+    stray = _unhosted_carriers(row, _test_module_sources())
+    paths = [host.path for host in row.hosts]
     assert stray == [], (
-        f"{PTY_MARKER}-marked file(s) outside {PTY_TESTS_DIR}: {stray}. The parallel lane "
-        f"deselects the marker everywhere, so these run nowhere. Move them under "
-        f"{PTY_TESTS_DIR} or widen the '{PTY_STEP}' step to select them."
+        f"{row.marker}-marked file(s) outside {paths}: {stray}. The parallel lane "
+        f"deselects the marker everywhere, so these run nowhere. Move them under a "
+        f"host path or add a serial step to the row in LANE_LEAVING_MARKERS."
     )
 
 
-def test_every_pty_marked_file_lives_where_the_serial_step_looks__mutation_strays() -> None:
-    """A future marked file one directory over must be reported, not tolerated
-    because the suite it was modelled on is still in the right place."""
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_every_marked_file_lives_where_a_serial_step_looks__mutation_strays(
+    row: LaneLeavingMarker,
+) -> None:
+    """A future marked file one directory over must be reported by name, not
+    tolerated because the tests it was modelled on are still in place."""
     sources = _test_module_sources()
-    phantom = "tests/cli/test_future_terminal_scenarios.py"
-    sources[phantom] = "pytestmark = [pytest.mark.pty]\n"
-    assert _pty_marked_files_outside_the_step(sources) == [phantom]
+    phantom = f"tests/cli/test_future_{row.marker}_scenarios.py"
+    sources[phantom] = f"pytestmark = [pytest.mark.{row.marker}]\n"
+    assert _unhosted_carriers(row, sources) == [phantom]
+
+
+def _check_host(wf: dict[str, Any], host: SerialHost) -> None:
+    commands = _host_invocations(wf, host)
+    assert commands, f"'{host.step}' must invoke pytest"
+    host_lines = [run for run in commands if host.select in run]
+    assert host_lines, (
+        f"'{host.step}' must select the marker with {host.select!r}, so unmarked "
+        f"files under {host.path} are not run a second time here; got: {commands!r}"
+    )
+    deselect = f"not {host.select.removeprefix('-m ')}"
+    for run in commands:
+        if run not in host_lines:
+            assert deselect in run, (
+                f"'{host.step}' holds a pytest line beside its host line that does not "
+                f"carry {deselect!r}, so it times the marked tests among the others; "
+                f"got: {run!r}"
+            )
+    for run in host_lines:
+        assert host.path.rstrip("/") in run, f"'{host.step}' must select {host.path}; got: {run!r}"
+        assert not _XDIST_WORKERS_RE.search(run), (
+            f"'{host.step}' runs pytest with xdist workers; the marked tests read the "
+            f"machine and must not compete with each other"
+        )
+        assert "--dist" not in run, f"'{host.step}' sets an xdist dist mode; it must stay serial"
+
+
+@pytest.mark.parametrize(("row", "host"), _HOSTED, ids=_HOSTED_IDS)
+def test_marker_runs_in_its_own_serial_step(
+    row: LaneLeavingMarker, host: SerialHost, workflow: dict[str, Any]
+) -> None:
+    """The host step must pick the marker back up, serially. No worker count
+    and no dist mode: a second marked test running alongside is the load the
+    deselection was for, and running it inside this step would be no better
+    than leaving it in the lane."""
+    assert host.select == row.select()
+    _check_host(workflow, host)
+
+
+@pytest.mark.parametrize("host", _HOSTS, ids=_HOSTED_IDS)
+def test_marker_runs_in_its_own_serial_step__mutation_drops_the_step(host: SerialHost) -> None:
+    """Deleting the step is the failure that costs nothing at the time: the
+    deselection keeps the tests out of the lane, so CI goes green over tests
+    nobody runs."""
+    mutated = _load_workflow()
+    steps = _jobs(mutated)[host.job]["steps"]
+    steps.remove(_find_named_step(mutated, host.job, host.step))
+    with pytest.raises(AssertionError):
+        _check_host(mutated, host)
+
+
+@pytest.mark.parametrize("host", _HOSTS, ids=_HOSTED_IDS)
+def test_marker_runs_in_its_own_serial_step__mutation_adds_xdist_workers(host: SerialHost) -> None:
+    """Speeding the step up with ``-n 2`` reinstates precisely the contention
+    the tests were moved here to escape."""
+    mutated = _load_workflow()
+    step = _find_named_step(mutated, host.job, host.step)
+    original = step["run"]
+    step["run"] = original.replace("--tb=short", "--tb=short -n 2")
+    assert step["run"] != original, "no --tb=short on the host step; mutation is stale"
+    with pytest.raises(AssertionError, match="xdist workers"):
+        _check_host(mutated, host)
+
+
+@pytest.mark.parametrize("host", _HOSTS, ids=_HOSTED_IDS)
+def test_marker_runs_in_its_own_serial_step__mutation_drops_the_select(host: SerialHost) -> None:
+    """Selecting the bare directory instead would re-run the unmarked files
+    under it, which already ran elsewhere."""
+    mutated = _load_workflow()
+    step = _find_named_step(mutated, host.job, host.step)
+    original = step["run"]
+    step["run"] = original.replace(f" {host.select}", "")
+    assert step["run"] != original, "marker selection not found; mutation is stale"
+    with pytest.raises(AssertionError):
+        _check_host(mutated, host)
+
+
+def test_marker_runs_in_its_own_serial_step__mutation_neighbour_line_drops_the_term() -> None:
+    """A host step may run the rest of its module on a line of its own; that
+    line without the term times the budgets a second time, among the others."""
+    row = _row("wallclock")
+    host = next(h for h in row.hosts if h.job == BENCHMARKS_JOB)
+    mutated = _load_workflow()
+    step = _find_named_step(mutated, host.job, host.step)
+    original = step["run"]
+    step["run"] = original.replace(f' -m "{row.deselect_term()}"', "")
+    assert step["run"] != original, "neighbour-line deselection not found; mutation is stale"
+    with pytest.raises(AssertionError, match="beside its host line"):
+        _check_host(mutated, host)
+
+
+def _check_nothing_else_times_it(wf: dict[str, Any], row: LaneLeavingMarker) -> None:
+    carriers = _carriers(row, _test_module_sources())
+    leaks = _undeselected_reaches(wf, row, carriers)
+    assert leaks == [], (
+        f"pytest invocation(s) reach a {row.marker}-marked file without "
+        f"{row.deselect_term()!r}: {leaks}. Only the row's serial step may run it; "
+        f"every other invocation that collects the file must deselect the marker"
+    )
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_nothing_else_times_it(row: LaneLeavingMarker, workflow: dict[str, Any]) -> None:
+    """Every pytest invocation in ci.yml that can collect a marked file is the
+    row's host or deselects the marker. This is "every parallel lane hands it
+    away", and also "the step beside the host does not run it a second time".
+    An invocation that collects no marked file owes nothing."""
+    _check_nothing_else_times_it(workflow, row)
+
+
+def _unit_lane_with(wf: dict[str, Any], replacement: str) -> dict[str, Any]:
+    step = _find_named_step(wf, UNIT_TEST_JOB, "Run unit tests")
+    original = step["run"]
+    step["run"] = original.replace(f" {UNIT_LANE_DESELECT}", replacement)
+    assert step["run"] != original, "unit-lane deselection not found; mutation is stale"
+    return wf
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_nothing_else_times_it__mutation_unit_lane_drops_the_term(row: LaneLeavingMarker) -> None:
+    others = tuple(r for r in LANE_LEAVING_MARKERS if r is not row)
+    replacement = f" {_lane_deselect(others)}" if others else ""
+    mutated = _unit_lane_with(_load_workflow(), replacement)
+    with pytest.raises(AssertionError):
+        _check_nothing_else_times_it(mutated, row)
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_nothing_else_times_it__mutation_parks_it_in_a_comment(row: LaneLeavingMarker) -> None:
+    """A deselection that survives only in a trailing shell comment, which is
+    exactly how a temporary revert gets written, must not count."""
+    mutated = _unit_lane_with(_load_workflow(), f"  # TODO restore {UNIT_LANE_DESELECT}")
+    with pytest.raises(AssertionError):
+        _check_nothing_else_times_it(mutated, row)
+
+
+def test_nothing_else_times_it__mutation_sidecar_step_drops_the_term() -> None:
+    """The step beside the budget's host collects the same directory by
+    keyword; without the term it would time the budget a second time, among
+    the module's other tests."""
+    row = _row("wallclock")
+    mutated = _load_workflow()
+    step = _find_named_step(mutated, "qmd-sidecar-e2e", "Run qmd sidecar E2E")
+    original = step["run"]
+    step["run"] = original.replace(f" and {row.deselect_term()}", "")
+    assert step["run"] != original, "sidecar-step deselection not found; mutation is stale"
+    with pytest.raises(AssertionError):
+        _check_nothing_else_times_it(mutated, row)
+
+
+def test_pty_step_runs_only_where_a_terminal_is_real(workflow: dict[str, Any]) -> None:
+    """Pinned to the Linux cells. The scenarios self-skip where a pty is not a
+    thing, and a step whose whole suite skipped reports green over nothing, so
+    the venue is chosen rather than discovered, by the same rule the live Channel
+    Access step in this job already follows."""
+    condition = _find_named_step(workflow, TERMINAL_HOST.job, TERMINAL_HOST.step).get("if", "")
+    assert "matrix.os" in condition and "ubuntu-latest" in condition, (
+        f"'{TERMINAL_HOST.step}' must be gated on the Linux matrix cells; got if: {condition!r}"
+    )
+
+
+def test_pty_step_runs_only_where_a_terminal_is_real__mutation_drops_the_gate() -> None:
+    mutated = _load_workflow()
+    del _find_named_step(mutated, TERMINAL_HOST.job, TERMINAL_HOST.step)["if"]
+    with pytest.raises(AssertionError):
+        test_pty_step_runs_only_where_a_terminal_is_real(mutated)
 
 
 def _imports_stdlib_pty(source: str) -> bool:
@@ -1641,12 +1935,13 @@ def _imports_stdlib_pty(source: str) -> bool:
 
 def _unmarked_terminal_files(sources: dict[str, str]) -> list[str]:
     """Files under the pty directory that open a terminal without the marker."""
+    pattern = TERMINAL_ROW.mark_re()
     return sorted(
         name
         for name, source in sources.items()
-        if name.startswith(PTY_TESTS_DIR)
+        if name.startswith(TERMINAL_HOST.path)
         and _imports_stdlib_pty(source)
-        and not _PTY_MARK_RE.search(source)
+        and not pattern.search(source)
     )
 
 
@@ -1666,17 +1961,18 @@ def test_every_file_that_opens_a_terminal_carries_the_marker() -> None:
     terminal_files = [
         name
         for name, source in sources.items()
-        if name.startswith(PTY_TESTS_DIR) and _imports_stdlib_pty(source)
+        if name.startswith(TERMINAL_HOST.path) and _imports_stdlib_pty(source)
     ]
     assert terminal_files, (
-        f"no file under {PTY_TESTS_DIR} imports the stdlib pty module any more; either "
-        f"the suite left or the import scan broke"
+        f"no file under {TERMINAL_HOST.path} imports the stdlib pty module any more; "
+        f"either the suite left or the import scan broke"
     )
     unmarked = _unmarked_terminal_files(sources)
     assert unmarked == [], (
-        f"file(s) under {PTY_TESTS_DIR} open a terminal without the {PTY_MARKER!r} marker: "
-        f"{unmarked}. They would run in the parallel lane, where a scenario that times its "
-        f"own repaints measures the runner. Add `pytest.mark.{PTY_MARKER}`."
+        f"file(s) under {TERMINAL_HOST.path} open a terminal without the "
+        f"{TERMINAL_ROW.marker!r} marker: {unmarked}. They would run in the parallel "
+        f"lane, where a scenario that times its own repaints measures the runner. Add "
+        f"`pytest.mark.{TERMINAL_ROW.marker}`."
     )
 
 
@@ -1685,7 +1981,7 @@ def test_every_file_that_opens_a_terminal_carries_the_marker__mutation_forgets_i
     ``tests/pty/``, opens a pty inside the usual POSIX guard, and nobody
     notices the missing marker because it passes on an idle machine."""
     sources = _test_module_sources()
-    phantom = f"{PTY_TESTS_DIR}test_future_scenarios.py"
+    phantom = f"{TERMINAL_HOST.path}test_future_scenarios.py"
     sources[phantom] = 'import os\n\nif os.name == "posix":\n    import pty\n'
     assert _unmarked_terminal_files(sources) == [phantom]
 
@@ -1694,7 +1990,7 @@ def test_every_file_that_opens_a_terminal_carries_the_marker__mutation_marked_is
     """And the same file WITH the marker must pass, so the guard is reporting
     the missing marker rather than the import."""
     sources = _test_module_sources()
-    sources[f"{PTY_TESTS_DIR}test_future_scenarios.py"] = (
+    sources[f"{TERMINAL_HOST.path}test_future_scenarios.py"] = (
         'import os\n\nimport pytest\n\nif os.name == "posix":\n    import pty\n'
         "\npytestmark = [pytest.mark.pty]\n"
     )
@@ -1703,8 +1999,8 @@ def test_every_file_that_opens_a_terminal_carries_the_marker__mutation_marked_is
 
 # The same premise applied to the local check scripts. They run the identical
 # wholesale sweep, so without the deselection a developer's pre-commit check is
-# where the timing scenarios flake, and the report is unreadable there: no
-# artifacts, no diagnostics, just a red that does not reproduce.
+# where these tests flake, and the report is unreadable there: no artifacts, no
+# diagnostics, just a red that does not reproduce.
 
 
 def _script_pytest_lines(source: str) -> list[str]:
@@ -1720,85 +2016,416 @@ def _lane_invocations(source: str) -> list[str]:
     return [line for line in _script_pytest_lines(source) if "--ignore=tests/e2e" in line]
 
 
-def _sweeps_missing_the_deselection(source: str) -> list[str]:
-    """Wholesale sweeps in *source* that do not hand the marker away (empty =
-    all of them do)."""
-    return [line.strip() for line in _lane_invocations(source) if PTY_DESELECT_TERM not in line]
+def _sweeps_missing_the_deselection(source: str, row: LaneLeavingMarker) -> list[str]:
+    """Wholesale sweeps in *source* that do not hand the row's marker away
+    (empty = all of them do)."""
+    return [line.strip() for line in _lane_invocations(source) if row.deselect_term() not in line]
 
 
-def _drop_the_deselection(source: str) -> str:
-    """*source* with the deselection removed, in either spelling it appears in
-    (quick_check.sh combines it with ``not slow``)."""
-    return source.replace(f' -m "not slow and {PTY_DESELECT_TERM}"', ' -m "not slow"').replace(
-        f" {PTY_DESELECT}", ""
-    )
+def _drop_the_term(source: str, row: LaneLeavingMarker) -> str:
+    """*source* with the row's term removed from every ``-m "..."`` expression,
+    whatever it is combined with (quick_check.sh adds ``not slow``); an
+    expression left empty is removed whole."""
+
+    def _without(match: re.Match[str]) -> str:
+        terms = [t for t in match.group(1).split(" and ") if t != row.deselect_term()]
+        return f' -m "{" and ".join(terms)}"' if terms else ""
+
+    return re.sub(r' -m "([^"]*)"', _without, source)
 
 
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
 @pytest.mark.parametrize("script", LANE_SCRIPTS)
-def test_local_check_scripts_deselect_the_pty_marker(script: str) -> None:
-    """Every local script that sweeps ``tests/`` must hand the suite away too.
-    The premise of the whole handover is that these scenarios cannot share a
-    machine with four workers, and that is as true on a laptop as on a runner.
-    It is worse on a laptop, in fact: there are no artifacts and no per-worker
+def test_local_check_scripts_deselect_every_lane_leaving_marker(
+    script: str, row: LaneLeavingMarker
+) -> None:
+    """Every local script that sweeps ``tests/`` must hand the marker away too.
+    The premise of the handover is that these tests cannot share a machine
+    with four workers, and that is as true on a laptop as on a runner. It is
+    worse on a laptop, in fact: there are no artifacts and no per-worker
     diagnostics there, so the flake arrives as a red that does not reproduce."""
     source = _script_source(script)
     assert _lane_invocations(source), (
         f"{script} no longer runs a wholesale `pytest tests/` sweep; this pin is stale"
     )
-    assert _sweeps_missing_the_deselection(source) == [], (
-        f"{script} sweeps tests/ without deselecting the {PTY_MARKER!r} marker: "
-        f"{_sweeps_missing_the_deselection(source)}"
+    assert _sweeps_missing_the_deselection(source, row) == [], (
+        f"{script} sweeps tests/ without deselecting the {row.marker!r} marker: "
+        f"{_sweeps_missing_the_deselection(source, row)}"
     )
 
 
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
 @pytest.mark.parametrize("script", LANE_SCRIPTS)
-def test_local_check_scripts_deselect_the_pty_marker__mutation_drops_it(script: str) -> None:
+def test_local_check_scripts_deselect_every_lane_leaving_marker__mutation_drops_it(
+    script: str, row: LaneLeavingMarker
+) -> None:
     source = _script_source(script)
-    mutated = _drop_the_deselection(source)
-    assert mutated != source, f"no deselection in {script}; mutation is stale"
-    assert _sweeps_missing_the_deselection(mutated) != []
+    mutated = _drop_the_term(source, row)
+    assert mutated != source, f"no {row.marker!r} deselection in {script}; mutation is stale"
+    assert _sweeps_missing_the_deselection(mutated, row) != []
 
 
-def _missing_ci_check_serial_run(source: str) -> list[str]:
-    """What ``ci_check.sh``'s serial follow-up is missing (empty = wired)."""
-    serial = [line for line in _script_pytest_lines(source) if PTY_SELECT in line]
+#: Any xdist worker count on a pytest line, a digit or ``auto``. A serial run
+#: carries none.
+_ANY_XDIST_WORKERS_RE = re.compile(r"(?<!\S)-n\s+(auto|\d)")
+
+
+def _missing_serial_run(source: str, row: LaneLeavingMarker) -> list[str]:
+    """What a mirror script's serial follow-up for *row* is missing (empty = wired)."""
+    serial = [line for line in _script_pytest_lines(source) if row.select() in line]
     if not serial:
-        return ["a serial pty invocation"]
+        return [f"a serial {row.marker} invocation"]
     return [
         f"xdist flags on {line.strip()!r}"
         for line in serial
-        if _XDIST_WORKERS_RE.search(line) or "--dist" in line
+        if _ANY_XDIST_WORKERS_RE.search(line) or "--dist" in line
     ]
 
 
-def test_ci_check_also_runs_what_it_deselects() -> None:
-    """``ci_check.sh`` is the local mirror of the CI lane, so it owes the same
-    serial follow-up the lane has. The other two scripts are documented fast
-    sweeps and legitimately stop at the deselection; this one would otherwise
-    quietly cover less than it did before the marker existed."""
-    assert _missing_ci_check_serial_run(_script_source(CI_CHECK_SCRIPT)) == [], (
-        f"{CI_CHECK_SCRIPT} deselects the {PTY_MARKER!r} marker in its sweep but does not "
-        f"run it serially afterwards: add `uv run pytest {PTY_TESTS_DIR} {PTY_SELECT}`"
+def _unreached_by_serial_runs(source: str, row: LaneLeavingMarker, files: list[str]) -> list[str]:
+    """The *files* that none of the script's serial runs for *row* collects
+    (empty = every one is reached).
+
+    Each line carrying the row's selection is read from ``uv run pytest`` up to
+    the next shell separator, the way ``_ci_pytest_invocations`` cuts a ci.yml
+    command, so a wrapper before it (``run_bounded.py … --``) and a ``; then``
+    after it are not read as paths. A line whose only path is ``"$@"`` reaches
+    nothing by ``_invocation_reaches``' shell-variable rule: a run over the
+    caller's paths owes no fixed file."""
+    runs = [
+        _SHELL_SEPARATOR_RE.split(line[line.index("uv run pytest ") :], maxsplit=1)[0]
+        for line in _script_pytest_lines(source)
+        if row.select() in line
+    ]
+    return [name for name in files if not any(_invocation_reaches(run, name) for run in runs)]
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_mirror_scripts_run_what_they_deselect(
+    script: str, row: LaneLeavingMarker, workflow: dict[str, Any]
+) -> None:
+    """``ci_check.sh`` mirrors the CI lane and ``gate.sh`` is the merge gate, so
+    each owes the same serial follow-up the lane has. The other two scripts are
+    documented fast sweeps and legitimately stop at the deselection; these would
+    otherwise quietly cover less than they did before the marker existed."""
+    missing = _missing_serial_run(_script_source(script), row)
+    assert missing == [], (
+        f"{script} deselects the {row.marker!r} marker in its sweep but does not "
+        f"run it serially afterwards ({missing}): add `uv run pytest "
+        f"{' '.join(host.path for host in _per_pr_hosts(workflow, row))} {row.select()}`"
     )
 
 
-def test_ci_check_also_runs_what_it_deselects__mutation_drops_the_serial_run() -> None:
-    """Dropping the follow-up leaves a script that covers strictly less than it
-    used to while printing the same green summary."""
-    source = _script_source(CI_CHECK_SCRIPT)
-    mutated = "\n".join(line for line in source.splitlines() if PTY_SELECT not in line)
-    assert mutated != source, f"no serial pty invocation in {CI_CHECK_SCRIPT}; mutation is stale"
-    assert _missing_ci_check_serial_run(mutated) == ["a serial pty invocation"]
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_mirror_scripts_run_what_they_deselect__mutation_drops_the_serial_run(
+    script: str, row: LaneLeavingMarker
+) -> None:
+    """Dropping the follow-up from ``ci_check.sh`` or ``gate.sh`` leaves a
+    script that covers strictly less than it used to while reporting the same
+    green."""
+    source = _script_source(script)
+    mutated = "\n".join(line for line in source.splitlines() if row.select() not in line)
+    assert mutated != source, f"no serial {row.marker} run in {script}; mutation is stale"
+    assert _missing_serial_run(mutated, row) == [f"a serial {row.marker} invocation"]
 
 
-def test_ci_check_also_runs_what_it_deselects__mutation_parallelizes_it() -> None:
-    """And speeding the follow-up up with workers must be reported: it would
-    put the scenarios back on a contended machine, which is what the sweep
-    dropped them to avoid."""
-    source = _script_source(CI_CHECK_SCRIPT)
-    mutated = source.replace(f"{PTY_SELECT} -v", f"{PTY_SELECT} -n 4 -v")
-    assert mutated != source, "serial pty invocation not found; mutation is stale"
-    assert _missing_ci_check_serial_run(mutated) != []
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_mirror_scripts_run_what_they_deselect__mutation_parallelizes_it(
+    script: str, row: LaneLeavingMarker
+) -> None:
+    """And speeding the follow-up in ``ci_check.sh`` or ``gate.sh`` up with
+    workers must be reported: it would put the tests back on a contended
+    machine, which is what the sweep dropped them to avoid."""
+    source = _script_source(script)
+    mutated = re.sub(rf"({re.escape(row.select())})(?=\s)", r"\1 -n 4", source)
+    assert mutated != source, f"serial {row.marker} run not found; mutation is stale"
+    assert _missing_serial_run(mutated, row) != []
+
+
+@pytest.mark.parametrize(
+    ("marker", "jobs"), [("pty", ["test"]), ("wallclock", ["qmd-sidecar-e2e"])]
+)
+def test_per_pr_hosts_are_the_hosts_the_merge_gate_needs(
+    marker: str, jobs: list[str], workflow: dict[str, Any]
+) -> None:
+    """The scale guard's host is dispatched by hand and sits outside the merge
+    gate, so it is the one host a per-PR mirror does not owe."""
+    assert [host.job for host in _per_pr_hosts(workflow, _row(marker))] == jobs
+
+
+def test_unreached_by_serial_runs_reads_each_serial_line() -> None:
+    """Each serial line is read from ``uv run pytest`` to the next separator;
+    a file under neither line's path is the one reported."""
+    row = _row("wallclock")
+    source = (
+        "if ! uv run python scripts/run_bounded.py 900 -- uv run pytest tests/integration "
+        "-m wallclock -v; then\n"
+        "uv run pytest tests/cli/test_a.py -m wallclock && echo tests/elsewhere\n"
+    )
+    files = ["tests/integration/test_x.py", "tests/cli/test_a.py", "tests/elsewhere/test_y.py"]
+    assert _unreached_by_serial_runs(source, row, files) == ["tests/elsewhere/test_y.py"]
+
+
+def _per_pr_carriers(
+    wf: dict[str, Any], row: LaneLeavingMarker, sources: dict[str, str]
+) -> list[str]:
+    """The row's marked files under a host that runs on every pull request."""
+    paths = [host.path for host in _per_pr_hosts(wf, row)]
+    return [name for name in _carriers(row, sources) if any(name.startswith(p) for p in paths)]
+
+
+def _check_serial_reach(
+    script: str,
+    source: str,
+    row: LaneLeavingMarker,
+    wf: dict[str, Any],
+    sources: dict[str, str],
+) -> None:
+    paths = [host.path for host in _per_pr_hosts(wf, row)]
+    files = _per_pr_carriers(wf, row, sources)
+    if paths:
+        assert files, (
+            f"no {row.marker}-marked file under the per-PR host paths {paths}; "
+            f"the reach check is stale"
+        )
+    unreached = _unreached_by_serial_runs(source, row, files)
+    assert unreached == [], (
+        f"{script}'s serial {row.marker} runs reach none of {unreached}, which CI "
+        f"times on every pull request under {paths}: widen the script's serial path "
+        f"or move the file"
+    )
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_runs_reach_every_per_pr_marked_file(
+    script: str, row: LaneLeavingMarker, workflow: dict[str, Any]
+) -> None:
+    """A serial run that exists but collects a narrower path than CI's host
+    drops the files in between: the sweep deselected them and the follow-up
+    never looks there, so the script reports green over tests it never ran."""
+    _check_serial_reach(script, _script_source(script), row, workflow, _test_module_sources())
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_runs_reach_every_per_pr_marked_file__mutation_narrows_the_path(
+    script: str, row: LaneLeavingMarker, workflow: dict[str, Any]
+) -> None:
+    source = _script_source(script)
+    hosts = [host.path.rstrip("/") for host in _per_pr_hosts(workflow, row)]
+    host_re = re.compile(rf"(?<!\S)(?:{'|'.join(map(re.escape, hosts))})/?(?=\s)")
+    mutated = "\n".join(
+        host_re.sub("tests/_nowhere/test_x.py", line) if row.select() in line else line
+        for line in source.splitlines()
+    )
+    assert mutated != source, f"no serial {row.marker} run over {hosts} in {script}; stale"
+    files = _per_pr_carriers(workflow, row, _test_module_sources())
+    assert _unreached_by_serial_runs(mutated, row, files) == files
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_runs_reach_every_per_pr_marked_file__mutation_adds_a_per_pr_directory(
+    script: str, row: LaneLeavingMarker, workflow: dict[str, Any]
+) -> None:
+    """A second per-PR host directory is owed too, not only the first."""
+    widened = replace(
+        row, hosts=(*row.hosts, SerialHost(UNIT_TEST_JOB, "x", "tests/cli/", row.select()))
+    )
+    sources = _test_module_sources()
+    phantom = f"tests/cli/test_future_{row.marker}.py"
+    assert phantom not in sources, f"{phantom} exists; mutation is stale"
+    sources[phantom] = f"pytestmark = [pytest.mark.{row.marker}]\n"
+    assert phantom in _per_pr_carriers(workflow, widened, sources)
+    assert _unreached_by_serial_runs(
+        _script_source(script), widened, _per_pr_carriers(workflow, widened, sources)
+    ) == [phantom]
+
+
+@pytest.mark.parametrize("script", SERIAL_MIRROR_SCRIPTS)
+def test_serial_runs_reach_every_per_pr_marked_file__mutation_gates_the_on_demand_host(
+    script: str,
+) -> None:
+    """The scale guard is exempt only because its job is outside the merge
+    gate; the day it gates the merge, a mirror owes it as well."""
+    row = _row("wallclock")
+    mutated = _load_workflow()
+    needs = _jobs(mutated)[GATE_JOB]["needs"]
+    assert BENCHMARKS_JOB not in needs, f"{BENCHMARKS_JOB} gates the merge; mutation is stale"
+    needs.append(BENCHMARKS_JOB)
+    files = _per_pr_carriers(mutated, row, _test_module_sources())
+    scale = "tests/services/channel_finder/graph_index/test_scale.py"
+    assert scale in _unreached_by_serial_runs(_script_source(script), row, files)
+
+
+# The gate is held tighter than the other scripts: every pytest line it runs is
+# either the lane's sweep, with exactly the lane's marker expression, or one
+# table row's serial run, with no workers. A line that is neither (a hand-added
+# term, a dropped expression, a parallelized serial run) is drift.
+
+#: A ``-m`` expression on a script line, double-quoted or a bare word.
+_MARKER_EXPR_RE = re.compile(r'(?<!\S)-m\s+("[^"]*"|\S+)')
+
+
+def _gate_lines_off_the_table(source: str) -> list[str]:
+    """The script's pytest lines that are neither the lane's sweep nor one
+    row's serial run (empty = every line is on the table)."""
+    selects = {row.select() for row in LANE_LEAVING_MARKERS}
+    off = []
+    for line in _script_pytest_lines(source):
+        exprs = [f"-m {expr}" for expr in _MARKER_EXPR_RE.findall(line)]
+        has_workers = bool(_ANY_XDIST_WORKERS_RE.search(line))
+        sweep = len(exprs) == 1 and exprs[0] == UNIT_LANE_DESELECT and has_workers
+        serial = (
+            len(exprs) == 1 and exprs[0] in selects and not has_workers and "--dist" not in line
+        )
+        if not (sweep or serial):
+            off.append(line.strip())
+    return off
+
+
+def _gate_sweeps(source: str) -> list[str]:
+    return [line for line in _script_pytest_lines(source) if UNIT_LANE_DESELECT in line]
+
+
+def _gate_modes_missing(source: str, row: LaneLeavingMarker) -> list[str]:
+    """The modes in which the gate has no serial run for *row*, and the modes in
+    which it has no sweep (empty = both modes are wired)."""
+    missing = []
+    serial = [line for line in _script_pytest_lines(source) if row.select() in line]
+    if not any(re.search(r"(?<!\S)tests/", line) for line in serial):
+        missing.append("full serial")
+    if not any('"$@"' in line for line in serial):
+        missing.append("fast serial")
+    sweeps = _gate_sweeps(source)
+    if not any("--ignore=tests/e2e" in line for line in sweeps):
+        missing.append("full sweep")
+    if not any('"$@"' in line for line in sweeps):
+        missing.append("fast sweep")
+    return missing
+
+
+def test_the_gate_runs_exactly_the_lane_expression() -> None:
+    """The gate is the one local spelling of the merge gate, so it runs exactly
+    what the lane runs: a caller that gates a branch adds nothing to it, and a
+    term the lane does not carry is a test the gate skips and CI runs."""
+    source = _script_source(GATE_SCRIPT)
+    assert _script_pytest_lines(source), f"{GATE_SCRIPT} runs no pytest line; this pin is stale"
+    assert _gate_lines_off_the_table(source) == [], (
+        f"{GATE_SCRIPT} runs pytest lines that are neither the lane's sweep "
+        f"({UNIT_LANE_DESELECT}, with workers) nor one row's serial run (no workers): "
+        f"{_gate_lines_off_the_table(source)}"
+    )
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_the_gate_has_both_modes_for_every_row(row: LaneLeavingMarker) -> None:
+    """Both modes deselect every row, so both run every row serially: in fast
+    mode a marked test inside a named file would otherwise run nowhere."""
+    missing = _gate_modes_missing(_script_source(GATE_SCRIPT), row)
+    assert missing == [], f"{GATE_SCRIPT} lacks, for {row.marker!r}: {missing}"
+
+
+def test_the_gate_runs_exactly_the_lane_expression__mutation_adds_a_term() -> None:
+    source = _script_source(GATE_SCRIPT)
+    expr = UNIT_LANE_DESELECT[:-1]
+    mutated = source.replace(UNIT_LANE_DESELECT, f'{expr} and not browser"', 1)
+    assert mutated != source, f"no lane sweep in {GATE_SCRIPT}; mutation is stale"
+    assert _gate_lines_off_the_table(mutated) != []
+
+
+def test_the_gate_runs_exactly_the_lane_expression__mutation_drops_the_fast_expression() -> None:
+    source = _script_source(GATE_SCRIPT)
+    lines = source.splitlines()
+    fast = [i for i, line in enumerate(lines) if line in _gate_sweeps(source) and '"$@"' in line]
+    assert fast, f"no fast sweep in {GATE_SCRIPT}; mutation is stale"
+    lines[fast[0]] = lines[fast[0]].replace(f" {UNIT_LANE_DESELECT}", "")
+    mutated = "\n".join(lines)
+    assert mutated != source
+    assert _gate_lines_off_the_table(mutated) != []
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_the_gate_has_both_modes_for_every_row__mutation_drops_the_fast_serial(
+    row: LaneLeavingMarker,
+) -> None:
+    source = _script_source(GATE_SCRIPT)
+    mutated = "\n".join(line for line in source.splitlines() if f'"$@" {row.select()}' not in line)
+    assert mutated != source, f"no fast serial {row.marker} run in {GATE_SCRIPT}; mutation is stale"
+    assert "fast serial" in _gate_modes_missing(mutated, row)
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+def test_the_gate_runs_exactly_the_lane_expression__mutation_parallelizes_a_serial_run(
+    row: LaneLeavingMarker,
+) -> None:
+    source = _script_source(GATE_SCRIPT)
+    mutated = re.sub(rf"({re.escape(row.select())})(?=\s)", r"\1 -n 4", source, count=1)
+    assert mutated != source, f"no serial {row.marker} run in {GATE_SCRIPT}; mutation is stale"
+    assert _gate_lines_off_the_table(mutated) != []
+
+
+#: The written-down copies of the parallel sweep a contributor or a skill copies
+#: by hand. Each must carry the unit lane's marker expression, or the copy runs
+#: the lane-leaving markers under workers that distort them.
+DOCUMENTED_SWEEPS = (
+    "tests/README.md",
+    "CONTRIBUTING.md",
+    "plugins/osprey/skills/release/SKILL.md",
+    "plugins/osprey/skills/test-audit/SKILL.md",
+)
+#: A pytest invocation with xdist workers: a fixed count or ``auto``.
+_DOCUMENTED_XDIST_RE = re.compile(r"(?<!\S)-n\s+(auto|\d+)")
+
+
+def _documented_sweep_lines(source: str) -> list[str]:
+    """Lines that run pytest with workers over ``tests/`` wholesale, or over one
+    area when the line already carries a marker expression."""
+    return [
+        line
+        for line in source.splitlines()
+        if "pytest " in line
+        and _DOCUMENTED_XDIST_RE.search(line)
+        and ("tests/ --ignore=tests/e2e" in line or ("tests/<area>" in line and "-m " in line))
+    ]
+
+
+def _documented_sweeps_missing_terms(source: str, row: LaneLeavingMarker) -> list[str]:
+    """Documented sweeps in *source* that do not hand the row's marker away
+    (empty = all of them do)."""
+    return [
+        line.strip() for line in _documented_sweep_lines(source) if row.deselect_term() not in line
+    ]
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("path", DOCUMENTED_SWEEPS, ids=DOCUMENTED_SWEEPS)
+def test_documented_sweeps_carry_the_lane_expression(path: str, row: LaneLeavingMarker) -> None:
+    """A documented parallel sweep is the command a reader copies, so it hands
+    away every marker the CI lane hands away."""
+    source = _script_source(path)
+    assert _documented_sweep_lines(source), (
+        f"{path} no longer documents a parallel sweep; this pin is stale"
+    )
+    assert _documented_sweeps_missing_terms(source, row) == [], (
+        f"{path} documents a parallel sweep without deselecting the {row.marker!r} marker "
+        f"({row.deselect_term()!r}): {_documented_sweeps_missing_terms(source, row)}"
+    )
+
+
+@pytest.mark.parametrize("row", LANE_LEAVING_MARKERS, ids=_ROW_IDS)
+@pytest.mark.parametrize("path", DOCUMENTED_SWEEPS, ids=DOCUMENTED_SWEEPS)
+def test_documented_sweeps_carry_the_lane_expression__mutation_drops_a_term(
+    path: str, row: LaneLeavingMarker
+) -> None:
+    source = _script_source(path)
+    mutated = _drop_the_term(source, row)
+    assert mutated != source, f"no {row.marker!r} deselection in {path}; mutation is stale"
+    assert _documented_sweeps_missing_terms(mutated, row) != []
 
 
 # ---------------------------------------------------------------------------
@@ -6257,6 +6884,41 @@ def test_chain_boot_module_carries_its_collection_floor__mutation_drops_the_floo
     assert _collected_floor_errors(source.replace(guard, "collected"), guard=guard)
 
 
+# The measurement tools' live proofs run in the same lane as the chain: the
+# guarded runs of `pyaml_measure` and check B. Each is pinned to the run step by
+# path and carries the collection floor the step's comment promises.
+MEASUREMENT_MODULES = (
+    f"{VA_LIVE_SUITE_DIR}/test_pyaml_measure_guarded.py",
+    f"{VA_LIVE_SUITE_DIR}/test_check_b_served.py",
+)
+
+
+@pytest.mark.parametrize("module", MEASUREMENT_MODULES)
+def test_each_measurement_suite_runs_in_the_va_live_run_step(
+    module: str, workflow: dict[str, Any]
+) -> None:
+    assert (REPO_ROOT / module).is_file()
+    named = _va_live_lane_named_files(workflow, VA_LIVE_JOB)
+    assert module in named, f"'{VA_LIVE_LANE_RUN_STEPS[VA_LIVE_JOB]}' runs {named}"
+
+
+@pytest.mark.parametrize("module", MEASUREMENT_MODULES)
+def test_each_measurement_suite_runs_in_the_va_live_run_step__mutation_drops_it(
+    module: str,
+) -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, VA_LIVE_JOB, VA_LIVE_LANE_RUN_STEPS[VA_LIVE_JOB])
+    step["run"] = step["run"].replace(f"{module} ", "")
+    with pytest.raises(AssertionError):
+        test_each_measurement_suite_runs_in_the_va_live_run_step(module, mutated)
+
+
+@pytest.mark.parametrize("module", MEASUREMENT_MODULES)
+def test_each_measurement_module_carries_its_collection_floor(module: str) -> None:
+    source = (REPO_ROOT / module).read_text(encoding="utf-8")
+    assert _collected_floor_errors(source, guard=_CHAIN_BOOT_FLOOR_GUARD) == []
+
+
 @pytest.mark.parametrize("job_name", sorted(VA_LIVE_LANE_RUN_STEPS))
 def test_live_va_lane_enables_the_directory_flag(
     job_name: str, workflow: dict[str, Any] | None = None
@@ -6477,6 +7139,48 @@ def test_va_live_step_caps_leave_the_job_room__mutation_lowers_the_job_to_the_tw
 # has no post hook, so each lane calls a second action and says which of its
 # own builds that call has to cover.
 
+
+def _module_constant(path: Path, name: str) -> str:
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return str(ast.literal_eval(node.value))
+    raise AssertionError(f"{path} has no module-level `{name}` assignment")
+
+
+def _action_step_scripts(source: str) -> list[dict[str, Any]]:
+    loaded = yaml.safe_load(source)
+    assert isinstance(loaded, dict), "the action parsed to no mapping"
+    return list(loaded["runs"]["steps"])
+
+
+def _tag_the_build_action_builds(source: str) -> str:
+    """The word after the sole ``--tag`` in the build action's step scripts."""
+    steps = _action_step_scripts(source)
+    build = _sole_step_whose_script(steps, "--tag ", "builds the image under a `--tag`")
+    tags = re.findall(r"--tag\s+(\S+)", str(steps[build]["run"]))
+    assert len(tags) == 1, f"expected one `--tag <word>` in the build step; found {tags}"
+    return tags[0]
+
+
+def _tag_the_remove_action_removes(source: str) -> str:
+    """The one fixed word of the removal loop, ahead of the caller's extra tags."""
+    script = "\n".join(str(step.get("run", "")) for step in _action_step_scripts(source))
+    loops = re.findall(r"^\s*for tag in (.*) \$EXTRA_TAGS; do$", script, flags=re.MULTILINE)
+    assert len(loops) == 1, f"expected one `for tag in <tag> $EXTRA_TAGS; do` line; found {loops}"
+    words = loops[0].split()
+    assert len(words) == 1, f"the loop removes exactly one fixed tag; found {words}"
+    return words[0]
+
+
+def _tag_the_developer_builder_defaults_to(source: str) -> str:
+    """The literal of the script's sole top-level ``IMAGE="<tag>"`` line."""
+    tags = re.findall(r'^IMAGE="([^"$]+)"$', source, flags=re.MULTILINE)
+    assert len(tags) == 1, f'expected one top-level `IMAGE="<tag>"` line; found {tags}'
+    return tags[0]
+
+
 VA_IMAGE_ACTION = "./.github/actions/build-virtual-accelerator-image"
 VA_IMAGE_ACTION_YML = (
     REPO_ROOT / ".github" / "actions" / "build-virtual-accelerator-image" / "action.yml"
@@ -6488,14 +7192,29 @@ VA_REMOVE_ACTION_YML = (
 #: Matched as a prefix, so a version bump of the setup action does not have
 #: to be made here as well.
 BUILDX_ACTION = "docker/setup-buildx-action@"
-VA_IMAGE_TAG = "osprey-va-full:latest"
 VA_CACHE_DIR = "/tmp/va-buildx-cache"
 VA_CACHE_EXPORT_DIR = "/tmp/va-buildx-cache-new"
 VA_CACHE_KEY_PREFIX = "va-full-buildx-"
-#: The fixture constant the built tag has to agree with, read from source
-#: rather than restated, for the reason the xdist pairing is read from source.
-VA_E2E_CONFTEST = REPO_ROOT / "tests" / "va" / "e2e" / "conftest.py"
-VA_E2E_IMAGE_CONSTANT = "IMAGE"
+#: Every workspace member's manifest, by glob rather than by name: the image
+#: installs each member under packages/, so a member's dependency change must
+#: invalidate the layers as surely as the framework's does, including a member
+#: added after this key was written.
+VA_CACHE_MEMBER_GLOB = "'packages/*/pyproject.toml'"
+#: The fixture constant the built tag has to agree with, and the tag itself,
+#: read from source rather than restated, for the reason the xdist pairing is
+#: read from source.
+VA_E2E_IMAGE_OWNER = REPO_ROOT / "tests" / "va" / "e2e" / "_image.py"
+VA_E2E_IMAGE_CONSTANT = "DEFAULT_IMAGE"
+VA_IMAGE_TAG = _module_constant(VA_E2E_IMAGE_OWNER, VA_E2E_IMAGE_CONSTANT)
+#: The developer build that ``IMAGE_REMEDY`` in the owner module names.
+VA_BUILD_SCRIPT = REPO_ROOT / "scripts" / "va" / "build_and_boot_check.sh"
+#: Every file outside Python that builds or removes the image, and how its tag
+#: is read from its own source text.
+VA_TAG_SITES: dict[str, tuple[Path, Callable[[str], str]]] = {
+    "build-action": (VA_IMAGE_ACTION_YML, _tag_the_build_action_builds),
+    "remove-action": (VA_REMOVE_ACTION_YML, _tag_the_remove_action_removes),
+    "build-script": (VA_BUILD_SCRIPT, _tag_the_developer_builder_defaults_to),
+}
 
 
 def _load_action_yml(path: Path) -> dict[str, Any]:
@@ -6547,15 +7266,6 @@ def _sole_step_whose_script(steps: list[dict[str, Any]], needle: str, what: str)
     found = [i for i, step in enumerate(steps) if needle in str(step.get("run", ""))]
     assert len(found) == 1, f"expected exactly one step that {what}; found {len(found)}"
     return found[0]
-
-
-def _module_constant(path: Path, name: str) -> str:
-    for node in ast.parse(path.read_text()).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
-            return str(ast.literal_eval(node.value))
-    raise AssertionError(f"{path} has no module-level `{name}` assignment")
 
 
 def _steps_using(wf: dict[str, Any], job_name: str, action: str) -> list[int]:
@@ -6651,8 +7361,8 @@ def test_the_shared_action_pins_the_tag_the_cache_and_the_rotation(
     )
     for hashed in (
         "docker/virtual-accelerator/Containerfile",
-        "pyproject.toml",
-        "packages/osprey-connectors/pyproject.toml",
+        "'pyproject.toml'",
+        VA_CACHE_MEMBER_GLOB,
     ):
         assert hashed in cache_with["key"], f"the cache key no longer hashes {hashed}"
 
@@ -6670,6 +7380,21 @@ def test_the_shared_action_pins_the_tag_the_cache_and_the_rotation(
         "the rotation must follow the build: run first, it deletes the restored cache and "
         "then fails its own `mv`."
     )
+
+
+def test_the_shared_action_pins_the_tag_the_cache_and_the_rotation__mutation_names_one_member() -> (
+    None
+):
+    """A key naming one member's manifest serves stale layers the day another
+    member's dependencies move."""
+    mutated = copy.deepcopy(_load_va_image_action())
+    for step in mutated["runs"]["steps"]:
+        if "actions/cache@" in str(step.get("uses", "")):
+            step["with"]["key"] = step["with"]["key"].replace(
+                VA_CACHE_MEMBER_GLOB, "'packages/osprey-connectors/pyproject.toml'"
+            )
+    with pytest.raises(AssertionError, match="no longer hashes"):
+        test_the_shared_action_pins_the_tag_the_cache_and_the_rotation(mutated)
 
 
 def test_the_shared_action_pins_the_tag_the_cache_and_the_rotation__mutation_drops_the_rotation() -> (
@@ -6824,33 +7549,146 @@ def test_every_lane_builds_after_the_shared_builder__mutation_moves_a_bench_buil
         test_every_lane_builds_after_the_shared_builder(mutated)
 
 
-def test_the_action_builds_the_tag_the_live_fixtures_boot(va_image_action: dict[str, Any]) -> None:
+@pytest.mark.parametrize("site", sorted(VA_TAG_SITES))
+def test_every_image_site_names_the_tag_the_live_fixtures_boot(
+    site: str, source: str | None = None
+) -> None:
     """A pairing, not a second copy of a string.
 
-    ``tests/va/e2e/conftest.py`` assigns ``IMAGE`` as a literal with no
-    environment override, and every module in that directory boots what it
-    names — so a tag that drifts on either side leaves four lanes building an
-    image nothing starts. Read from source rather than imported: that conftest
-    executes ``scripts/va/sweep_check.py`` through ``importlib`` at import
-    time, which is exactly what this module's other source-reading pins avoid.
+    ``tests/va/e2e/_image.py`` assigns ``DEFAULT_IMAGE`` as a literal, and
+    every module that boots the image boots it unless ``OSPREY_VA_E2E_IMAGE``
+    names another, which nothing in CI sets. The build action, the removal
+    action and the developer build script each name that tag in their own
+    language, so a tag that drifts on any side leaves lanes building an image
+    nothing starts, removing one nobody built, or a developer reproducing a
+    lane against the wrong image. Each is read from source, as this module's
+    other pins read theirs, and a site that stops naming a tag fails too.
     """
-    image = _module_constant(VA_E2E_CONFTEST, VA_E2E_IMAGE_CONSTANT)
-    _sole_step_whose_script(
-        va_image_action["runs"]["steps"],
-        f"--tag {image}",
-        f"builds the `{VA_E2E_IMAGE_CONSTANT}` the live fixtures boot ({image})",
+    path, read = VA_TAG_SITES[site]
+    text = path.read_text(encoding="utf-8") if source is None else source
+    image = _module_constant(VA_E2E_IMAGE_OWNER, VA_E2E_IMAGE_CONSTANT)
+    tag = read(text)
+    assert tag == image, (
+        f"{path.relative_to(REPO_ROOT)} names {tag!r}, but the live fixtures boot "
+        f"`{VA_E2E_IMAGE_CONSTANT}` = {image!r} from tests/va/e2e/_image.py."
     )
 
 
-def test_the_action_builds_the_tag_the_live_fixtures_boot__mutation_builds_a_tag_no_fixture_boots() -> (
-    None
-):
-    mutated = copy.deepcopy(_load_va_image_action())
-    steps = mutated["runs"]["steps"]
-    build = _sole_step_whose_script(steps, f"--tag {VA_IMAGE_TAG}", "builds the image")
-    steps[build]["run"] = steps[build]["run"].replace(VA_IMAGE_TAG, "osprey-va-full:experiment")
+@pytest.mark.parametrize("site", sorted(VA_TAG_SITES))
+def test_every_image_site_names_the_tag_the_live_fixtures_boot__mutation_names_a_tag_no_fixture_boots(
+    site: str,
+) -> None:
+    path, _ = VA_TAG_SITES[site]
+    mutated = path.read_text(encoding="utf-8").replace(VA_IMAGE_TAG, "osprey-va-full:experiment")
     with pytest.raises(AssertionError):
-        test_the_action_builds_the_tag_the_live_fixtures_boot(mutated)
+        test_every_image_site_names_the_tag_the_live_fixtures_boot(site, mutated)
+
+
+@pytest.mark.parametrize("site", sorted(VA_TAG_SITES))
+def test_every_image_site_names_the_tag_the_live_fixtures_boot__mutation_names_no_tag(
+    site: str,
+) -> None:
+    path, _ = VA_TAG_SITES[site]
+    mutated = "\n".join(
+        line for line in path.read_text(encoding="utf-8").splitlines() if VA_IMAGE_TAG not in line
+    )
+    with pytest.raises(AssertionError):
+        test_every_image_site_names_the_tag_the_live_fixtures_boot(site, mutated)
+
+
+@pytest.fixture()
+def va_build_script_text() -> str:
+    return VA_BUILD_SCRIPT.read_text(encoding="utf-8")
+
+
+def test_the_developer_builder_takes_the_tag_as_an_argument(va_build_script_text: str) -> None:
+    """The script builds and boots whatever tag it is given, and its own default otherwise.
+
+    A developer reproducing a lane that boots another tag has to be able to
+    build that tag with the remedy the live suites print, so ``IMAGE`` is
+    assigned twice -- the default and the ``--tag`` branch -- and both the build
+    and the run read it rather than a literal.
+    """
+    assignments = [
+        line.strip() for line in va_build_script_text.splitlines() if re.match(r"\s*IMAGE=", line)
+    ]
+    assert len(assignments) == 2, (
+        f"`IMAGE` is assigned in exactly two places, the default and the `--tag` branch; "
+        f"found {assignments}"
+    )
+    assert any(re.fullmatch(r'IMAGE="\$\{?2\}?"', line) for line in assignments), (
+        f"one assignment takes the word after `--tag`; found {assignments}"
+    )
+    lines = {line.strip() for line in va_build_script_text.splitlines()}
+    assert any(line.startswith('-t "${IMAGE}"') for line in lines), (
+        'the build tags the image `-t "${IMAGE}"`'
+    )
+    assert '"${IMAGE}" >/dev/null' in lines, 'the run starts `"${IMAGE}"`'
+
+
+def test_the_developer_builder_takes_the_tag_as_an_argument__mutation_drops_the_tag_branch(
+    va_build_script_text: str,
+) -> None:
+    kept = "\n".join(
+        line
+        for line in va_build_script_text.splitlines()
+        if not re.match(r'\s*IMAGE="\$\{?2\}?"', line)
+    )
+    with pytest.raises(AssertionError):
+        test_the_developer_builder_takes_the_tag_as_an_argument(kept)
+
+
+@pytest.mark.parametrize(
+    ("argv", "stop"),
+    [(["--tag"], "--tag needs a value"), (["--no-such-option"], "unknown option")],
+    ids=["tag-without-value", "unknown-option"],
+)
+def test_the_developer_builder_refuses_a_bad_argument_before_any_runtime(
+    argv: list[str], stop: str
+) -> None:
+    refused = subprocess.run(
+        ["bash", str(VA_BUILD_SCRIPT), *argv],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    fatal = [line for line in refused.stderr.splitlines() if line.startswith("FATAL")]
+    assert len(fatal) == 1 and stop in fatal[0], refused.stderr
+
+
+@pytest.fixture()
+def wiring_module_source() -> str:
+    return Path(__file__).read_text(encoding="utf-8")
+
+
+def test_this_module_reads_the_image_from_its_owner(wiring_module_source: str) -> None:
+    """The tag is read from ``tests/va/e2e/_image.py``, never restated here.
+
+    A string constant here equal to the owner's value is a second copy that a
+    rename on the owner's side leaves behind, and every pin in this block would
+    then check the workflow against the stale copy. Constants only, so a
+    comment naming the tag and the deliberately different replacement tags of
+    the mutation twins do not count.
+    """
+    image = _module_constant(VA_E2E_IMAGE_OWNER, VA_E2E_IMAGE_CONSTANT)
+    spelled = sorted(
+        node.lineno
+        for node in ast.walk(ast.parse(wiring_module_source))
+        if isinstance(node, ast.Constant) and node.value == image
+    )
+    assert spelled == [], (
+        f"lines {spelled} spell {image!r}; read it with "
+        f"`_module_constant(VA_E2E_IMAGE_OWNER, VA_E2E_IMAGE_CONSTANT)`."
+    )
+
+
+def test_this_module_reads_the_image_from_its_owner__mutation_restates_the_tag() -> None:
+    image = _module_constant(VA_E2E_IMAGE_OWNER, VA_E2E_IMAGE_CONSTANT)
+    planted = f"VA_IMAGE_TAG = {image!r}\n"
+    with pytest.raises(AssertionError):
+        test_this_module_reads_the_image_from_its_owner(planted)
 
 
 def test_every_virtual_accelerator_lane_removes_the_image_it_built(
@@ -7246,6 +8084,405 @@ def test_premerge_check_runs_the_same_gate__mutation_restores_the_grep() -> None
     assert mutated != source, "the gate invocation moved; this mutation is stale"
     with pytest.raises(AssertionError):
         test_premerge_check_runs_the_same_gate(mutated)
+
+
+# ---------------------------------------------------------------------------
+# the plugin version gate runs in lint as one call to the script
+# ---------------------------------------------------------------------------
+#
+# One rule, one implementation: the lint step calls the script and states no
+# part of the rule itself. `scripts/plugin_version.py check` decides whether a
+# PR that changes the plugin tree carries a version its base does not; a copy
+# of that rule written inline beside the call is a second answer to the same
+# question, free to drift from the first.
+
+PLUGIN_VERSION_STEP = "Run plugin version-bump gate"
+PLUGIN_VERSION_SCRIPT = "scripts/plugin_version.py"
+
+
+def test_lint_runs_the_plugin_version_check(workflow: dict[str, Any]) -> None:
+    """The step calls ``check`` against the pull request's own base, the base
+    reaches the shell through ``env:`` and never through ``${{ }}`` inside
+    ``run:``, ``!cancelled()`` keeps an earlier failure from hiding a missing
+    bump, and the run line restates no part of the rule."""
+    step = _find_named_step(workflow, LINT_JOB, PLUGIN_VERSION_STEP)
+    run = step["run"]
+    assert PLUGIN_VERSION_SCRIPT + ' check --base "origin/$BASE_REF"' in run
+    assert "${{" not in run, (
+        f"{PLUGIN_VERSION_STEP} interpolates an expression into `run:`: {run!r}"
+    )
+    assert "github.event.pull_request.base.ref" in step["env"]["BASE_REF"]
+    assert "!cancelled()" in step["if"]
+    assert "pull_request" in step["if"]
+    assert "git diff" not in run, f"{PLUGIN_VERSION_STEP} restates the rule inline: {run!r}"
+    assert "json.load" not in run, f"{PLUGIN_VERSION_STEP} restates the rule inline: {run!r}"
+
+
+def test_lint_runs_the_plugin_version_check__mutation_drops_the_step() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    steps = _jobs(mutated)[LINT_JOB]["steps"]
+    steps[:] = [s for s in steps if s.get("name") != PLUGIN_VERSION_STEP]
+    with pytest.raises(AssertionError):
+        test_lint_runs_the_plugin_version_check(mutated)
+
+
+def test_lint_runs_the_plugin_version_check__mutation_interpolates_the_base_ref_into_run() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, LINT_JOB, PLUGIN_VERSION_STEP)
+    step["run"] = step["run"].replace(
+        '"origin/$BASE_REF"', '"origin/${{ github.event.pull_request.base.ref }}"'
+    )
+    assert "${{" in step["run"], "the run line no longer uses $BASE_REF; this mutation is stale"
+    with pytest.raises(AssertionError):
+        test_lint_runs_the_plugin_version_check(mutated)
+
+
+def test_lint_runs_the_plugin_version_check__mutation_restates_the_rule_inline() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, LINT_JOB, PLUGIN_VERSION_STEP)
+    original = step["run"]
+    step["run"] += '\ngit diff --name-only "origin/$BASE_REF...HEAD" -- plugins'
+    assert step["run"] != original
+    with pytest.raises(AssertionError):
+        test_lint_runs_the_plugin_version_check(mutated)
+
+
+def test_lint_runs_the_plugin_version_check__mutation_hardcodes_main() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, LINT_JOB, PLUGIN_VERSION_STEP)
+    step["run"] = step["run"].replace('"origin/$BASE_REF"', "origin/main")
+    assert "origin/main" in step["run"], "the run line moved; this mutation is stale"
+    with pytest.raises(AssertionError):
+        test_lint_runs_the_plugin_version_check(mutated)
+
+
+def test_premerge_check_runs_the_plugin_version_check(premerge_source: str) -> None:
+    """The local sweep runs the same check as the lane, against its own base,
+    or it goes green on a branch the lint job then refuses."""
+    assert PLUGIN_VERSION_SCRIPT + ' check --base "$BASE"' in premerge_source
+
+
+def test_premerge_check_runs_the_plugin_version_check__mutation_drops_the_line() -> None:
+    source = _script_source(PREMERGE_SCRIPT)
+    mutated = "\n".join(
+        line for line in source.splitlines() if PLUGIN_VERSION_SCRIPT + " check" not in line
+    )
+    assert mutated != source, "the check invocation moved; this mutation is stale"
+    with pytest.raises(AssertionError):
+        test_premerge_check_runs_the_plugin_version_check(mutated)
+
+
+# ---------------------------------------------------------------------------
+# the merge gate runs every CI step that needs no secret or Docker
+# ---------------------------------------------------------------------------
+#
+# scripts/gate.sh is the one local spelling of the merge gate, so each check CI
+# runs without a secret or a container is a line of the gate too, spelled the
+# way the CI step spells it. The table below holds those steps; a new
+# no-secret CI step is one row here plus its line in gate.sh, and a step that
+# drifts on either side is red.
+
+FRONTEND_JS_JOB = "frontend-js"
+DOCS_JOB = "docs"
+#: How each side spells the comparison base of the two diff checks: CI reads
+#: the pull request's base ref, the gate its ``--base`` argument.
+CI_BASE = '"origin/$BASE_REF"'
+GATE_BASE = '"$base"'
+#: CI installs the docs extra in a step of its own; the gate installs it on the
+#: build line, so the build runs in the venv every other gate step uses.
+GATE_DOCS_EXTRA = " --extra docs"
+#: The directory the docs build runs in, on both sides.
+_DOCS_CD = "cd docs"
+
+
+@dataclass(frozen=True)
+class GateCiStep:
+    """One CI step the gate runs too. ``template`` is the command, with
+    ``{base}`` where the side's comparison base goes and ``{extra}`` where the
+    gate installs the docs extra; ``ci_only`` is a suffix only the CI line
+    carries, for the reason in ``reason``."""
+
+    job: str
+    step: str
+    template: str
+    ci_only: str = ""
+    reason: str = ""
+
+    def ci_line(self) -> str:
+        return self.template.format(base=CI_BASE, extra="") + self.ci_only
+
+    def gate_line(self) -> str:
+        return self.template.format(base=GATE_BASE, extra=GATE_DOCS_EXTRA)
+
+
+GATE_CI_STEPS = (
+    GateCiStep(LINT_JOB, LOCK_CHECK_STEP, "uv lock --check"),
+    GateCiStep(
+        LINT_JOB,
+        "Run ruff (linting)",
+        "uv run ruff check .",
+        ci_only=" --output-format=github",
+        reason="the hosted log's annotation format",
+    ),
+    GateCiStep(LINT_JOB, "Run ruff (formatting)", "uv run ruff format --check ."),
+    GateCiStep(
+        LINT_JOB,
+        "Run config-key resurrection guard (with back-test)",
+        "uv run python scripts/check_config_keys.py --back-test",
+    ),
+    GateCiStep(
+        LINT_JOB, CHANGELOG_STEP, "python3 scripts/changelog_fragments.py check --base {base}"
+    ),
+    GateCiStep(
+        LINT_JOB, PLUGIN_VERSION_STEP, "python3 scripts/plugin_version.py check --base {base}"
+    ),
+    GateCiStep(LINT_JOB, "Run mypy (type checking)", "uv run python scripts/mypy_gate.py"),
+    GateCiStep(FRONTEND_JS_JOB, "Typecheck (tsc --noEmit)", "npm run typecheck"),
+    GateCiStep(FRONTEND_JS_JOB, "Lint (eslint)", "npm run lint"),
+    GateCiStep(
+        DOCS_JOB,
+        "Build documentation",
+        'uv run{extra} make html SPHINXOPTS="-W --keep-going"',
+        reason="CI installs the docs extra in its own step",
+    ),
+)
+#: The rows whose CI side the lint-job sections above already pin, step and
+#: command; the cases here pin only their gate side.
+_CI_SIDE_PINNED_ABOVE = frozenset({LOCK_CHECK_STEP, CHANGELOG_STEP, PLUGIN_VERSION_STEP})
+_CI_SIDE_ROWS = tuple(row for row in GATE_CI_STEPS if row.step not in _CI_SIDE_PINNED_ABOVE)
+assert len({row.step for row in GATE_CI_STEPS}) == len(GATE_CI_STEPS)
+
+
+def _ci_run_command(run: str) -> str:
+    """A step's ``run`` as one command: stripped, minus a leading ``cd docs``."""
+    lines = run.strip().splitlines()
+    if len(lines) > 1 and lines[0].strip() == _DOCS_CD:
+        lines = lines[1:]
+    return "\n".join(line.strip() for line in lines)
+
+
+def _gate_commands(source: str) -> list[str]:
+    """Every command line of the gate, stripped; a ``(cd docs && <cmd>)`` line
+    counts as ``<cmd>``. Comments and blank lines are not commands."""
+    commands = []
+    for line in source.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        prefix = f"({_DOCS_CD} && "
+        if text.startswith(prefix) and text.endswith(")"):
+            text = text[len(prefix) : -1]
+        commands.append(text)
+    return commands
+
+
+@pytest.mark.parametrize("row", _CI_SIDE_ROWS, ids=lambda row: row.step)
+def test_each_gate_step_is_its_ci_line(row: GateCiStep, workflow: dict[str, Any]) -> None:
+    """The CI step exists in its job and runs exactly the row's command, so the
+    gate line rendered from the same row is the command CI runs."""
+    step = _find_named_step(workflow, row.job, row.step)
+    assert _ci_run_command(step["run"]) == row.ci_line(), (
+        f"{row.job}/{row.step} runs {step['run']!r}, the table says {row.ci_line()!r}"
+    )
+
+
+@pytest.mark.parametrize("row", _CI_SIDE_ROWS, ids=lambda row: row.step)
+def test_each_gate_step_is_its_ci_line__mutation_edits_the_ci_line(row: GateCiStep) -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, row.job, row.step)
+    step["run"] = step["run"].rstrip() + " --edited\n"
+    with pytest.raises(AssertionError):
+        test_each_gate_step_is_its_ci_line(row, mutated)
+
+
+@pytest.mark.parametrize("row", GATE_CI_STEPS, ids=lambda row: row.step)
+def test_the_gate_runs_each_ci_step_once(row: GateCiStep, gate_source: str | None = None) -> None:
+    """The gate holds the row's command, spelled its way, exactly once."""
+    source = _script_source(GATE_SCRIPT) if gate_source is None else gate_source
+    count = _gate_commands(source).count(row.gate_line())
+    assert count == 1, f"{GATE_SCRIPT} runs {row.gate_line()!r} {count} times, not once"
+
+
+@pytest.mark.parametrize("row", GATE_CI_STEPS, ids=lambda row: row.step)
+def test_the_gate_runs_each_ci_step_once__mutation_drops_the_line(row: GateCiStep) -> None:
+    source = _script_source(GATE_SCRIPT)
+    mutated = "\n".join(line for line in source.splitlines() if row.gate_line() not in line)
+    assert mutated != source, f"{GATE_SCRIPT} has no {row.gate_line()!r}; mutation is stale"
+    with pytest.raises(AssertionError):
+        test_the_gate_runs_each_ci_step_once(row, mutated)
+
+
+def test_the_gate_runs_each_ci_step_once__mutation_hardcodes_a_second_base() -> None:
+    (row,) = [row for row in GATE_CI_STEPS if row.step == CHANGELOG_STEP]
+    source = _script_source(GATE_SCRIPT)
+    mutated = source.replace(row.gate_line(), row.gate_line() + " --base origin/main", 1)
+    assert mutated != source, f"{GATE_SCRIPT} has no {row.gate_line()!r}; mutation is stale"
+    with pytest.raises(AssertionError):
+        test_the_gate_runs_each_ci_step_once(row, mutated)
+
+
+def _first_index(commands: list[str], predicate: Callable[[str], bool]) -> int:
+    return next((i for i, command in enumerate(commands) if predicate(command)), len(commands))
+
+
+def test_the_gate_checks_the_lockfile_before_any_uv_run(gate_source: str | None = None) -> None:
+    """Any ``uv run`` re-locks a stale lockfile, so the check that the lockfile
+    is current comes before the first of them, as it comes before the install
+    step in CI."""
+    commands = _gate_commands(_script_source(GATE_SCRIPT) if gate_source is None else gate_source)
+    lock = _first_index(commands, lambda command: command == "uv lock --check")
+    first_run = _first_index(commands, lambda command: "uv run " in command)
+    assert lock < len(commands), f"{GATE_SCRIPT} never checks the lockfile"
+    assert lock < first_run, f"{GATE_SCRIPT} runs `uv run` before `uv lock --check`"
+
+
+def test_the_gate_checks_the_lockfile_before_any_uv_run__mutation_moves_it_after_ruff() -> None:
+    source = _script_source(GATE_SCRIPT)
+    lines = source.splitlines()
+    lines.remove("uv lock --check")
+    ruff = max(i for i, line in enumerate(lines) if line.startswith("uv run ruff "))
+    lines.insert(ruff + 1, "uv lock --check")
+    with pytest.raises(AssertionError):
+        test_the_gate_checks_the_lockfile_before_any_uv_run("\n".join(lines))
+
+
+#: A vitest ``include`` glob's test-file extension set: ``*.test.{js,mjs}``.
+_VITEST_INCLUDE_EXT_RE = re.compile(r"\.test\.(?:\{([^}]*)\}|(\w+))['\"]")
+#: One arm of the gate's runner split that sends a file to vitest.
+_GATE_JS_ARM_RE = re.compile(r"\*\.test\.(\w+)")
+VITEST_CONFIG = CI_YML.parents[2] / "vitest.config.js"
+
+
+def _vitest_include_extensions() -> set[str]:
+    (include,) = re.findall(r"include:\s*\[([^\]]*)\]", VITEST_CONFIG.read_text(encoding="utf-8"))
+    extensions: set[str] = set()
+    for braced, single in _VITEST_INCLUDE_EXT_RE.findall(include):
+        extensions.update(ext.strip() for ext in (braced or single).split(","))
+    return extensions
+
+
+def _gate_js_extensions(source: str) -> set[str]:
+    """The extensions the gate's ``case`` arm sends to vitest."""
+    arms = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith("*.test.") and ")" in line
+    ]
+    assert len(arms) == 1, f"{GATE_SCRIPT} has {len(arms)} vitest arms in its split, not one"
+    return set(_GATE_JS_ARM_RE.findall(arms[0].split(")", 1)[0]))
+
+
+def test_the_gate_sends_vitest_exactly_the_files_vitest_includes(
+    gate_source: str | None = None,
+) -> None:
+    """A JS test is sent to vitest by the extensions vitest's own ``include``
+    lists: an extension the split lacks is a named test refused, one vitest
+    lacks is a named test vitest never finds."""
+    source = _script_source(GATE_SCRIPT) if gate_source is None else gate_source
+    assert _vitest_include_extensions(), "vitest.config.js lists no test extension"
+    assert _gate_js_extensions(source) == _vitest_include_extensions()
+
+
+def test_the_gate_sends_vitest_exactly_the_files_vitest_includes__mutation_drops_mjs() -> None:
+    source = _script_source(GATE_SCRIPT)
+    mutated = source.replace(" | *.test.mjs", "", 1)
+    assert mutated != source, f"{GATE_SCRIPT} has no .mjs arm; mutation is stale"
+    with pytest.raises(AssertionError):
+        test_the_gate_sends_vitest_exactly_the_files_vitest_includes(mutated)
+
+
+_GATE_FAST_JS = 'npm run test:js -- "${js[@]}"'
+
+
+def test_the_fast_gate_hands_vitest_only_the_js_tests(gate_source: str | None = None) -> None:
+    """In fast mode vitest gets the JS list, never every argument: a Python path
+    handed to vitest is a filter that matches no file."""
+    source = _script_source(GATE_SCRIPT) if gate_source is None else gate_source
+    forwarded = [command for command in _gate_commands(source) if "npm run test:js --" in command]
+    assert forwarded == [_GATE_FAST_JS], (
+        f"{GATE_SCRIPT} hands vitest {forwarded}, not {[_GATE_FAST_JS]}"
+    )
+
+
+def test_the_fast_gate_hands_vitest_only_the_js_tests__mutation_hands_every_argument() -> None:
+    source = _script_source(GATE_SCRIPT)
+    mutated = source.replace('"${js[@]}"', '"$@"', 1)
+    assert mutated != source, f"{GATE_SCRIPT} hands vitest no JS list; mutation is stale"
+    with pytest.raises(AssertionError):
+        test_the_fast_gate_hands_vitest_only_the_js_tests(mutated)
+
+
+def _run_gate_with_tool_tripwires(
+    tmp_path: Path, *args: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the gate with ``uv``, ``npm`` and ``npx`` replaced by stand-ins that
+    leave a mark, so a stop can be proven to come before any of them."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    mark = tmp_path / "a tool ran"
+    for tool in ("uv", "npm", "npx"):
+        stand_in = bin_dir / tool
+        stand_in.write_text(f'#!/bin/sh\necho "$0" >> "{mark}"\nexit 99\n', encoding="utf-8")
+        stand_in.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    result = subprocess.run(
+        ["bash", str(CI_YML.parents[2] / GATE_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    return result, mark
+
+
+def test_the_gate_refuses_a_test_no_runner_takes(tmp_path: Path) -> None:
+    result, mark = _run_gate_with_tool_tripwires(tmp_path, "fast", "--base", "HEAD", "tests/x.txt")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "gate: tests/x.txt belongs to no test runner" in result.stderr
+    assert not mark.exists(), f"a tool ran before the stop: {mark.read_text()}"
+
+
+def test_the_gate_refuses_a_base_that_does_not_resolve(tmp_path: Path) -> None:
+    result, mark = _run_gate_with_tool_tripwires(tmp_path, "full", "--base", "no/such/ref")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "gate: base no/such/ref does not resolve; fetch it or pass --base" in result.stderr
+    assert not mark.exists(), f"a tool ran before the stop: {mark.read_text()}"
+
+
+#: The written-down copies of a gate step a contributor or a skill runs by hand,
+#: each held to its row's CI line.
+DOCUMENTED_GATE_STEPS = (("plugins/osprey/skills/doc-sync/SKILL.md", "Build documentation"),)
+
+
+def _documented_commands(source: str) -> list[str]:
+    """The doc's shell lines, each split at ``&&`` into commands."""
+    return [part.strip() for line in source.splitlines() for part in line.split("&&")]
+
+
+@pytest.mark.parametrize(
+    ("path", "step"), DOCUMENTED_GATE_STEPS, ids=[p for p, _ in DOCUMENTED_GATE_STEPS]
+)
+def test_documented_gate_steps_are_the_ci_line(
+    path: str, step: str, doc_source: str | None = None
+) -> None:
+    """A documented copy of a gate step is the command a reader runs, so it is
+    the CI line, not a variant of it."""
+    (row,) = [row for row in GATE_CI_STEPS if row.step == step]
+    source = _script_source(path) if doc_source is None else doc_source
+    assert row.ci_line() in _documented_commands(source), (
+        f"{path} no longer documents {row.ci_line()!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "step"), DOCUMENTED_GATE_STEPS, ids=[p for p, _ in DOCUMENTED_GATE_STEPS]
+)
+def test_documented_gate_steps_are_the_ci_line__mutation_drops_a_flag(path: str, step: str) -> None:
+    source = _script_source(path)
+    mutated = source.replace(' SPHINXOPTS="-W --keep-going"', "", 1)
+    assert mutated != source, f"{path} documents no docs build; mutation is stale"
+    with pytest.raises(AssertionError):
+        test_documented_gate_steps_are_the_ci_line(path, step, mutated)
 
 
 # ---------------------------------------------------------------------------
@@ -7895,6 +9132,95 @@ def test_the_tag_gate_blocks_the_publish() -> None:
     assert release["jobs"][RELEASE_GATE_JOB]["permissions"]["actions"] == "read", (
         "reading another workflow's runs needs the actions:read scope"
     )
+
+
+# ---------------------------------------------------------------------------
+# The publish uploads every member before the framework, and can be resumed
+# ---------------------------------------------------------------------------
+#
+# The framework declares a hard dependency on each workspace member, and PyPI
+# accepts files one at a time. Uploading the framework first would leave it live
+# with a dependency nothing satisfies whenever a member upload is refused (an
+# unregistered trusted publisher, a name conflict). Members go first, from a
+# directory holding only their files; the framework goes last. `skip-existing`
+# on both lets a re-pushed tag finish a publish that stopped halfway instead of
+# failing on "File already exists".
+
+PUBLISH_JOB = "publish-to-pypi"
+PUBLISH_ACTION = "pypa/gh-action-pypi-publish"
+
+
+def _load_release() -> dict[str, Any]:
+    return yaml.safe_load(RELEASE_YML.read_text())
+
+
+def _publish_steps(release: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = release["jobs"][PUBLISH_JOB]["steps"]
+    return [s for s in steps if str(s.get("uses", "")).startswith(PUBLISH_ACTION)]
+
+
+def _packages_dir(step: dict[str, Any]) -> str:
+    return str(step.get("with", {}).get("packages-dir", "dist/")).rstrip("/")
+
+
+def test_the_publish_uploads_members_before_the_framework(
+    release: dict[str, Any] | None = None,
+) -> None:
+    """The first upload carries only member files; the framework's upload is the last."""
+    release = release if release is not None else _load_release()
+    publishes = _publish_steps(release)
+    assert len(publishes) >= 2, "members and the framework must upload in separate steps"
+    member_dir = _packages_dir(publishes[0])
+    assert member_dir != "dist", "the first upload must not be the whole dist/"
+    assert _packages_dir(publishes[-1]) == "dist", "the framework uploads last, from dist/"
+
+    steps = release["jobs"][PUBLISH_JOB]["steps"]
+    first_publish = steps.index(publishes[0])
+    stagers = [s for s in steps[:first_publish] if member_dir in s.get("run", "")]
+    assert stagers, f"no step before the first upload stages files into {member_dir}/"
+    script = stagers[-1]["run"]
+    assert "osprey_framework-" in script and "mv " in script, (
+        "the member directory must be staged by moving every file except the framework's"
+    )
+
+
+def test_every_publish_step_skips_existing_files(release: dict[str, Any] | None = None) -> None:
+    """A re-pushed tag must be able to complete a partial publish."""
+    release = release if release is not None else _load_release()
+    publishes = _publish_steps(release)
+    assert publishes, f"{PUBLISH_JOB} has no {PUBLISH_ACTION} step"
+    for step in publishes:
+        assert step.get("with", {}).get("skip-existing") is True, (
+            f"{step.get('name')!r} must set skip-existing: true"
+        )
+
+
+def test_the_publish_order__mutation_one_upload_of_all_of_dist() -> None:
+    """The single upload over dist/ is the shape that goes framework-first."""
+    mutated = copy.deepcopy(_load_release())
+    steps = mutated["jobs"][PUBLISH_JOB]["steps"]
+    publishes = _publish_steps(mutated)
+    for step in publishes[:-1]:
+        steps.remove(step)
+    with pytest.raises(AssertionError, match="separate steps"):
+        test_the_publish_uploads_members_before_the_framework(mutated)
+
+
+def test_the_publish_order__mutation_framework_first() -> None:
+    mutated = copy.deepcopy(_load_release())
+    steps = mutated["jobs"][PUBLISH_JOB]["steps"]
+    first, last = _publish_steps(mutated)[0], _publish_steps(mutated)[-1]
+    i, j = steps.index(first), steps.index(last)
+    steps[i], steps[j] = last, first
+    with pytest.raises(AssertionError):
+        test_the_publish_uploads_members_before_the_framework(mutated)
+
+
+def test_the_publish_order__mutation_drops_skip_existing() -> None:
+    mutated = copy.deepcopy(_load_release())
+    del _publish_steps(mutated)[0]["with"]["skip-existing"]
+    with pytest.raises(AssertionError, match="skip-existing"):
+        test_every_publish_step_skips_existing_files(mutated)
 
 
 # ---------------------------------------------------------------------------
@@ -8594,3 +9920,197 @@ def test_all_checks_passed_needs_graph_reseed__mutation_drops_check_pr_lane_line
     step["run"] = "".join(kept)
     with pytest.raises(AssertionError):
         test_all_checks_passed_needs_graph_reseed(mutated)
+
+
+# ---------------------------------------------------------------------------
+# The pyAML control-system member: coverage, wheel and release
+# ---------------------------------------------------------------------------
+#
+# `pyaml-cs-osprey` is the second workspace member, and every place the first
+# member is wired by name is a place the second can silently be missing from:
+# the coverage cell measures only the source trees it names, the package job
+# walks only the wheels it builds, and the release gate offers only the sibling
+# wheels it stages. Each is pinned here with a mutation that removes exactly
+# that wiring.
+
+PYAML_COVERAGE_FLAG = "--cov=packages/pyaml-cs-osprey/src/pyaml_cs_osprey"
+PACKAGE_JOB = "package"
+LEAN_WHEEL_STEP = "Verify wheel is self-contained on a bare venv"
+PYAML_WHEEL_STEP = "Build pyaml-cs-osprey wheel and import-walk it with the framework"
+PYAML_WHEEL_GLOBS = (
+    "dist/osprey_framework-*.whl",
+    "dist/osprey_connectors-*.whl",
+    "dist/pyaml_cs_osprey-*.whl",
+)
+RELEASE_VERIFY_JOB = "verify-pypi-resolvable"
+RELEASE_SIBLING_DIR = "/tmp/sibling"
+
+
+def _coverage_cell_flags(wf: dict[str, Any]) -> list[str]:
+    """The ``--cov=`` flags the coverage cell's ``COV_ARGS`` carries."""
+    run_text = _find_named_step(wf, UNIT_TEST_JOB, "Run unit tests")["run"]
+    found = re.findall(r'COV_ARGS="([^"]+)"', run_text)
+    assert len(found) == 1, f"expected one non-empty COV_ARGS assignment; got {found}"
+    return [flag for flag in found[0].split() if flag.startswith("--cov=")]
+
+
+def test_the_coverage_cell_measures_the_pyaml_member(workflow: dict[str, Any]) -> None:
+    """Coverage measures only the trees named on the command line, so a member
+    left off it reports nothing -- not zero, nothing -- and the upload stays green."""
+    flags = _coverage_cell_flags(workflow)
+    assert PYAML_COVERAGE_FLAG in flags, (
+        f"the coverage cell does not measure the pyAML member; COV_ARGS names {flags}"
+    )
+    assert "--cov=packages/osprey-connectors/src/osprey_connectors" in flags
+
+
+def test_the_coverage_cell_measures_the_pyaml_member__mutation_drops_the_flag() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _find_named_step(mutated, UNIT_TEST_JOB, "Run unit tests")
+    assert PYAML_COVERAGE_FLAG in step["run"], "the flag moved; this mutation is stale"
+    step["run"] = step["run"].replace(f" {PYAML_COVERAGE_FLAG}", "")
+    with pytest.raises(AssertionError, match="does not measure the pyAML member"):
+        test_the_coverage_cell_measures_the_pyaml_member(mutated)
+
+
+def _package_step_index(wf: dict[str, Any], step_name: str) -> int:
+    steps = _jobs(wf)[PACKAGE_JOB]["steps"]
+    for i, step in enumerate(steps):
+        if step.get("name") == step_name:
+            return i
+    raise AssertionError(f"job '{PACKAGE_JOB}' has no step named '{step_name}'")
+
+
+def test_the_package_job_import_walks_the_pyaml_wheel(workflow: dict[str, Any]) -> None:
+    """The pyAML wheel is built and every module in it imported, in a venv that
+    holds the framework and connectors wheels too -- it imports the framework
+    by design -- while the lean check keeps the connectors wheel alone."""
+    steps = _jobs(workflow)[PACKAGE_JOB]["steps"]
+    walk = _package_step_index(workflow, PYAML_WHEEL_STEP)
+    lean = _package_step_index(workflow, LEAN_WHEEL_STEP)
+    upload = _package_step_index(workflow, "Upload package artifacts")
+    assert walk > lean > upload, (
+        "the pyAML wheel must be built after the framework-only dist/ reaches the upload, "
+        "and its import-walk must not precede the lean check"
+    )
+    script = steps[walk]["run"]
+    assert "uv build --package pyaml-cs-osprey" in script
+    for glob in PYAML_WHEEL_GLOBS:
+        assert glob in script, f"the pyAML import-walk venv does not install {glob}"
+    assert "pkgutil.walk_packages(pyaml_cs_osprey.__path__" in script
+    assert "onerror=_raise" in script, (
+        "walk_packages swallows a package import error unless onerror raises"
+    )
+    lean_script = steps[lean]["run"]
+    assert "osprey_framework" not in lean_script and "pyaml_cs_osprey" not in lean_script, (
+        "the lean check must install the connectors wheel alone; a framework in its venv "
+        "satisfies every osprey.* import it exists to refuse"
+    )
+
+
+def test_the_package_job_import_walks_the_pyaml_wheel__mutation_drops_the_step() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    steps = _jobs(mutated)[PACKAGE_JOB]["steps"]
+    steps.pop(_package_step_index(mutated, PYAML_WHEEL_STEP))
+    with pytest.raises(AssertionError, match="no step named"):
+        test_the_package_job_import_walks_the_pyaml_wheel(mutated)
+
+
+def test_the_package_job_import_walks_the_pyaml_wheel__mutation_walks_without_framework() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _jobs(mutated)[PACKAGE_JOB]["steps"][_package_step_index(mutated, PYAML_WHEEL_STEP)]
+    step["run"] = step["run"].replace("dist/osprey_framework-*.whl ", "")
+    with pytest.raises(AssertionError, match="does not install dist/osprey_framework"):
+        test_the_package_job_import_walks_the_pyaml_wheel(mutated)
+
+
+def test_the_package_job_import_walks_the_pyaml_wheel__mutation_lean_venv_gets_framework() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    step = _jobs(mutated)[PACKAGE_JOB]["steps"][_package_step_index(mutated, LEAN_WHEEL_STEP)]
+    step["run"] = step["run"].replace(
+        "dist/osprey_connectors-*.whl", "dist/osprey_framework-*.whl dist/osprey_connectors-*.whl"
+    )
+    with pytest.raises(AssertionError, match="connectors wheel alone"):
+        test_the_package_job_import_walks_the_pyaml_wheel(mutated)
+
+
+def test_the_package_job_import_walks_the_pyaml_wheel__mutation_built_before_upload() -> None:
+    mutated = copy.deepcopy(_load_workflow())
+    steps = _jobs(mutated)[PACKAGE_JOB]["steps"]
+    walk = steps.pop(_package_step_index(mutated, PYAML_WHEEL_STEP))
+    steps.insert(_package_step_index(mutated, "Upload package artifacts"), walk)
+    with pytest.raises(AssertionError, match="framework-only dist/"):
+        test_the_package_job_import_walks_the_pyaml_wheel(mutated)
+
+
+def _release_staging_script(release: dict[str, Any]) -> str:
+    """The sibling-staging lines of the release gate, up to the install itself."""
+    steps = release["jobs"][RELEASE_VERIFY_JOB]["steps"]
+    staging = [s for s in steps if RELEASE_SIBLING_DIR in str(s.get("run", ""))]
+    assert len(staging) == 1, f"expected one step staging {RELEASE_SIBLING_DIR}; got {staging}"
+    script = staging[0]["run"]
+    assert "uv tool install" in script, "the staging step no longer installs the framework"
+    return script.split("uv tool install", 1)[0]
+
+
+def _staged_siblings(release: dict[str, Any], tmp_path: Path) -> list[str]:
+    """Run the staging lines against a dist/ holding every artifact a tag builds,
+    and return what they offer as find-links."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for name in (
+        "osprey_framework-2026.9.1-py3-none-any.whl",
+        "osprey_framework-2026.9.1.tar.gz",
+        "osprey_connectors-2026.9.1-py3-none-any.whl",
+        "osprey_connectors-2026.9.1.tar.gz",
+        "pyaml_cs_osprey-2026.9.1-py3-none-any.whl",
+        "pyaml_cs_osprey-2026.9.1.tar.gz",
+    ):
+        (dist / name).write_text("")
+    sibling = tmp_path / "sibling"
+    script = _release_staging_script(release).replace(RELEASE_SIBLING_DIR, str(sibling))
+    subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=tmp_path, check=True)
+    return sorted(p.name for p in sibling.iterdir())
+
+
+def _assert_release_stages_every_member_wheel(release: dict[str, Any], tmp_path: Path) -> None:
+    assert _staged_siblings(release, tmp_path) == [
+        "osprey_connectors-2026.9.1-py3-none-any.whl",
+        "pyaml_cs_osprey-2026.9.1-py3-none-any.whl",
+    ], "the release gate stages the wrong sibling set"
+
+
+def _with_staging(release: dict[str, Any], staging: str) -> dict[str, Any]:
+    """``release`` with the staging lines replaced and the install kept."""
+    mutated = copy.deepcopy(release)
+    for step in mutated["jobs"][RELEASE_VERIFY_JOB]["steps"]:
+        if RELEASE_SIBLING_DIR in str(step.get("run", "")):
+            tail = step["run"].split("uv tool install", 1)[1]
+            step["run"] = f"mkdir -p {RELEASE_SIBLING_DIR}\n{staging}\nuv tool install{tail}"
+    return mutated
+
+
+def test_the_release_gate_stages_every_member_wheel_but_the_framework(tmp_path: Path) -> None:
+    """The framework depends on every member, so a sibling left out of the
+    find-links fails the gate on the tag that first ships it; the framework's
+    own wheel or any sdist staged there would let an unpublished pin resolve."""
+    _assert_release_stages_every_member_wheel(yaml.safe_load(RELEASE_YML.read_text()), tmp_path)
+
+
+def test_the_release_gate_stages_every_member_wheel__mutation_connectors_only(
+    tmp_path: Path,
+) -> None:
+    mutated = _with_staging(
+        yaml.safe_load(RELEASE_YML.read_text()),
+        f"cp dist/osprey_connectors-*.whl {RELEASE_SIBLING_DIR}/",
+    )
+    with pytest.raises(AssertionError, match="wrong sibling set"):
+        _assert_release_stages_every_member_wheel(mutated, tmp_path)
+
+
+def test_the_release_gate_stages_every_member_wheel__mutation_whole_dist(tmp_path: Path) -> None:
+    mutated = _with_staging(
+        yaml.safe_load(RELEASE_YML.read_text()), f"cp dist/* {RELEASE_SIBLING_DIR}/"
+    )
+    with pytest.raises(AssertionError, match="wrong sibling set"):
+        _assert_release_stages_every_member_wheel(mutated, tmp_path)

@@ -50,6 +50,7 @@ from uuid import uuid4
 import click
 
 from osprey.deployment.compose_merge import MERGED_COMPOSE_FILENAME
+from osprey.deployment.members import WORKSPACE_MEMBERS
 from osprey.errors import BuildProfileError
 from osprey.facility.errors import FacilityBuildError, FacilityBuildWarning
 from osprey.profiles.providers import PROVIDERS_FILENAME, load_provider_catalog
@@ -1845,7 +1846,11 @@ def _render_project(
     from osprey.agent_runner.provider_env import load_provider_spec
     from osprey.deployment.reach import reach_errors
 
-    from .build_posture_check import missing_posture_errors
+    from .build_posture_check import (
+        check_approval_enabled,
+        check_approval_hook_selected,
+        missing_posture_errors,
+    )
     from .build_profile_archiver import va_archiver_config_overrides
     from .build_profile_deploy import deploy_config_overrides
     from .build_profile_health import health_config_overrides
@@ -2154,6 +2159,14 @@ def _render_project(
             # has a reader that answers something regardless.
             *missing_posture_errors(_rendered_config(render_dir), build_profile.hooks),
         ]
+        # The render is what the approval hook reads, so it is the render that
+        # is held to these rules. A guarded tool put to a human in a profile that does not select the
+        # approval hook would never be asked; the render is held to "asks ⇒ hook
+        # selected" so config.yml alone answers whether a call is asked.
+        # An approval switch that is not true or false would turn every prompt
+        # off, or on, by truthiness; the render states a bool or nothing.
+        check_approval_enabled(_rendered_config(render_dir))
+        check_approval_hook_selected(_rendered_config(render_dir), build_profile.hooks)
         if unrunnable:
             raise BuildProfileError("Profile validation failed:\n  " + "\n  ".join(unrunnable))
         # And the runtime, for the same reason once more: the verbs that stop,
@@ -3891,6 +3904,11 @@ def _repo_render_context(
         # writes is derived from this value by the template manager, so no
         # consumer downstream falls back to the layout's own default.
         "port_base": _profile_port_base(build_profile),
+        # The workspace members a git+ OSPREY_PIP_SPEC pre-installs from the
+        # monorepo's packages/ subdirectories in Dockerfile.j2's deps layer. From
+        # the installed framework's constant, since a deployed framework has no
+        # monorepo pyproject.toml to read the workspace from.
+        "workspace_members": list(WORKSPACE_MEMBERS),
     }
     if build_profile.provider:
         context["default_provider"] = build_profile.provider

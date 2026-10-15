@@ -326,7 +326,8 @@ jobs:
       # this invocation and the conftest override, so the flag cannot outlive
       # the scheduler that makes it safe.
       #
-      # -m "not pty" hands the real-terminal suite to the serial step below.
+      # -m "not pty and not wallclock": "not pty" hands the real-terminal suite
+      # to the serial step below.
       # Those scenarios assert on repaint cadence and on a spinner ADVANCING
       # between two frames, so they measure the box as much as the code, and
       # three other xdist workers competing for it is exactly the load that
@@ -336,9 +337,14 @@ jobs:
       # belongs in this lane: it scans the deploy path for runtime argv the
       # stub cannot answer, needs no terminal, and is what makes the serial
       # step's failures worth reading.
+      #
+      # `not wallclock` hands away every wall-clock budget for the same
+      # reason: a budget timed beside three loaded workers measures them. Each
+      # is timed in a serial step that selects the marker: the qmd panel
+      # budget in qmd-sidecar-e2e's "Run the wall-clock budgets serially".
       run: |
         if [ "${{ matrix.python-version }}" = "3.12" ] && [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-          COV_ARGS="--cov=src/osprey --cov=packages/osprey-connectors/src/osprey_connectors --cov-report=xml --cov-report=term"
+          COV_ARGS="--cov=src/osprey --cov=packages/osprey-connectors/src/osprey_connectors --cov=packages/pyaml-cs-osprey/src/pyaml_cs_osprey --cov-report=xml --cov-report=term"
         else
           COV_ARGS=""
         fi
@@ -428,7 +434,7 @@ jobs:
         # read on fewer events than it is here.
         # tests/deployment/test_ci_workflow_wiring.py holds that rule over every
         # file this line ignores by name, and lists the exemptions to it.
-        uv run pytest tests/$SHARD_PATH $SHARD_IGNORE --ignore=tests/e2e --ignore=tests/va/test_apply_fault.py --ignore=tests/va/test_lume_pva_seam.py --ignore=tests/services/channel_finder/graph_index/test_scale.py --ignore=tests/integration/test_build_boot.py --ignore=tests/integration/test_preset_static.py --ignore=tests/integration/test_preset_build.py -m "not pty" -v --tb=short --durations=50 --timeout=600 --timeout-method=signal -n 4 --dist loadgroup $COV_ARGS 2>&1 | tee ci-diag/pytest.log
+        uv run pytest tests/$SHARD_PATH $SHARD_IGNORE --ignore=tests/e2e --ignore=tests/va/test_apply_fault.py --ignore=tests/va/test_lume_pva_seam.py --ignore=tests/services/channel_finder/graph_index/test_scale.py --ignore=tests/integration/test_build_boot.py --ignore=tests/integration/test_preset_static.py --ignore=tests/integration/test_preset_build.py -m "not pty and not wallclock" -v --tb=short --durations=50 --timeout=600 --timeout-method=signal -n 4 --dist loadgroup $COV_ARGS 2>&1 | tee ci-diag/pytest.log
 
     # The two steps below are the reason the step above has its own timeout.
     # They run on success too: on a green lane the summary is the slow-test
@@ -686,30 +692,12 @@ jobs:
       # above is fetch-depth: 0, which is what makes `origin/$BASE_REF` and
       # the `A...B` merge base resolvable; deliberately no fetch here, since a
       # depth-limited one would shallow the clone and break that merge base.
+      # `python3`, not `uv run`: the script is stdlib-only and standalone, so it
+      # still reports when the dependency install is what broke.
       if: ${{ !cancelled() && github.event_name == 'pull_request' }}
       env:
         BASE_REF: ${{ github.event.pull_request.base.ref }}
-      run: |
-        BASE="origin/$BASE_REF"
-        # Captured on its own line so an unresolvable base aborts the step
-        # (bash -e) instead of reading as an empty, untouched plugin tree.
-        CHANGED=$(git diff --name-only "$BASE...HEAD" -- plugins .claude-plugin .agents/plugins)
-        if [ -z "$CHANGED" ]; then
-          echo "plugin tree untouched — no version bump required"; exit 0
-        fi
-        HEAD_VER=$(python3 -c 'import json;print(json.load(open("plugins/osprey/.claude-plugin/plugin.json"))["version"])')
-        # A manifest missing on the base is a new plugin; a manifest that exists
-        # but does not parse is an error, not a free pass.
-        if BASE_JSON=$(git show "$BASE:plugins/osprey/.claude-plugin/plugin.json" 2>/dev/null); then
-          BASE_VER=$(printf %s "$BASE_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')
-        else
-          BASE_VER=NONE
-        fi
-        [ "$BASE_VER" = NONE ] && { echo "new plugin manifest — no bump required"; exit 0; }
-        if [ "$HEAD_VER" = "$BASE_VER" ]; then
-          echo "plugin tree changed without a version bump — run python scripts/plugin_version.py bump"; exit 1
-        fi
-        echo "plugin version $BASE_VER -> $HEAD_VER"
+      run: python3 scripts/plugin_version.py check --base "origin/$BASE_REF"
 
     - name: Run mypy (type checking)
       run: uv run python scripts/mypy_gate.py
@@ -742,23 +730,12 @@ jobs:
       run: uv sync --extra docs
 
     # Warnings are errors: an orphaned page, a duplicate label, a missing
-    # :file: include, or a broken :doc:/:ref: target fails this job.
+    # :file: include, or a broken :doc:/:ref: target fails this job. So does a
+    # redirect key with no stub page: docs/source/conf.py fails the build.
     - name: Build documentation
       run: |
         cd docs
         uv run make html SPHINXOPTS="-W --keep-going"
-
-    # sphinx_reredirects writes one stub page per `redirects` key. A stub that
-    # never got written means a moved page's old URL 404s for every reader who
-    # bookmarked it.
-    - name: Check redirect stubs were emitted
-      run: |
-        keys=$(uv run python -c "import os, runpy; os.chdir('docs/source'); print(' '.join(runpy.run_path('conf.py')['redirects']))")
-        missing=""
-        for key in $keys; do
-          [ -f "docs/build/html/$key.html" ] || missing="$missing $key"
-        done
-        [ -z "$missing" ] || { echo "redirect stubs missing from the build:$missing"; exit 1; }
 
     - name: Check for broken links
       run: |
@@ -843,6 +820,31 @@ jobs:
             importlib.import_module(name)
         assert 'osprey' not in sys.modules, 'a lean-wheel module imported the osprey framework'
         print(f'LEAN WHEEL OK ({len(modules)} modules)')
+        "
+
+    # A step of its own, after the lean check rather than inside it: the pyAML
+    # control-system wheel imports the framework (osprey.runtime, osprey.errors)
+    # by design, so the no-framework assertion above must keep reading a venv
+    # that holds the connectors wheel alone. This venv holds all three wheels
+    # from dist/ -- the framework declares a dependency on this one, and this
+    # one needs the framework at import -- so a wheel that omits a module, or a
+    # module that imports something no wheel ships, fails here and not on a
+    # user's install.
+    - name: Build pyaml-cs-osprey wheel and import-walk it with the framework
+      run: |
+        uv build --package pyaml-cs-osprey
+        uv venv /tmp/pyaml-check --python 3.11
+        uv pip install --python /tmp/pyaml-check/bin/python \
+          dist/osprey_framework-*.whl dist/osprey_connectors-*.whl dist/pyaml_cs_osprey-*.whl
+        /tmp/pyaml-check/bin/python -c "
+        import importlib, pkgutil
+        import pyaml_cs_osprey
+        def _raise(name):
+            raise ImportError(f'failed to walk {name}')
+        modules = [m.name for m in pkgutil.walk_packages(pyaml_cs_osprey.__path__, 'pyaml_cs_osprey.', onerror=_raise)]
+        for name in modules:
+            importlib.import_module(name)
+        print(f'PYAML WHEEL OK ({len(modules)} modules)')
         "
 
   static-checks:
@@ -1826,12 +1828,18 @@ jobs:
       # The unit lane ignores this module by path: its budgets are held to a
       # workstation's numbers, and four xdist workers on a four-vCPU runner
       # miss them by ~7x on both corpora at once — the box, not the code (see
-      # the module docstring). It runs here instead, serially and alone.
+      # the module docstring). It runs here instead, serially and alone, in
+      # two invocations: the first runs everything but the absolute budgets,
+      # the second is the serial host of the module's wallclock-marked
+      # budgets and times them with nothing else in the process. Each
+      # invocation builds the project and the hundred-thousand-row index for
+      # itself, which is a cost only an on-demand job can carry.
       # Placed ahead of the probe below deliberately: a DuckDB latency
       # measurement needs no API key, and gating it on one would mean an
       # unreachable proxy silently takes the scale guard down with it.
       run: |
-        uv run pytest tests/services/channel_finder/graph_index/test_scale.py -v --tb=short
+        uv run pytest tests/services/channel_finder/graph_index/test_scale.py -m "not wallclock" -v --tb=short
+        uv run pytest tests/services/channel_finder/graph_index/test_scale.py -m wallclock -v --tb=short
 
     - name: Pre-flight LLM endpoint reachability check
       env:
@@ -4919,8 +4927,22 @@ jobs:
       # sidecar-container coverage is split across an OKF module and an ARIEL
       # one, and a lane that named a single file would silently stop covering
       # the other the day it moved. `-m dockerbuild` is what keeps the
-      # non-container integration modules (preset-static, build-boot) out.
-      run: uv run pytest tests/integration/ -m dockerbuild -k qmd -v --tb=short
+      # non-container integration modules (preset-static, build-boot) out;
+      # `not wallclock` leaves the time budgets to the step below.
+      run: uv run pytest tests/integration/ -m "dockerbuild and not wallclock" -k qmd -v --tb=short
+
+    - name: Run the wall-clock budgets serially
+      # A budget is timed in a pytest process of its own, with nothing else
+      # loading the runner, and selected by marker alone so a marked test in
+      # this directory cannot be left unrun. A selection that matches nothing
+      # exits non-zero, so an emptied marker cannot go green. The image is the
+      # one built and cached above: the cost is one sidecar start plus the
+      # budget's queries. This cap and the job cap are re-derived together
+      # from observed green runs.
+      timeout-minutes: 15
+      env:
+        OSPREY_QMD_IMAGE: osprey-qmd:ci
+      run: uv run pytest tests/integration/ -m wallclock -v --tb=short
 
     - name: Run the multi-user shared-bundle sidecar E2E
       # The `qmd`-marked half of tests/e2e/test_deploy_lifecycle.py, which the
@@ -5494,10 +5516,18 @@ jobs:
     #     exports twice over — import, build, render — and boots one
     #     container of its own over the result under test_mml_trees_boot.py's
     #     `BOOT_TIMEOUT_S` of 240 s;
+    #   - test_pyaml_measure_guarded.py, which builds the example deployment
+    #     once, with approval on, and boots one container over it under the
+    #     `BOOT_TIMEOUT_S` of 240 s in tests/va/e2e/_guarded_measure.py, then
+    #     runs about ten measurements, three of them killed and one stopped
+    #     after their first write;
     #   - test_mml_trees_boot.py, which installs a facility export from
     #     scratch for each of its three trees — init, import, emit, set,
     #     validate, build — and boots a container of its own per tree under
     #     that module's own `BOOT_TIMEOUT_S` of 240 s;
+    #   - test_check_b_served.py, which installs the served export and builds
+    #     the example deployment, boots one container over each under the same
+    #     240 s bound, and measures every kind twice, served and in process;
     #   - the real-facility lane on the NSLS-II stand-in, one install of a two-model
     #     export — init, import, set, build — and one boot under that
     #     module's own `BOOT_TIMEOUT_S` of 240 s, capped at 10 minutes.
@@ -5505,7 +5535,7 @@ jobs:
     # the image build is 2–5; the cap is about twice that. It is larger than
     # va-substrate-equivalence-e2e and archiver-world-e2e, and than the switch
     # lane's 30, because that lane runs five modules against containers two of
-    # its own images serve, while this one runs thirteen and boots ten.
+    # its own images serve, while this one runs fifteen and boots fourteen.
     timeout-minutes: 50
 
     steps:
@@ -5575,10 +5605,13 @@ jobs:
       # container, then the put-surface module's one boot and the journal
       # module's two, then the parity module, which reads the session container
       # and boots one of its own, then the chain module, which installs the
-      # two-model tree before its one boot, then the harvested-tree module,
-      # which installs a facility export from scratch before each of its three
-      # boots — so a failure in the cheap set is reported before the expensive
-      # work starts.
+      # two-model tree before its one boot, then the guarded-measurement
+      # module, which builds two deployments and boots one container over
+      # each, then the harvested-tree module, which installs a facility export
+      # from scratch before each of its three boots, then the check-B module,
+      # which installs the served export and builds the example deployment
+      # before one boot each — so a failure in the cheap set is reported
+      # before the expensive work starts.
       run: |
         uv run pytest tests/va/e2e/test_approval_smoke.py tests/va/e2e/test_limits_enforcement.py \
           tests/va/e2e/test_orbit_response.py tests/va/e2e/test_full_sweep.py \
@@ -5586,7 +5619,8 @@ jobs:
           tests/va/e2e/test_sim_apply_va.py \
           tests/va/e2e/test_va_put_surface.py tests/va/e2e/test_planted_journal.py \
           tests/va/e2e/test_substrate_parity.py tests/va/e2e/test_chain_boot.py \
-          tests/va/e2e/test_mml_trees_boot.py \
+          tests/va/e2e/test_pyaml_measure_guarded.py \
+          tests/va/e2e/test_mml_trees_boot.py tests/va/e2e/test_check_b_served.py \
           -v --tb=short --junitxml=junit-va-live-e2e.xml
 
     - name: Run the real-facility lane on the NSLS-II stand-in

@@ -19,12 +19,12 @@ from osprey.runtime import ENV_CONTROL_TARGET
 from osprey.runtime.guarded_run import (
     GUARDED_RUN_DIR,
     GUARDED_RUN_DIR_MODE,
-    JOURNAL_FILE_NAME,
     LOCK_FILE_NAME,
     GuardedRunDirError,
     guarded_run_dir,
     guarded_run_target,
 )
+from tests._guarded_run import LINKED_DIRECTORY_REFUSAL, link_directory
 
 #: A deployment whose own control system is the Virtual Accelerator.
 VA_BASELINE = {"type": "virtual_accelerator", "connector": {"virtual_accelerator": {"port": 1}}}
@@ -47,8 +47,7 @@ def _host_repo(root: Path, control_system: dict, monkeypatch: pytest.MonkeyPatch
 
 def test_the_exported_names() -> None:
     assert GUARDED_RUN_DIR == "guarded_run"
-    assert LOCK_FILE_NAME != JOURNAL_FILE_NAME
-    assert "/" not in LOCK_FILE_NAME and "/" not in JOURNAL_FILE_NAME
+    assert LOCK_FILE_NAME == "run.lock"
 
 
 def test_a_host_layout_without_var_gets_it_created(
@@ -189,3 +188,35 @@ def test_an_uncreatable_path_is_refused(tmp_path: Path, monkeypatch: pytest.Monk
             guarded_run_dir("live")
     finally:
         os.chmod(state_zone, 0o755)
+
+
+def test_a_linked_target_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _host_repo(tmp_path, LIVE_BASELINE, monkeypatch)
+    level = guarded_run_dir("live")
+    real = link_directory(level)
+
+    with pytest.raises(GuardedRunDirError) as refused:
+        guarded_run_dir("live")
+
+    assert str(refused.value) == f"{level} {LINKED_DIRECTORY_REFUSAL}"
+    assert level == repo.resolve() / "var" / GUARDED_RUN_DIR / "live"
+    assert list(real.iterdir()) == []
+
+
+def test_a_linked_guarded_run_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _host_repo(tmp_path, LIVE_BASELINE, monkeypatch)
+    (repo / "var").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    level = repo.resolve() / "var" / GUARDED_RUN_DIR
+    os.symlink(elsewhere, level, target_is_directory=True)
+
+    with pytest.raises(GuardedRunDirError) as refused:
+        guarded_run_dir("live")
+
+    assert str(refused.value) == f"{level} {LINKED_DIRECTORY_REFUSAL}"
+    assert list(elsewhere.iterdir()) == [], "nothing is created through the link"

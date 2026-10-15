@@ -585,8 +585,6 @@ classes:
         range: integer
       fit_order:
         range: integer
-      singular_values:
-        range: integer
       sleep_between_step:
         range: float
       sleep_between_meas:
@@ -613,7 +611,6 @@ classes:
     description: Channel addresses.
     attributes:
       tune:
-      chromaticity:
       rf:
 
   Limits:

@@ -5,8 +5,8 @@ must then end the way a finished one does: the failure recorded in
 ``execution_metadata.json``, the captured output echoed to the pipes, and the
 process gone through ``os._exit`` rather than interpreter shutdown, where a
 control-system client's shutdown hook (pyepics' ``finalize_libca``) can wedge
-it. The parent reads a report line tagged ``RESTORE_REPORT_TAG`` out of the
-drained pipes into the audit ledger and the execution folder.
+it. A readwrite run interrupted while it writes under its target's run lock
+leaves what it moved where it stopped and releases the lock on its way out.
 
 Every child here is a real :class:`ExecutionWrapper`-wrapped script run by the
 test interpreter; the control system is a dict behind stubbed
@@ -18,6 +18,7 @@ would hang on it and time out.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -30,13 +31,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
-from osprey.mcp_server.python_executor.executor import (
-    RESTORE_REPORT_FILE,
-    RESTORE_REPORT_TAG,
-    _record_restore_report,
-)
 from osprey.services.python_executor.execution.wrapper import ExecutionWrapper
+from tests._guarded_run import lock_path
 
 _SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
 
@@ -48,6 +46,9 @@ _HOOK_BLOCK_S = 3600
 
 #: Setpoints of the dict machine before any tool ran.
 HOME = {"A": 1.0, "B": 2.0}
+
+#: The control target and generation a readwrite child is stamped with.
+_STAMP = {"OSPREY_CONTROL_TARGET": "live", "OSPREY_CONTROL_TARGET_GENERATION": "4"}
 
 #: Shared by every child: a blocking shutdown hook, a dict machine behind stubbed
 #: ``osprey.runtime`` functions, and ``hold(phase)``, which announces a phase by
@@ -86,6 +87,17 @@ _PREAMBLE = textwrap.dedent(
     """
 )
 
+#: A readwrite run interrupted under its target's run lock after moving ``A``.
+_RUN_TOOL_CODE = _PREAMBLE + textwrap.dedent(
+    """
+    osprey.runtime.write_channel("A", 5.0)
+    hold("span")
+    osprey.runtime.write_channel("B", 6.0)
+    print("AFTER RUN_TOOL")
+    osprey.runtime.write_channel("B", 99.0)
+    results = {"finished": True}
+    """
+)
 
 #: Interrupted while "loading" (before any tool runs), the way a pyAML
 #: configuration load is: long, and inside the user code.
@@ -105,7 +117,14 @@ _LOAD_CODE = _PREAMBLE + textwrap.dedent(
 class _Child:
     """One wrapped script run as a subprocess; the parent SIGINTs it at a phase."""
 
-    def __init__(self, workdir: Path, user_code: str, *, inherit_sig_ign: bool) -> None:
+    def __init__(
+        self,
+        workdir: Path,
+        user_code: str,
+        *,
+        inherit_sig_ign: bool,
+        deployment: bool = False,
+    ) -> None:
         self.workdir = workdir
         self.execution_folder = workdir / "exec"
         self.execution_folder.mkdir()
@@ -120,8 +139,11 @@ class _Child:
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(_SRC_ROOT), env.get("PYTHONPATH")]))
         env["WRAPPER_INTERRUPT_WORKDIR"] = str(workdir)
         env["OSPREY_AGENT_DATA_ROOT"] = str(workdir / "agent_data")
-        env.pop("OSPREY_EXECUTION_DEADLINE", None)
         env.pop("CONFIG_FILE", None)
+        if deployment:
+            _provision_deployment(workdir)
+            env.pop("OSPREY_CONFIG", None)
+            env.update(_STAMP)
 
         def ignore_sigint() -> None:
             # The disposition an asyncio child of a process that ignores SIGINT
@@ -185,10 +207,10 @@ def child(tmp_path: Path) -> Iterator[Callable[..., _Child]]:
     """Starts wrapped children; any still running at teardown is killed."""
     started: list[_Child] = []
 
-    def start(user_code: str, *, inherit_sig_ign: bool = False) -> _Child:
+    def start(user_code: str, *, inherit_sig_ign: bool = False, deployment: bool = False) -> _Child:
         workdir = tmp_path / f"run{len(started)}"
         workdir.mkdir()
-        proc = _Child(workdir, user_code, inherit_sig_ign=inherit_sig_ign)
+        proc = _Child(workdir, user_code, inherit_sig_ign=inherit_sig_ign, deployment=deployment)
         started.append(proc)
         return proc
 
@@ -197,15 +219,52 @@ def child(tmp_path: Path) -> Iterator[Callable[..., _Child]]:
         proc.kill()
 
 
-def _ledger_records(ledger: Path) -> list[dict[str, Any]]:
-    if not ledger.exists():
-        return []
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line]
+def _provision_deployment(workdir: Path) -> None:
+    """Make *workdir* a deployment repo on a live baseline, so the run lock resolves."""
+    (workdir / "build").mkdir()
+    (workdir / "profile.yml").write_text("name: probe\n", encoding="utf-8")
+    (workdir / "build" / "config.yml").write_text(
+        yaml.safe_dump({"control_system": {"type": "epics", "connector": {"epics": {}}}}),
+        encoding="utf-8",
+    )
+
+
+def _lock_is_free(path: Path) -> bool:
+    """Whether nothing holds the run lock at *path*."""
+    fd = os.open(path, os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(fd)
+
+
+def test_sigint_mid_run_tool_persists_its_record_and_releases_the_lock(
+    child: Callable[..., _Child],
+) -> None:
+    """SIGINT under the lock: recorded, nothing written back, the lock freed, the child exits."""
+    run = child(_RUN_TOOL_CODE, deployment=True)
+    run.interrupt_at("span")
+    out, err = run.drain()
+
+    assert run.values() == {**HOME, "A": 5.0}, "what the run moved stays where it stopped"
+    stdout, stderr = out.decode(), err.decode()
+    assert "AFTER RUN_TOOL" not in stdout
+    assert "GUARDED_RUN_RESTORE" not in stdout + stderr, "nothing reports a restore"
+
+    metadata = run.metadata()
+    assert metadata["success"] is False
+    assert metadata["error_type"] == "KeyboardInterrupt"
+    assert _lock_is_free(lock_path("live", run.workdir))
 
 
 def test_sigint_mid_load_persists_metadata(child: Callable[..., _Child]) -> None:
     """SIGINT while the script loads: the record says so and the child exits itself."""
-    run = child(_LOAD_CODE)
+    run = child(_LOAD_CODE, deployment=True)
     run.interrupt_at("load")
     out, err = run.drain()
 
@@ -221,7 +280,7 @@ def test_sigint_mid_load_persists_metadata(child: Callable[..., _Child]) -> None
 
 def test_sigint_mid_load_with_inherited_sig_ign(child: Callable[..., _Child]) -> None:
     """A child started with SIGINT ignored still honours it: the prologue restores it."""
-    run = child(_LOAD_CODE, inherit_sig_ign=True)
+    run = child(_LOAD_CODE, inherit_sig_ign=True, deployment=True)
     run.interrupt_at("load")
     out, _err = run.drain()
 
@@ -240,7 +299,7 @@ def test_sigint_plain_script_skips_blocking_atexit(child: Callable[..., _Child])
             time.sleep(0.01)
         """
     )
-    run = child(code)
+    run = child(code, deployment=True)
     run.interrupt_at("work")
     run.drain()
 
@@ -248,61 +307,3 @@ def test_sigint_plain_script_skips_blocking_atexit(child: Callable[..., _Child])
     metadata = run.metadata()
     assert metadata["error_type"] == "KeyboardInterrupt"
     assert metadata["success"] is False
-    assert "restore_report" not in metadata
-
-
-def test_restore_report_parsed_to_ledger_and_folder(tmp_path: Path) -> None:
-    """Every tagged line on either pipe lands in the folder and the ledger; noise does not."""
-    first = {
-        "restored": ["SR:Q1"],
-        "unchanged": [],
-        "refused": [],
-        "failed": [],
-        "aborted": False,
-        "deadline_guard": True,
-    }
-    second = {
-        "restored": [],
-        "unchanged": ["SR:Q2"],
-        "refused": [["SR:Q3", "limits", 4.5]],
-        "failed": [["SR:Q4", "read failed"]],
-        "aborted": True,
-        "deadline_guard": False,
-    }
-    stdout = (
-        "hello\n"
-        f"{RESTORE_REPORT_TAG} {json.dumps(first)}\n"
-        f"{RESTORE_REPORT_TAG} not json\n"
-        f"not a {RESTORE_REPORT_TAG} line\n"
-    ).encode()
-    stderr = f"warning\n{RESTORE_REPORT_TAG} {json.dumps(second)}\n"
-    folder = tmp_path / "execution_x"
-    folder.mkdir()
-    ledger = tmp_path / "audit" / "executor.jsonl"
-
-    reports = _record_restore_report(stdout, stderr, folder, ledger)
-
-    assert reports == [first, second]
-    assert json.loads((folder / RESTORE_REPORT_FILE).read_text(encoding="utf-8")) == [
-        first,
-        second,
-    ]
-    records = _ledger_records(ledger)
-    assert len(records) == 2
-    assert all(r["surface"] == "executor" and folder.name in r["subject"] for r in records)
-    assert "SR:Q1" in records[0]["detail"]
-    assert "SR:Q3" in records[1]["detail"] and "SR:Q4" in records[1]["detail"]
-    # Addresses are identifiers; the value a refused write left behind is not.
-    assert "4.5" not in records[1]["detail"]
-    assert records[0]["reason"] != records[1]["reason"]
-
-    # No report: nothing written anywhere.
-    quiet = tmp_path / "execution_y"
-    quiet.mkdir()
-    other_ledger = tmp_path / "audit" / "other.jsonl"
-    assert _record_restore_report(b"plain\n", b"", quiet, other_ledger) == []
-    assert not (quiet / RESTORE_REPORT_FILE).exists()
-    assert not other_ledger.exists()
-
-    # Never raises, even on an unusable folder.
-    assert _record_restore_report(stdout, "", tmp_path / "missing" / "dir", ledger) == [first]

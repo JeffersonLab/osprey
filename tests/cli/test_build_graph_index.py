@@ -86,6 +86,8 @@ def _graph_repo(
         "  control_system.type: virtual_accelerator\n"
         "  control_system.connector.virtual_accelerator.serving: in_process\n"
         "  archiver.type: none\n"
+        # No approval hook is selected, so nothing would ask: approval is off.
+        "  approval.enabled: false\n"
         "  claude_code.telemetry.enabled: false\n"
         "  hooks.debug: false\n"
         f"  services.graphdb.ttl_path: {_CORPUS_RELATIVE}\n"

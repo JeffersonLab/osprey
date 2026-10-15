@@ -42,7 +42,12 @@ from osprey.mcp_server.sandbox_env import (
     configured_child_env_passthrough,
     scrub_sandbox_child_env,
 )
-from osprey.stores.artifact_manifest import collect_artifacts
+from osprey.stores.artifact_manifest import (
+    MAX_COLLECTED_ENTRIES,
+    MAX_COLLECTED_TOTAL_BYTES,
+    collect_artifacts,
+    is_collectable_file,
+)
 from osprey.utils.config import EXECUTION_METHOD_SUBPROCESS, get_facility_timezone
 from osprey_connectors import posture_store
 
@@ -118,13 +123,6 @@ PROFILE_SOURCE_ENTRIES: tuple[str, ...] = (
 ENV_CONTROL_TARGET = "OSPREY_CONTROL_TARGET"
 ENV_CONTROL_TARGET_GENERATION = "OSPREY_CONTROL_TARGET_GENERATION"
 
-#: The absolute Unix time, in seconds, at which this module kills the sandbox
-#: child: the launch time plus the configured execution timeout. Written into
-#: every spawned sandbox, stamped or not, so code inside the child can budget
-#: its own clean exit. Spelled again in :mod:`osprey.runtime` for the reason
-#: the stamp names are; the same test pins the two equal.
-ENV_EXECUTION_DEADLINE = "OSPREY_EXECUTION_DEADLINE"
-
 #: Every name the stamp occupies. Cleared together on every launch, stamped or
 #: not, so no inherited name survives into a sandbox that did not earn it.
 #: :data:`ENV_LAUNCH_POSTURE` is deliberately NOT a member: it is stamped on
@@ -139,7 +137,7 @@ _STAMP_ENV_NAMES = (
 #: reading side belong to
 #: :mod:`osprey_connectors.posture_store`, which is where the sandbox's own
 #: reference monitor asks the question; the name is imported from there rather
-#: than re-spelled, because unlike the three stamps above this one is read by a
+#: than re-spelled, because unlike the stamps above this one is read by a
 #: module this process can import.
 ENV_LAUNCH_POSTURE = posture_store.LAUNCH_POSTURE_ENV_VAR
 
@@ -179,21 +177,47 @@ FAILURE_KIND_TIMEOUT = "timeout"
 #: the switch lands — which is what makes it neither a setup failure (the
 #: service is healthy) nor a script error (the code is fine).
 FAILURE_KIND_SWITCH_IN_PROGRESS = "switch_in_progress"
+#: :attr:`ExecutionResult.failure_kind` for a guarded call that was never
+#: admitted: its tool's approval policy asks, and the approval hook left no
+#: matching record for this call. Nothing ran.
+FAILURE_KIND_APPROVAL_MISSING = "approval_missing"
+#: :attr:`ExecutionResult.failure_kind` for a readwrite run refused because the
+#: rendered ``config.yml`` states an approval switch that is not true or false,
+#: or an ``approval`` section that is not a mapping. Nothing ran, and calling
+#: again cannot help: the fix is in the deployment's profile.
+FAILURE_KIND_APPROVAL_CONFIG_INVALID = "approval_config_invalid"
+#: :attr:`ExecutionResult.failure_kind` for a readwrite run that did not start
+#: because another guarded run holds its control target's lock. Nothing in the
+#: submitted code ran; the error message names the holder's pid and start time.
+#: Spelled like the sandbox wrapper's failure kind for the same refusal.
+FAILURE_KIND_GUARDED_RUN_BUSY = "guarded_run_busy"
 
-#: Prefix of the line an interrupted run prints with its restore report: the
-#: tag, one space, then the report as a single JSON object. The executor reads
-#: only lines that carry it and skips any whose payload is not JSON.
-RESTORE_REPORT_TAG = "OSPREY_PYAML_RESTORE"
+#: The call fields the approval prompt binds a guarded call to. Every one the
+#: call carries must equal the value the approval hook recorded for the call.
+APPROVED_FIELDS: tuple[str, ...] = ("approved_target", "approved_view_sha256")
 
-#: The file in the execution folder that holds the restore reports parsed from
-#: an interrupted run's pipes, as a JSON list in the order they were read.
-RESTORE_REPORT_FILE = "pyaml_restore_reports.json"
+#: The approved fields an asking guarded call must carry.
+_REQUIRED_APPROVED_FIELDS: tuple[str, ...] = ("approved_target",)
+
+#: The further approved fields an asking call of one tool must carry: a
+#: measurement is bound to the pyAML view its prompt showed.
+_TOOL_REQUIRED_APPROVED_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "pyaml_measure": ("approved_view_sha256",),
+}
+
+#: The ask stamp the approval hook leaves for a call it put to an approver,
+#: restated from ``osprey_approval.py`` (a hook script this package cannot
+#: import);
+#: ``tests/mcp_server/python_executor/test_approved_call_forwarding.py`` pins the
+#: spellings equal.
+APPROVAL_ASK_PREFIX = "approval_ask_"
+APPROVAL_ASK_SUFFIX = ".json"
 
 #: Upper bound, in seconds, on winding down a cancelled run that has no finite
 #: deadline: how long its child gets to exit after ``SIGINT`` before it is
 #: killed, and how long reaping a killed child may take. A run WITH a deadline
-#: is given the time left to it instead, so a cancel never cuts a run's
-#: restore shorter than the timeout that run was granted; a cancel that lands
+#: is given the time left to it instead, so a cancel never cuts a run's own
+#: clean exit shorter than the timeout that run was granted; a cancel that lands
 #: at or after that deadline has no time left, and its child is killed at once.
 CANCEL_DRAIN_CAP_S = 30.0
 
@@ -207,11 +231,6 @@ _CANCEL_EXIT_POLL_S = 0.02
 
 #: Bytes per read while a cancelled run's pipes are drained.
 _CANCEL_READ_CHUNK = 65536
-
-#: Audit ``reason`` for a restore that wrote every journaled address back.
-REASON_RESTORE_COMPLETE = "pyaml_restore_complete"
-#: Audit ``reason`` for a restore that left an address refused or unconfirmed.
-REASON_RESTORE_INCOMPLETE = "pyaml_restore_incomplete"
 
 
 @dataclass
@@ -231,8 +250,11 @@ class ExecutionResult:
     #: was resolvable and the sandbox fell back to the deployment config.
     control_target: str = CONTROL_TARGET_BASELINE
     #: Why a failed run failed, when the sandbox itself is the reason:
-    #: :data:`FAILURE_KIND_SETUP`, :data:`FAILURE_KIND_TIMEOUT` or
-    #: :data:`FAILURE_KIND_SWITCH_IN_PROGRESS`. ``None`` for
+    #: :data:`FAILURE_KIND_SETUP`, :data:`FAILURE_KIND_TIMEOUT`,
+    #: :data:`FAILURE_KIND_SWITCH_IN_PROGRESS`,
+    #: :data:`FAILURE_KIND_APPROVAL_MISSING`,
+    #: :data:`FAILURE_KIND_APPROVAL_CONFIG_INVALID` or
+    #: :data:`FAILURE_KIND_GUARDED_RUN_BUSY`. ``None`` for
     #: a run that started and whose own code raised — the only failure the
     #: submitted code can be blamed for. The response builder reads this to
     #: class the error envelope: a dead backend is an infrastructure outage,
@@ -244,6 +266,37 @@ class ExecutionResult:
     #: ledger holds the attempts it reached. Empty for a readonly run and for a
     #: run that never started.
     written_channels: list[str] = field(default_factory=list)
+    #: The folder the run executed in, for a run that ran its script; the files
+    #: a tool reads back from its own run are named under it. ``None`` for a
+    #: run that never started.
+    execution_folder: Path | None = None
+    #: The process id of the sandbox child this run started; ``None`` for a
+    #: run that never started its child.
+    pid: int | None = None
+
+
+def execution_timeout_seconds(value: object) -> float:
+    """The configured execution timeout as a finite, positive number of seconds.
+
+    The executor's kill at this timeout is the run's one time bound, so a run
+    with no bound does not start: a bool, a non-number, a non-finite or a
+    non-positive value raises.
+
+    Raises:
+        ValueError: The value is not a finite, positive number; the message
+            names ``python_executor.execution_timeout_seconds`` and the value.
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(
+            f"python_executor.execution_timeout_seconds is {value!r}; "
+            "it must be a finite, positive number of seconds"
+        )
+    return float(value)
 
 
 def _read_config() -> dict:
@@ -251,7 +304,13 @@ def _read_config() -> dict:
 
     Returns:
         dict: ``execution_method`` (always the resolved backend name, never the
-        raw config string) and ``timeout`` in seconds.
+        raw config string) and ``timeout``, always a finite, positive float in
+        seconds; an absent key takes the shared default.
+
+    Raises:
+        ValueError: ``execution.execution_method`` is unknown, or
+            ``python_executor.execution_timeout_seconds`` is not a finite,
+            positive number (an explicit null included).
     """
     from osprey.utils.config import resolve_execution_method
     from osprey.utils.workspace import load_osprey_config
@@ -261,8 +320,10 @@ def _read_config() -> dict:
 
     return {
         "execution_method": resolve_execution_method(config),
-        "timeout": config.get("python_executor", {}).get(
-            "execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS
+        "timeout": execution_timeout_seconds(
+            config.get("python_executor", {}).get(
+                "execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS
+            )
         ),
     }
 
@@ -696,6 +757,123 @@ def _apply_target_stamp(sandbox_env: dict[str, str]) -> str:
     return target
 
 
+class _ApprovalMissing(Exception):
+    """A guarded call whose approval prompt left no matching record.
+
+    Raised by :func:`_check_approved_call` and turned into an
+    :class:`ExecutionResult` by :func:`_execute_via_local`, before anything
+    is spawned — never seen outside this module.
+    """
+
+
+class _ApprovalConfigInvalid(Exception):
+    """A readwrite call under an approval switch that is not true or false.
+
+    Raised by :func:`_check_approved_call` and turned into an
+    :class:`ExecutionResult` by :func:`_execute_via_local`, before anything
+    is spawned — never seen outside this module.
+    """
+
+
+def _approved_call_stamp(tool_use_id: str | None) -> dict | None:
+    """The approval hook's ask stamp for the call *tool_use_id*, or ``None``.
+
+    ``None`` without an id, without a stamp, and when the state directory
+    cannot be resolved: each is a call nobody can show was asked.
+    """
+    if not tool_use_id:
+        return None
+    try:
+        from osprey.mcp_server.control_system import target_state
+
+        stamp = target_state.read_file(
+            target_state.state_dir() / f"{APPROVAL_ASK_PREFIX}{tool_use_id}{APPROVAL_ASK_SUFFIX}"
+        )
+    except Exception:
+        logger.debug("Could not read the ask stamp for %s", tool_use_id, exc_info=True)
+        return None
+    return stamp if isinstance(stamp, dict) else None
+
+
+def _check_approved_call(
+    execution_mode: str,
+    osprey_config: Mapping[str, Any],
+    tool: str,
+    approved: Mapping[str, str | None],
+    *,
+    control_target: str,
+) -> None:
+    """Whether the call was approved, decided before it is spawned.
+
+    A readonly run takes no run lock, and a call whose tool's policy does not
+    ask was put to nobody, so neither is checked. A call whose policy asks
+    runs only when the approval hook's ask stamp for this tool call exists,
+    names *tool*, and records every approved field the call carries with the
+    same value; the call must carry the target, ``pyaml_measure`` the view
+    digest too, and that target must name the guarded-run directory
+    *control_target* does. Nothing of the stamp reaches the sandbox.
+
+    Args:
+        execution_mode: ``"readonly"`` or ``"readwrite"``.
+        osprey_config: The rendered ``config.yml``.
+        tool: The tool's short name, as ``approval.tools`` keys it.
+        approved: The call's :data:`APPROVED_FIELDS`, ``None`` for an absent one.
+        control_target: The target this run is stamped with.
+
+    Raises:
+        _ApprovalMissing: The policy asks and the stamp is missing, names
+            another tool, or disagrees with the call, or the call was approved
+            for another target than the run's.
+        _ApprovalConfigInvalid: The config states an ``approval.enabled`` that
+            is not true or false, or an ``approval`` that is not a mapping.
+    """
+    if execution_mode != "readwrite":
+        return
+    from osprey.cli.build_posture_check import approval_enabled_fault, ask_capable
+
+    fault = approval_enabled_fault(osprey_config)
+    if fault is not None:
+        raise _ApprovalConfigInvalid(f"not run: {fault} (approval_config_invalid).")
+    if not ask_capable(osprey_config, tool):
+        return
+    from osprey.audit.call import current_tool_use_id
+
+    stamp = _approved_call_stamp(current_tool_use_id())
+    if stamp is None or not str(stamp.get("tool") or "").endswith(tool):
+        raise _ApprovalMissing(
+            "not run: this call's approval prompt left no record (approval_missing). "
+            "Call the tool again so the approval prompt can ask."
+        )
+    required = (*_REQUIRED_APPROVED_FIELDS, *_TOOL_REQUIRED_APPROVED_FIELDS.get(tool, ()))
+    for name in APPROVED_FIELDS:
+        value = approved.get(name)
+        if value is None and name not in required:
+            continue
+        if value is None or stamp.get(name) != value:
+            raise _ApprovalMissing(
+                f"not run: `{name}` differs from what the approval prompt recorded "
+                "(approval_missing). Call the tool again."
+            )
+    approved_target = str(approved["approved_target"])
+    approved_name = _guarded_run_name(approved_target)
+    if approved_name is None or approved_name != _guarded_run_name(control_target):
+        raise _ApprovalMissing(
+            f"not run: this call was approved for target `{approved_target}`; the run is on "
+            f"`{control_target}` (approval_missing). Call the tool again."
+        )
+
+
+def _guarded_run_name(target: str) -> str | None:
+    """The guarded-run directory name *target* resolves to, ``None`` when it names none."""
+    from osprey.runtime.guarded_run import guarded_run_target
+
+    try:
+        return guarded_run_target(target)
+    except Exception:
+        logger.debug("Target %r names no guarded-run directory", target, exc_info=True)
+        return None
+
+
 @contextlib.contextmanager
 def _in_flight_marker(control_target: str, launch_posture: str | None = None):
     """Record that an execution is running, for as long as it runs.
@@ -844,8 +1022,19 @@ async def _execute_via_local(
     execution_mode: str,
     config: dict,
     execution_folder: Path,
+    *,
+    tool: str = "execute",
+    approved_target: str | None = None,
+    approved_view_sha256: str | None = None,
 ) -> ExecutionResult:
-    """Execute code in a host subprocess with the ExecutionWrapper."""
+    """Execute code in a host subprocess with the ExecutionWrapper.
+
+    *tool* names the guarded tool the run is for; with the approved target and
+    view digest it is checked against the call the approval hook recorded
+    (:func:`_check_approved_call`). A call that should have been asked and was
+    not, or was approved for another target, is refused before anything is
+    spawned.
+    """
     from osprey.services.python_executor.execution.wrapper import ExecutionWrapper
     from osprey.utils.workspace import load_osprey_config
 
@@ -896,6 +1085,39 @@ async def _execute_via_local(
             error_message=str(refusal),
             failure_kind=FAILURE_KIND_SWITCH_IN_PROGRESS,
         )
+    # Whether this call was put to a human is decided here, by the process
+    # that launches the script, from the record the approval hook left for
+    # this tool call; the sandbox is handed nothing of it.
+    try:
+        _check_approved_call(
+            execution_mode,
+            osprey_config,
+            tool,
+            {"approved_target": approved_target, "approved_view_sha256": approved_view_sha256},
+            control_target=control_target,
+        )
+    except _ApprovalMissing as refusal:
+        return ExecutionResult(
+            success=False,
+            stdout="",
+            stderr=str(refusal),
+            execution_method_used=EXECUTION_METHOD_SUBPROCESS,
+            execution_time_seconds=0.0,
+            error_message=str(refusal),
+            control_target=control_target,
+            failure_kind=FAILURE_KIND_APPROVAL_MISSING,
+        )
+    except _ApprovalConfigInvalid as refusal:
+        return ExecutionResult(
+            success=False,
+            stdout="",
+            stderr=str(refusal),
+            execution_method_used=EXECUTION_METHOD_SUBPROCESS,
+            execution_time_seconds=0.0,
+            error_message=str(refusal),
+            control_target=control_target,
+            failure_kind=FAILURE_KIND_APPROVAL_CONFIG_INVALID,
+        )
     limits_validator = _load_limits_validator(target=control_target)
 
     wrapper = ExecutionWrapper(
@@ -926,13 +1148,6 @@ async def _execute_via_local(
 
     timeout = config["timeout"]
     start_time = time.time()
-    # Overwrites or drops any inherited value: the scrub keeps unknown OSPREY_
-    # names. A null ``execution_timeout_seconds`` is an unbounded run, which
-    # has no deadline to announce.
-    if isinstance(timeout, int | float) and math.isfinite(timeout):
-        sandbox_env[ENV_EXECUTION_DEADLINE] = str(start_time + timeout)
-    else:
-        sandbox_env.pop(ENV_EXECUTION_DEADLINE, None)
 
     python_bin = str(resolve_agent_interpreter(project_root))
 
@@ -956,9 +1171,8 @@ async def _execute_via_local(
             stdout_text = stdout_bytes.decode("utf-8", errors="replace")
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
         except asyncio.CancelledError:
-            # A cancel that lands before the child exists has nothing to wind
-            # down. One that lands after it is answered before it propagates,
-            # inside the marker, so the marker outlives the child.
+            # A cancel after the handle exists is answered before it
+            # propagates, inside the marker, so the marker outlives the child.
             if proc is not None:
                 await _interrupt_and_drain(proc, start_time, timeout, execution_folder)
             raise
@@ -992,6 +1206,7 @@ async def _execute_via_local(
                     returncode=proc.returncode,
                     elapsed=elapsed,
                     control_target=control_target,
+                    pid=proc.pid,
                     stderr_notice=notice,
                 )
             return ExecutionResult(
@@ -1004,17 +1219,19 @@ async def _execute_via_local(
                 control_target=control_target,
                 failure_kind=FAILURE_KIND_TIMEOUT,
                 written_channels=_read_written_channels(execution_folder),
+                pid=proc.pid,
             )
 
-    return _result_from_run(
-        execution_folder,
-        _read_execution_metadata(execution_folder),
-        stdout_text=stdout_text,
-        stderr_text=stderr_text,
-        returncode=proc.returncode,
-        elapsed=time.time() - start_time,
-        control_target=control_target,
-    )
+        return _result_from_run(
+            execution_folder,
+            _read_execution_metadata(execution_folder),
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            returncode=proc.returncode,
+            elapsed=time.time() - start_time,
+            control_target=control_target,
+            pid=proc.pid,
+        )
 
 
 async def _interrupt_and_drain(
@@ -1027,8 +1244,9 @@ async def _interrupt_and_drain(
 
     MCP cancels a tool call through an anyio cancel scope that re-cancels on
     every await, so the whole sequence runs shielded. ``SIGINT`` lets the
-    wrapped script end the way an interrupted one does — a guarded pyAML run
-    restores what it moved and prints its report. Both pipes are read into
+    wrapped script end the way an interrupted one does, a run's own clean
+    exit: the wrapper records the interrupt in the execution record and
+    releases the run lock. Both pipes are read into
     buffers for the whole wind-down, so an echo larger than a pipe buffer
     cannot wedge the child and nothing read is lost when a wait is cut short.
 
@@ -1038,10 +1256,9 @@ async def _interrupt_and_drain(
     that deadline has already passed, so such a child is killed at once — or
     :data:`CANCEL_DRAIN_CAP_S` when the run has no finite deadline. A child
     still alive at the bound is killed and reaped. Once it has exited the pipes
-    get :data:`_CANCEL_PIPE_GRACE_S` to deliver what is left, and whatever was
-    read is handed to :func:`_record_restore_report`.
+    get :data:`_CANCEL_PIPE_GRACE_S` to deliver what is left.
 
-    The report is filed, and a still-running child killed, even when a native
+    A still-running child is killed even when a native
     asyncio cancellation breaks through the shield; that cancellation then
     propagates. Under anyio cancellation this never raises: the caller
     re-raises the cancellation.
@@ -1089,7 +1306,6 @@ async def _interrupt_and_drain(
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-        _record_restore_report(bytes(out), bytes(err), execution_folder)
 
 
 def _start_pump(tg: Any, stream: asyncio.StreamReader | None, sink: bytearray) -> Any:
@@ -1124,6 +1340,7 @@ def _result_from_run(
     returncode: int | None,
     elapsed: float,
     control_target: str,
+    pid: int | None,
     stderr_notice: str | None = None,
 ) -> ExecutionResult:
     """Build the result of a run that ran its script, from its record.
@@ -1138,11 +1355,16 @@ def _result_from_run(
     figures = _collect_figures(execution_folder)
     artifacts = collect_artifacts(execution_folder)
 
+    failure_kind: str | None = None
     if metadata:
         final_stdout = metadata.get("stdout", stdout_text)
         final_stderr = metadata.get("stderr", stderr_text)
         success = metadata.get("success", returncode == 0)
         error_msg = metadata.get("error")
+        # Only the wrapper's own lock entry marks a busy target; a busy lock
+        # the user code asked for is the code's error.
+        if not success and metadata.get("failure_kind") == FAILURE_KIND_GUARDED_RUN_BUSY:
+            failure_kind = FAILURE_KIND_GUARDED_RUN_BUSY
     else:
         final_stdout = stdout_text
         final_stderr = stderr_text
@@ -1162,7 +1384,10 @@ def _result_from_run(
         execution_time_seconds=elapsed,
         error_message=error_msg,
         control_target=control_target,
+        failure_kind=failure_kind,
         written_channels=_read_written_channels(execution_folder),
+        execution_folder=execution_folder,
+        pid=pid,
     )
 
 
@@ -1207,148 +1432,35 @@ def _read_execution_metadata(execution_folder: Path) -> dict | None:
     return None
 
 
-def _parse_restore_reports(*streams: bytes | str) -> list[dict]:
-    """Every ``OSPREY_PYAML_RESTORE`` report in *streams*, in stream then line order.
-
-    A tagged line whose payload is not a JSON object is skipped: the tag is
-    plain text any script could print, and a malformed line is no report.
-    """
-    prefix = RESTORE_REPORT_TAG + " "
-    reports: list[dict] = []
-    for stream in streams:
-        text = stream.decode("utf-8", errors="replace") if isinstance(stream, bytes) else stream
-        for line in (text or "").splitlines():
-            if not line.startswith(prefix):
-                continue
-            try:
-                report = json.loads(line[len(prefix) :])
-            except ValueError:
-                continue
-            if isinstance(report, dict):
-                reports.append(report)
-    return reports
-
-
-def _addresses(entries: Any) -> list[str]:
-    """The addresses of a report's ``refused``/``failed`` entries, values dropped."""
-    names: list[str] = []
-    for entry in entries or ():
-        if isinstance(entry, list | tuple) and entry:
-            names.append(str(entry[0]))
-        elif isinstance(entry, str):
-            names.append(entry)
-    return names
-
-
-def _restore_detail(execution_dir: Path, report: dict) -> str:
-    """The audit ``detail`` of one restore report: addresses and flags, no values.
-
-    The ledger holds identifiers only, so a refused write's left-behind value
-    stays in the execution folder's copy of the report. Cut to the envelope's
-    detail bound so the record is never dropped for its length.
-    """
-    from osprey.audit.envelope import MAX_DETAIL_CHARS
-
-    restored = [str(a) for a in report.get("restored") or ()]
-    detail = (
-        f"execution={execution_dir.name} "
-        f"aborted={bool(report.get('aborted'))} "
-        f"deadline_guard={bool(report.get('deadline_guard'))} "
-        f"unchanged={len(report.get('unchanged') or ())} "
-        f"refused={','.join(_addresses(report.get('refused')))} "
-        f"failed={','.join(_addresses(report.get('failed')))} "
-        f"restored={','.join(restored)}"
-    )
-    if len(detail) > MAX_DETAIL_CHARS:
-        detail = detail[: MAX_DETAIL_CHARS - 3] + "..."
-    return detail
-
-
-def _write_restore_file(execution_dir: Path, reports: list[dict]) -> None:
-    """Write *reports* to :data:`RESTORE_REPORT_FILE`, replacing it atomically."""
-    target = execution_dir / RESTORE_REPORT_FILE
-    temporary = execution_dir / f".{RESTORE_REPORT_FILE}.{uuid.uuid4().hex}.tmp"
-    try:
-        temporary.write_text(json.dumps(reports, indent=2), encoding="utf-8")
-        os.replace(temporary, target)
-    finally:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
-
-
-def _record_restore_report(
-    stdout: bytes | str,
-    stderr: bytes | str,
-    execution_dir: Path,
-    ledger: Path | None = None,
-) -> list[dict]:
-    """File the restore reports an interrupted run printed; return them.
-
-    A guarded pyAML run that is interrupted restores the setpoints it moved and
-    prints its report as an ``OSPREY_PYAML_RESTORE`` line (on stderr, inside the
-    sandbox's captured output, which the wrapper echoes to the pipes on its way
-    out). The parent reads both drained pipes and keeps what it finds twice:
-    the full reports in the execution folder (:data:`RESTORE_REPORT_FILE`), and
-    one executor-surface audit record per report — addresses and flags, never
-    values — in the audit ledger.
-
-    Args:
-        stdout: The child's drained stdout, bytes or text.
-        stderr: The child's drained stderr, bytes or text.
-        execution_dir: The run's execution folder.
-        ledger: The ledger file to append to; ``None`` routes the records the
-            way every executor record is routed (``var/audit/<identity>/``).
-
-    Returns:
-        The parsed reports, in the order read (stdout first). Nothing is written
-        when there are none. Never raises: a record that cannot be stored costs
-        the audit trail that record and is logged, not the cancellation.
-    """
-    reports = _parse_restore_reports(stdout, stderr)
-    if not reports:
-        return reports
-
-    try:
-        _write_restore_file(execution_dir, reports)
-    except Exception:  # the ledger record below still lands
-        logger.warning("Could not write the restore reports into %s", execution_dir, exc_info=True)
-
-    for report in reports:
-        try:
-            from osprey.audit.envelope import DECISION_ALLOWED, SURFACE_EXECUTOR, AuditEnvelope
-            from osprey.audit.writer import append_envelope, record_envelope
-            from osprey.utils.identity import acting_identity
-
-            incomplete = bool(report.get("refused") or report.get("failed"))
-            envelope = AuditEnvelope(
-                surface=SURFACE_EXECUTOR,
-                actor=acting_identity(),
-                posture=posture.posture(),
-                posture_source=posture.posture_source(),
-                session=posture.posture_session(),
-                subject=f"execution/{execution_dir.name}",
-                decision=DECISION_ALLOWED,
-                reason=REASON_RESTORE_INCOMPLETE if incomplete else REASON_RESTORE_COMPLETE,
-                detail=_restore_detail(execution_dir, report),
-            )
-            if ledger is None:
-                record_envelope(envelope)
-            else:
-                ledger.parent.mkdir(parents=True, exist_ok=True)
-                append_envelope(ledger, envelope)
-        except Exception:  # the audit trail degrades; the run's outcome does not
-            logger.warning("Could not record a restore report for audit", exc_info=True)
-    return reports
-
-
 def _collect_figures(execution_folder: Path) -> list[Path]:
-    """Collect figure files from execution folder and its figures/ subdirectory."""
+    """Collect figure files from execution folder and its figures/ subdirectory.
+
+    A figure is a regular file with one hard link, and ``figures/`` is a
+    directory, never a link: the folder is written by agent code, and a link
+    under a figure's name would hand the parent a file from outside it. At most
+    ``MAX_COLLECTED_ENTRIES`` figures and ``MAX_COLLECTED_TOTAL_BYTES`` bytes are
+    collected. Anything else is left out with a warning.
+    """
     figures: list[Path] = []
+    total_bytes = 0
     search_dirs = [execution_folder / "figures", execution_folder]
     for search_dir in search_dirs:
-        if search_dir.exists():
-            for ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
-                figures.extend(sorted(search_dir.glob(ext)))
+        if search_dir.is_symlink() or not search_dir.is_dir():
+            continue
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
+            for candidate in sorted(search_dir.glob(ext)):
+                if not is_collectable_file(candidate):
+                    logger.warning("Figure not collected: %s is not a regular file", candidate)
+                    continue
+                size = candidate.lstat().st_size
+                if (
+                    len(figures) >= MAX_COLLECTED_ENTRIES
+                    or total_bytes + size > MAX_COLLECTED_TOTAL_BYTES
+                ):
+                    logger.warning("Figure not collected: %s is past the run's cap", candidate)
+                    continue
+                total_bytes += size
+                figures.append(candidate)
     return figures
 
 
@@ -1356,6 +1468,10 @@ async def execute_code(
     code: str,
     execution_mode: str,
     description: str,  # noqa: ARG001 - mirrors the execute tools' parameter; the description is recorded by the tool layer
+    *,
+    tool: str = "execute",
+    approved_target: str | None = None,
+    approved_view_sha256: str | None = None,
 ) -> ExecutionResult:
     """Execute Python code in a host subprocess.
 
@@ -1370,6 +1486,11 @@ async def execute_code(
         code: Python source code to execute.
         execution_mode: ``"readonly"`` or ``"readwrite"``.
         description: Human-readable description of what the code does.
+        tool: The tool the run is for, as ``approval.tools`` keys it.
+        approved_target: The control target the approval hook put into the
+            call; ``None`` when the call carries none.
+        approved_view_sha256: The pyAML view digest the approval hook put into
+            the call; ``None`` when the call carries none.
 
     Returns:
         :class:`ExecutionResult` with stdout, stderr, success status, figures,
@@ -1379,7 +1500,15 @@ async def execute_code(
         config = _read_config()
         execution_folder = _create_execution_folder()
 
-        return await _execute_via_local(code, execution_mode, config, execution_folder)
+        return await _execute_via_local(
+            code,
+            execution_mode,
+            config,
+            execution_folder,
+            tool=tool,
+            approved_target=approved_target,
+            approved_view_sha256=approved_view_sha256,
+        )
     except Exception as exc:
         logger.error(
             "Execution setup failed (%s: %s)",

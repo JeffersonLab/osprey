@@ -5354,8 +5354,8 @@
       "VCM": "8c9daea46a5f5cbb"
     },
     "models": {
-      "LTB": "fc0d527cb1497bd4",
-      "StorageRing": "7d9cc854f8c5dcd9",
+      "LTB": "616cdd917dd746d3",
+      "StorageRing": "91d26f62e727e95e",
       "texture": "d806c9c72b11194d"
     },
     "wiring": {
@@ -8023,8 +8023,8 @@
       "SR:C30-MG{PS:SQKH1A}I:Sp1-SP": "9ec79b0b32609287"
     },
     "decks": {
-      "LTB": "71c3e90000fdd460",
-      "StorageRing": "8d6abd414ead2e14"
+      "LTB": "392cdada626a598d",
+      "StorageRing": "01820a74efdc5b11"
     }
   }
 }

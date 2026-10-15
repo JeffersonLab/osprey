@@ -4,3 +4,4 @@ groups:
   bpm: LINE/BPM
   hcor: LINE/HCM
   vcor: LINE/VCM
+corrector_delta: 1.0e-05

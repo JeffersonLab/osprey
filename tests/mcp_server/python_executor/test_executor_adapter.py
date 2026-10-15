@@ -6,6 +6,7 @@ Pattern: monkeypatch.chdir(tmp_path) -> write config.yml -> mock deps -> call ad
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 import yaml
 
 from osprey.mcp_server.python_executor.executor import (
+    FAILURE_KIND_SETUP,
     ExecutionResult,
     _collect_figures,
     _create_execution_folder,
@@ -26,6 +28,12 @@ from osprey.mcp_server.python_executor.executor import (
     resolve_agent_interpreter,
 )
 from osprey_connectors.config import DEFAULT_EXECUTION_TIMEOUT_SECONDS, ConfigBuilder
+
+
+@pytest.fixture(autouse=True)
+def _nobody_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These readwrite runs are not about approval: the deployment asks nobody."""
+    monkeypatch.setattr("osprey.cli.build_posture_check.ask_capable", lambda *_args: False)
 
 
 @pytest.fixture(autouse=True)
@@ -136,6 +144,32 @@ def test_config_timeout_default(tmp_path, monkeypatch):
     (tmp_path / "config.yml").write_text(yaml.dump({}))
     config = _read_config()
     assert config["timeout"] == DEFAULT_EXECUTION_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, float("inf"), float("nan"), True, "600"])
+def test_config_refuses_an_unbounded_timeout(tmp_path, monkeypatch, value):
+    """A timeout that leaves the run without a finite, positive bound is refused by name."""
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, {"python_executor": {"execution_timeout_seconds": value}})
+    with pytest.raises(ValueError, match="python_executor.execution_timeout_seconds"):
+        _read_config()
+
+
+async def test_an_unbounded_timeout_starts_no_run(tmp_path, monkeypatch):
+    """A null timeout fails setup: no execution folder is made and no child is started."""
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, {"python_executor": {"execution_timeout_seconds": None}})
+    run = AsyncMock()
+    monkeypatch.setattr("osprey.mcp_server.python_executor.executor._execute_via_local", run)
+
+    result = await execute_code("print('hi')", "readonly", "unbounded")
+
+    assert result.success is False
+    assert result.failure_kind == FAILURE_KIND_SETUP
+    assert "python_executor.execution_timeout_seconds" in result.error_message
+    assert result.execution_folder is None
+    run.assert_not_called()
+    assert not list(tmp_path.rglob("python_executions"))
 
 
 def test_config_timeout_default_matches_the_builder_default(tmp_path, monkeypatch):
@@ -538,6 +572,44 @@ def test_figure_collection_multiple_formats(execution_folder):
     assert len(figures) == 3
 
 
+def test_a_figure_name_linked_to_a_file_outside_is_not_collected(execution_folder, tmp_path):
+    """A link, a hard link or a linked ``figures/`` never hands over an outside file."""
+    secret = tmp_path / ".env"
+    secret.write_bytes(b"API_KEY=do-not-read\n")
+    (execution_folder / "x.png").symlink_to(secret)
+    os.link(secret, execution_folder / "y.png")
+    (execution_folder / "figures" / "z.svg").symlink_to(secret)
+    (execution_folder / "figures" / "kept.png").write_bytes(b"PNG")
+
+    assert _collect_figures(execution_folder) == [execution_folder / "figures" / "kept.png"]
+
+
+def test_a_figures_folder_that_is_a_link_is_not_scanned(execution_folder, tmp_path):
+    outside = tmp_path / "pictures"
+    outside.mkdir()
+    (outside / "private.png").write_bytes(b"PNG")
+    (execution_folder / "figures").rmdir()
+    (execution_folder / "figures").symlink_to(outside, target_is_directory=True)
+    (execution_folder / "kept.png").write_bytes(b"PNG")
+
+    assert _collect_figures(execution_folder) == [execution_folder / "kept.png"]
+
+
+def test_figures_past_the_run_caps_are_not_collected(execution_folder, monkeypatch):
+    import osprey.mcp_server.python_executor.executor as executor_module
+
+    monkeypatch.setattr(executor_module, "MAX_COLLECTED_ENTRIES", 2)
+    for name in ("a.png", "b.png", "c.png"):
+        (execution_folder / name).write_bytes(b"PNG")
+
+    assert [path.name for path in _collect_figures(execution_folder)] == ["a.png", "b.png"]
+
+    monkeypatch.setattr(executor_module, "MAX_COLLECTED_ENTRIES", 10)
+    monkeypatch.setattr(executor_module, "MAX_COLLECTED_TOTAL_BYTES", 7)
+
+    assert [path.name for path in _collect_figures(execution_folder)] == ["a.png", "b.png"]
+
+
 # ---------------------------------------------------------------------------
 # Execution metadata reading
 # ---------------------------------------------------------------------------
@@ -679,6 +751,7 @@ async def test_completed_script_is_reported_when_the_sandbox_fails_to_exit(tmp_p
     )
 
     proc = _hanging_proc()
+    proc.pid = 4241
     with patch(
         "osprey.mcp_server.python_executor.executor.asyncio.create_subprocess_exec",
         new_callable=AsyncMock,
@@ -687,6 +760,7 @@ async def test_completed_script_is_reported_when_the_sandbox_fails_to_exit(tmp_p
         result = await execute_code("print('x')", "readwrite", "test")
 
     proc.kill.assert_called_once()
+    assert result.pid == 4241
     assert result.success is True
     assert result.failure_kind is None
     assert result.stdout == "Before: 0.0\nAfter: 0.1\n"
@@ -704,6 +778,7 @@ async def test_a_script_still_running_at_the_timeout_is_a_timeout(tmp_path, monk
     )
 
     proc = _hanging_proc()
+    proc.pid = 4242
     with patch(
         "osprey.mcp_server.python_executor.executor.asyncio.create_subprocess_exec",
         new_callable=AsyncMock,
@@ -712,6 +787,7 @@ async def test_a_script_still_running_at_the_timeout_is_a_timeout(tmp_path, monk
         result = await execute_code("while True: pass", "readonly", "test")
 
     proc.kill.assert_called_once()
+    assert result.pid == 4242
     assert result.success is False
     assert result.failure_kind == "timeout"
     assert result.stdout == ""

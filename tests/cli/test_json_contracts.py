@@ -553,6 +553,46 @@ def test_facility_show_prints_its_counted_notice_while_stdout_parses(
     assert view["written"] is True
 
 
+#: The notes the pyAML view prints, one per served deck model with no measurement file.
+_PYAML_OMITTED_NOTES = (
+    "pyAML view omitted for LINE: no measurement/LINE.yaml",
+    "pyAML view omitted for SR: no measurement/SR.yaml",
+)
+
+
+@pytest.fixture(scope="module")
+def pyaml_omitted_probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A control-assistant repo whose served deck models have no measurement file.
+
+    The render carries no pyAML view and names each model in a note on stderr.
+    Never edited after it is made.
+    """
+    repo = init_project(tmp_path_factory.mktemp("pyaml-omitted"), "control-assistant", "demo")
+    (repo / "data" / "facility" / "measurement" / "SR.yaml").unlink()
+    (repo / "data" / "facility" / "measurement" / "LINE.yaml").unlink()
+    return repo
+
+
+@pytest.mark.slow
+def test_facility_show_prints_the_pyaml_omitted_notice_while_stdout_parses(
+    runner: CliRunner, pyaml_omitted_probe: Path
+) -> None:
+    """The omitted pyAML view's notices reach stderr; stdout is one document."""
+    result = _invoke_facility(runner, pyaml_omitted_probe, lambda: None)
+
+    assert result.exit_code == 0, result.output
+    for note in _PYAML_OMITTED_NOTES:
+        assert any(note in line for line in result.stderr.splitlines()), note
+    document = _sole_document(result.stdout)
+    (view,) = [view for view in document["views"] if view["name"] == "pyaml"]
+    assert view == {
+        "name": "pyaml",
+        "path": "data/pyaml",
+        "written": False,
+        "reason": "; ".join(_PYAML_OMITTED_NOTES),
+    }
+
+
 def test_ariel_status_module_health_rides_in_the_one_document(runner: CliRunner) -> None:
     """An enabled module's ``health`` is in the document, its check patched, stdout clean."""
     from osprey.models.providers.health import HealthResult

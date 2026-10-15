@@ -317,6 +317,7 @@ def measurement() -> dict[str, Any]:
     return {
         "kinds": ["orm"],
         "groups": {role: f"{MODEL}/{family}" for role, (family, _) in _GROUPS.items()},
+        "corrector_delta": 1.0e-5,
     }
 
 

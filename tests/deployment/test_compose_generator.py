@@ -22,6 +22,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -49,6 +51,7 @@ from osprey.deployment.compose_generator import (
 )
 from osprey.deployment.control_identity import CONTROL_IDENTITY_CONTAINER_PATH
 from osprey.deployment.errors import DeploymentPreconditionError
+from osprey.deployment.members import WORKSPACE_MEMBERS
 from osprey.deployment.web_terminals.render import render_web_terminals
 from osprey.port_layout import CA_DEFAULT_PORT, default_port, layout_ports, resolve_port_base
 from osprey.utils.workspace import DEFAULT_AGENT_DATA_BASE_DIR, RENDERED_CONFIG_RELPATH
@@ -2009,8 +2012,8 @@ def _run_tiled_start(
     escape is undone, so the script runs as the container's shell would run it.
     The stub records each invocation and exits *upgrade_rc* for
     ``upgrade-database``. With *hold_s* set the script is expected NOT to exit:
-    it is checked alive after that long, then sent SIGTERM, and the completed
-    process is ``None``.
+    once its stderr carries the failed-upgrade line it is checked alive for
+    *hold_s* more, then sent SIGTERM, and the completed process is ``None``.
 
     Returns the recorded invocations, the completed process, and stderr.
     """
@@ -2042,6 +2045,28 @@ def _run_tiled_start(
         stderr = done.stderr
     else:
         proc = subprocess.Popen(["sh", "-c", script], env=env, stderr=subprocess.PIPE, text=True)
+        lines: list[str] = []
+        failed_line = threading.Event()
+
+        def _read_stderr() -> None:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                lines.append(line)
+                if "upgrade-database failed" in line:
+                    failed_line.set()
+
+        reader = threading.Thread(target=_read_stderr, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + 30
+        while not failed_line.wait(timeout=0.05):
+            if proc.poll() is not None or time.monotonic() > deadline:
+                proc.kill()
+                proc.wait(timeout=5)
+                reader.join(timeout=5)
+                pytest.fail(
+                    "the start script never reported the failed upgrade "
+                    f"(exit {proc.returncode}); stderr: {''.join(lines)!r}"
+                )
         try:
             proc.wait(timeout=hold_s)
             pytest.fail(f"the start script exited ({proc.returncode}) instead of holding")
@@ -2049,7 +2074,8 @@ def _run_tiled_start(
             pass
         proc.terminate()
         proc.wait(timeout=5)
-        stderr = proc.stderr.read() if proc.stderr else ""
+        reader.join(timeout=5)
+        stderr = "".join(lines)
         done = None
 
     recorded = (
@@ -3745,10 +3771,10 @@ def _write_dispatch_stack_config(project_path: Path, deployed: list[str]) -> Pat
 
 # METADATA for the fixture wheel _write_fixture_wheel builds: two plain base
 # deps, one dep kept behind a non-extra (python_version) marker, two extra-gated
-# deps that must stay OUT of the local-requirements manifest, and the
-# osprey-connectors workspace requirement that must ALSO stay out — the
-# connectors wheel is staged beside this one, so a PyPI requirement for it
-# would fail until a satisfying release exists there.
+# deps that must stay OUT of the local-requirements manifest, and one
+# requirement per workspace member that must ALSO stay out — each member wheel
+# is staged beside this one, so a PyPI requirement for it would fail until a
+# satisfying release exists there.
 _FIXTURE_WHEEL_METADATA = (
     "Metadata-Version: 2.1\n"
     "Name: osprey-framework\n"
@@ -3756,6 +3782,7 @@ _FIXTURE_WHEEL_METADATA = (
     "Requires-Dist: softioc>=4.5\n"
     "Requires-Dist: aiohttp\n"
     "Requires-Dist: osprey-connectors<0.2.0,>=0.1.0\n"
+    "Requires-Dist: pyaml-cs-osprey!=2026.6.2a0,>=2026.6.2\n"
     'Requires-Dist: tomli>=2; python_version < "3.11"\n'
     'Requires-Dist: pytest>=8; extra == "dev"\n'
     'Requires-Dist: sphinx; extra == "docs"\n'
@@ -3773,8 +3800,8 @@ _FIXTURE_CONNECTORS_WHEEL_METADATA = (
     'Requires-Dist: pytest>=8; extra == "dev"\n'
 )
 
-# The manifest the two fixture wheels must produce together: extras and the
-# workspace-local osprey-connectors requirement excluded, the shared dep
+# The manifest the fixture wheels must produce together: extras and the
+# workspace-member requirements excluded, the shared dep
 # deduplicated, non-extra markers verbatim, sorted, one per line, trailing
 # newline.
 _FIXTURE_WHEEL_EXPECTED_MANIFEST = (
@@ -3790,14 +3817,33 @@ def _write_fixture_wheel(path: Path) -> None:
         whl.writestr("osprey_framework-0.0.0.dist-info/METADATA", _FIXTURE_WHEEL_METADATA)
 
 
-def _write_fixture_connectors_wheel(path: Path) -> None:
-    """Write a minimal valid osprey-connectors wheel zip with real METADATA."""
+def _member_wheel_name(member: str) -> str:
+    """The wheel filename the spy builds for a workspace member."""
+    return f"{member.replace('-', '_')}-0.0.0-py3-none-any.whl"
+
+
+def _write_fixture_member_wheel(path: Path, member: str) -> None:
+    """Write a minimal valid workspace-member wheel zip with real METADATA.
+
+    osprey-connectors carries the deps the manifest contract is checked
+    against; any other member carries no base requirement of its own.
+    """
     import zipfile
 
+    metadata = (
+        _FIXTURE_CONNECTORS_WHEEL_METADATA
+        if member == "osprey-connectors"
+        else f"Metadata-Version: 2.1\nName: {member}\nVersion: 0.0.0\n"
+    )
     with zipfile.ZipFile(path, "w") as whl:
-        whl.writestr(
-            "osprey_connectors-0.0.0.dist-info/METADATA", _FIXTURE_CONNECTORS_WHEEL_METADATA
-        )
+        whl.writestr(f"{member.replace('-', '_')}-0.0.0.dist-info/METADATA", metadata)
+
+
+#: Every wheel a --dev staging must drop into a build context: the framework
+#: plus one per workspace member.
+_EXPECTED_STAGED_WHEELS = sorted(
+    ["osprey_framework-0.0.0-py3-none-any.whl"] + [_member_wheel_name(m) for m in WORKSPACE_MEMBERS]
+)
 
 
 @pytest.fixture
@@ -3819,13 +3865,14 @@ def spy_wheel_build(monkeypatch: pytest.MonkeyPatch) -> list:
         if isinstance(cmd, list) and cmd[1:3] == ["-m", "build"]:
             calls.append(list(cmd))
             outdir = cmd[cmd.index("--outdir") + 1]
-            # The build cwd says WHICH workspace member is being built: the
-            # framework builds at the checkout root, the connectors wheel in
-            # its packages/ subdirectory.
-            if str(kwargs.get("cwd", "")).endswith("osprey-connectors"):
-                _write_fixture_connectors_wheel(
-                    Path(outdir, "osprey_connectors-0.0.0-py3-none-any.whl")
-                )
+            # The build cwd says WHICH distribution is being built: the
+            # framework builds at the checkout root, each workspace member in
+            # its packages/<member> subdirectory. The parent check matters: a
+            # checkout root may itself share a member's basename.
+            cwd = Path(str(kwargs.get("cwd", "")))
+            member = cwd.name
+            if cwd.parent.name == "packages" and member in WORKSPACE_MEMBERS:
+                _write_fixture_member_wheel(Path(outdir, _member_wheel_name(member)), member)
             else:
                 _write_fixture_wheel(Path(outdir, "osprey_framework-0.0.0-py3-none-any.whl"))
             return subprocess_module.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -3862,17 +3909,16 @@ def test_dev_wheel_builds_once_across_service_and_project_staging(
     assert _copy_local_framework_for_override(str(project_image_ctx)) is True
     assert _copy_local_framework_for_override(str(persona_ctx)) is True
 
-    assert len(spy_wheel_build) == 2, (
+    assert len(spy_wheel_build) == 1 + len(WORKSPACE_MEMBERS), (
         f"the wheel build subprocess must run exactly once per distribution "
-        f"(framework + connectors), ran {len(spy_wheel_build)}x"
+        f"(framework + each workspace member), ran {len(spy_wheel_build)}x"
     )
     service_ctx = tmp_path / "build" / "services" / "event_dispatcher"
     for ctx in (service_ctx, project_image_ctx, persona_ctx):
         staged = sorted(w.name for w in ctx.glob("*.whl"))
-        assert staged == [
-            "osprey_connectors-0.0.0-py3-none-any.whl",
-            "osprey_framework-0.0.0-py3-none-any.whl",
-        ], f"expected both wheels staged into {ctx}, found {staged}"
+        assert staged == _EXPECTED_STAGED_WHEELS, (
+            f"expected every wheel staged into {ctx}, found {staged}"
+        )
         assert (ctx / "osprey-local-requirements.txt").is_file(), (
             f"no local-requirements manifest staged next to the wheels in {ctx}"
         )
@@ -3890,9 +3936,9 @@ def test_dev_wheel_builds_once_across_rebuild_deployment_renders(
     prepare_compose_files(str(config_path), dev_mode=True)
     prepare_compose_files(str(config_path), dev_mode=True)
 
-    assert len(spy_wheel_build) == 2, (
+    assert len(spy_wheel_build) == 1 + len(WORKSPACE_MEMBERS), (
         f"the wheel build subprocess must run exactly once per distribution "
-        f"(framework + connectors), ran {len(spy_wheel_build)}x"
+        f"(framework + each workspace member), ran {len(spy_wheel_build)}x"
     )
 
 
@@ -4195,9 +4241,9 @@ def test_dev_wheel_build_is_reproducible(tmp_path: Path) -> None:
     attempts = 3
     all_samples: list[dict[str, str]] = []
     for attempt in range(attempts):
-        # Both staged wheels (framework + connectors), keyed by distribution
-        # name — BuildKit content-hashes each COPY'd wheel, so both must be
-        # reproducible for the layer cache to hold.
+        # Every staged wheel (framework + workspace members), keyed by
+        # distribution name — BuildKit content-hashes each COPY'd wheel, so
+        # each must be reproducible for the layer cache to hold.
         wheels: list[dict[str, Path]] = []
         digests: list[dict[str, str]] = []
         # Four samples: before and after each of the two builds. Only when all
@@ -4213,7 +4259,9 @@ def test_dev_wheel_build_is_reproducible(tmp_path: Path) -> None:
             if not _copy_local_framework_for_override(str(out_dir)):
                 pytest.skip("dev wheel build unavailable in this environment")
             staged = {w.name.split("-")[0]: w for w in out_dir.glob("*.whl")}
-            assert sorted(staged) == ["osprey_connectors", "osprey_framework"]
+            assert sorted(staged) == sorted(
+                ["osprey_framework"] + [m.replace("-", "_") for m in WORKSPACE_MEMBERS]
+            )
             wheels.append(staged)
             digests.append(
                 {name: hashlib.sha256(w.read_bytes()).hexdigest() for name, w in staged.items()}

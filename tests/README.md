@@ -16,16 +16,24 @@ new tests.
 
 ```bash
 # Parallel — what CI runs, and what your change has to pass
-pytest tests/ --ignore=tests/e2e -n 4 --dist loadgroup
+pytest tests/ --ignore=tests/e2e -m "not pty and not wallclock" -n 4 --dist loadgroup
 
 # Serial — for debugging one failure, or reading full output in order
 pytest tests/ --ignore=tests/e2e
 ```
 
+The `pty` and `wallclock` markers are run serially by `scripts/ci_check.sh`,
+by `scripts/gate.sh` and by their own CI steps.
+
+`scripts/gate.sh` is the one local spelling of the merge gate: anything that
+gates a branch calls it and adds nothing to its marker expression. It runs every
+CI step that needs no secret or Docker, and `--base <ref>` (default
+`origin/main`) is what its changelog and plugin-version checks compare against.
+
 Both must pass. Parallel is the real gate; serial is the one that gives you
 readable output when something is wrong.
 
-The three helper scripts already use the parallel invocation, so you normally
+The four helper scripts already use the parallel invocation, so you normally
 just run one of them:
 
 | Script | What it is for |
@@ -33,6 +41,7 @@ just run one of them:
 | `scripts/quick_check.sh` | Fast loop while working; skips `@pytest.mark.slow` |
 | `scripts/premerge_check.sh` | Quiet pass/fail before opening a PR |
 | `scripts/ci_check.sh` | Full CI mirror, with coverage |
+| `scripts/gate.sh full` | The merge gate: lint, lockfile, config keys, changelog, plugin version, types, the parallel sweep, each serial step, JS typecheck/lint/tests, and the docs build. `fast [--base <ref>] <paths>` sends `.py` paths to pytest and `*.test.js`/`*.test.mjs` to vitest |
 
 Each script bounds its pytest runs with `scripts/run_bounded.py`, which exits
 124 when a run passes its bound. A run that outlives its last test prints the
@@ -556,6 +565,16 @@ Checklist for a new test area:
       can fix. Both carry a comment saying exactly that. If you cannot write
       that comment for your test, you have a leak, not a flake.
 - [ ] **Assert stdout on `result.stdout`**, never on click's `result.output`.
+- [ ] **No bare second in a parallel lane.** A time budget is either
+      `@pytest.mark.wallclock`, timed alone in the serial step that selects the
+      marker, or a ratio against a baseline measured in the same process seconds
+      earlier (`tests/services/channel_finder/graph_index/test_scale.py`); an
+      absolute bound asserted beside xdist workers measures the workers.
+      The JS lane follows the same rule: vitest's `testTimeout` and
+      `hookTimeout` in `vitest.config.js` are one hang bound sized like
+      pytest's `--timeout`, never a speed budget, and no test or invocation
+      lowers it (pinned by `tests/deployment/test_vitest_hang_bound.py`); a JS
+      time budget takes one of the two shapes above.
 - [ ] **Both gates pass**: serially, and under `-n 4 --dist loadgroup`. Passing
       one is not evidence for the other.
 

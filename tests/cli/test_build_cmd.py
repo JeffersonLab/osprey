@@ -1932,11 +1932,13 @@ class TestWebPanelsRendering:
 # The posture every deployment must state in its own `config:` block for a
 # build to be allowed to render. Nothing supplies these behind the profile's
 # back, so a hand-written test profile spells them the way a materialized one
-# does.
+# does. These profiles select no approval hook, so they state that nobody is
+# asked.
 POSTURE_CONFIG: dict = {
     "control_system.type": "virtual_accelerator",
     "control_system.connector.virtual_accelerator.serving": "in_process",
     "archiver.type": "mock",
+    "approval.enabled": False,
     "claude_code.telemetry.enabled": False,
     "hooks.debug": False,
 }

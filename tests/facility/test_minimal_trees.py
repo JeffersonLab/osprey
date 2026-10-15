@@ -290,6 +290,7 @@ def test_zero_sources_under_in_context_stop_with_view_unsupported(build_project:
 
     assert result.exit_code == 1, result.output
     assert result.stderr == (
+        "  view pyaml not written: no served model names a deck\n"
         "facility: view-unsupported: path channel_finder.pipeline_mode — selects in_context "
         "and the facility has no channel; fix: add a channel, or select another "
         "channel_finder_mode\n"

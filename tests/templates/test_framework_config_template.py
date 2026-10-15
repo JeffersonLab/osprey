@@ -141,7 +141,7 @@ def test_every_rendered_leaf_is_derived(mode: str):
 
 @pytest.mark.parametrize(
     "removed",
-    ["services", "deployed_services", "cli", "approval", "system", "container_runtime"],
+    ["services", "deployed_services", "cli", "system", "container_runtime"],
 )
 def test_removed_sections_are_gone(removed: str):
     """Literal defaults moved to the presets; the template states none of them."""

@@ -27,11 +27,15 @@ from osprey.services.python_executor.write_surface import (
     _ARMED_CA_PROVIDER,
     _ARMED_CHECKED,
     _ARMED_RPC,
+    _CLIENT_LIBRARY_NAMES,
+    _CLIENT_LIBRARY_SYMBOLS,
+    _CLIENT_LOADER_ROWS,
     _FRAMEWORK_WRITE_TARGETS,
     _READONLY_WRITE_TARGETS,
+    CLIENT_PACKAGES,
 )
 from osprey.utils.logger import get_logger
-from osprey_connectors.errors import RAW_CLIENT_WRITE_MARKER
+from osprey_connectors.errors import RAW_CLIENT_WRITE_MARKER, ClientLibraryRefusedError
 
 logger = get_logger("execution_wrapper")
 
@@ -66,6 +70,11 @@ READONLY_REFUSAL_MARKER = "readonly execution mode"
 #: object per line. Appended per attempt, so a killed run leaves the list of
 #: the writes it reached.
 WRITES_LEDGER_FILENAME = "writes.jsonl"
+
+#: The ``failure_kind`` a readwrite run's record carries when its control
+#: target's lock was held by another run at entry, so no user code ran. A busy
+#: lock that user code asks for itself is the code's own error and carries none.
+FAILURE_KIND_GUARDED_RUN_BUSY = "guarded_run_busy"
 
 #: Refusal prefix the filesystem guard carries in a readonly run. It embeds
 #: :data:`READONLY_REFUSAL_MARKER` so that a write refused into the render zone
@@ -143,6 +152,23 @@ def armed_contract(*, refuse_rpc: bool) -> dict:
         "ca_provider_targets": _armed_rows(
             {row: reason for row, reason in _ARMED_CHECKED.items() if row[0] in _ARMED_CA_PROVIDER}
         ),
+    }
+
+
+def no_client_contract() -> dict:
+    """The keyword arguments of ``raw_put_block.install("no_client", ...)``.
+
+    The notebook kernel is its one caller; it is never embedded into an
+    executor script. Every value is a literal read from the write-surface
+    tables at call time, so the kernel refuses exactly the packages the
+    executor's import check denies.
+    """
+    return {
+        "denied_packages": tuple(sorted(CLIENT_PACKAGES)),
+        "library_names": tuple(_CLIENT_LIBRARY_NAMES),
+        "library_symbols": tuple(_CLIENT_LIBRARY_SYMBOLS),
+        "loader_targets": tuple((dotted, tuple(attrs)) for dotted, attrs in _CLIENT_LOADER_ROWS),
+        "marker": ClientLibraryRefusedError.MARKER,
     }
 
 
@@ -1250,6 +1276,47 @@ if not _execution_dir.exists():
         """
         ).strip()
 
+    def _get_run_lock(self) -> str:
+        """Take a readwrite run's control-target lock.
+
+        Empty when readonly: a readonly run takes no lock. Runs first inside
+        the user-code ``try``, so whatever it raises is the run's recorded
+        failure and the user code never starts. The control target's
+        :func:`~osprey.runtime.guarded_run.lock` is entered and held until the
+        run's record is saved (see :meth:`_get_cleanup_and_export`); another
+        holder makes it raise
+        :class:`~osprey.runtime.guarded_run.OspreyRunBusy`, which the record
+        marks with :data:`FAILURE_KIND_GUARDED_RUN_BUSY`. The entered context
+        is kept in ``_osprey_run_lock``, set only once the entry succeeded. An
+        interpreter that cannot import ``osprey.runtime`` cannot take the lock
+        either, and runs without it.
+        """
+        if self.execution_mode != "readwrite":
+            return ""
+        return textwrap.indent(
+            textwrap.dedent(
+                f"""
+                # The control target's lock, held until the record is saved.
+                try:
+                    from osprey.runtime.guarded_run import OspreyRunBusy as _OspreyRunBusy
+                    from osprey.runtime.guarded_run import lock as _osprey_lock
+                except ImportError:
+                    _osprey_lock = _OspreyRunBusy = None
+                if _osprey_lock is not None:
+                    _osprey_entering = _osprey_lock(None)
+                    try:
+                        _osprey_entering.__enter__()
+                    except _OspreyRunBusy:
+                        execution_metadata["failure_kind"] = {FAILURE_KIND_GUARDED_RUN_BUSY!r}
+                        raise
+                    _osprey_run_lock = _osprey_entering
+                    del _osprey_entering
+                del _osprey_lock, _OspreyRunBusy
+                """
+            ).strip(),
+            "        ",
+        )
+
     def _wrap_user_code(self, user_code: str) -> str:
         """Execute user code directly (synchronous).
 
@@ -1264,6 +1331,7 @@ if not _execution_dir.exists():
         return f"""
     # Execute user code
     try:
+{self._get_run_lock()}
 {indented_code}
 
         # The script is done: an interrupt from here on has nothing to stop.
@@ -1305,14 +1373,17 @@ if not _execution_dir.exists():
         Everything the executor reads is on disk or already flushed to the
         pipes by then, so the abrupt exit costs nothing; the exit code stays 0
         because the outcome is read from the record, not from the status.
+        A readwrite run's control-target lock (see :meth:`_get_run_lock`)
+        is released just before that exit, once every persistence step has
+        run, so no other guarded run starts on the target before this run's
+        record is saved.
 
         An interrupted run takes the same way out. The executor cancels a run
         with ``SIGINT``; the prologue in :meth:`_get_imports` restores the
         default handler, the ``KeyboardInterrupt`` is recorded (error_type
-        ``'KeyboardInterrupt'``, plus the ``restore_report`` a guarded pyAML
-        run raises with), and every handler here first ignores further
-        ``SIGINT``, so no second interrupt can carry an exception past the
-        persistence and ``os._exit``.
+        ``'KeyboardInterrupt'``), and every handler
+        here first ignores further ``SIGINT``, so no second interrupt can carry
+        an exception past the persistence and ``os._exit``.
         """
 
         # Output captured content so the host process can see it
@@ -1340,7 +1411,7 @@ if not _execution_dir.exists():
         # Build the complete code block properly
         base_cleanup = textwrap.dedent(
             """
-            except KeyboardInterrupt as e:
+            except KeyboardInterrupt:
                 # Interrupted (the executor's cancel sends SIGINT). Recorded like
                 # a failure, so the tail below persists the record, echoes the
                 # output and leaves through os._exit - never interpreter
@@ -1350,16 +1421,6 @@ if not _execution_dir.exists():
                 execution_metadata["error_type"] = "KeyboardInterrupt"
                 execution_metadata["error"] = "Interrupted (SIGINT) before the script finished"
                 execution_metadata["traceback"] = traceback.format_exc()
-                # A guarded pyAML run interrupted mid-run_tool raises carrying
-                # its restore report; keep it in the record as well.
-                _osprey_restore_report = getattr(e, "restore_report", None)
-                if _osprey_restore_report is not None:
-                    try:
-                        execution_metadata["restore_report"] = json.loads(
-                            _osprey_restore_report.to_json()
-                        )
-                    except Exception:
-                        execution_metadata["restore_report"] = repr(_osprey_restore_report)
                 print(f"\\n{'='*60}", file=sys.stderr)
                 print("PYTHON EXECUTION INTERRUPTED (KeyboardInterrupt)", file=sys.stderr)
                 print(f"{'='*60}", file=sys.stderr)
@@ -1502,6 +1563,13 @@ if not _execution_dir.exists():
                 traceback.print_exc()
                 _osprey_exit_status = 1
             finally:
+                # A readwrite run's lock is released once its record is saved.
+                _osprey_held_lock = globals().get('_osprey_run_lock')
+                if _osprey_held_lock is not None:
+                    try:
+                        _osprey_held_lock.__exit__(None, None, None)
+                    except BaseException:
+                        traceback.print_exc()
                 # Leave without interpreter shutdown: a control-system client's
                 # shutdown hooks can block or crash the process, and everything
                 # the executor reads is persisted or flushed by now.
