@@ -165,16 +165,16 @@ jobs:
     # spread is the runner pool, not the suite (the coverage cell is no
     # outlier either: it measures through PEP 669, see COVERAGE_CORE below,
     # which costs near enough nothing). The shard axis below splits what one
-    # cell runs three ways, which is what keeps a slow runner clear of this cap. What
-    # forces the headroom on top is a known intermittent tail worth ~12 minutes:
-    # a worker wedges mid-test and its share has to be redistributed to a
-    # replacement, or the session hangs after the last test on non-daemon
-    # threads that outlive it. Both are visible in this lane's uploaded
-    # diagnostics, and neither is bounded by anything the suite controls, so
-    # a cap tight enough to catch them also reds the runs where they merely
-    # cost time. The 40-minute step cap below sat at the healthy runtime for
-    # a day and did exactly that: main timed out on the macOS cell at 99%
-    # three times on 2026-09-01 with zero test failures.
+    # cell runs three ways, which is what keeps a slow runner clear of this
+    # cap. What forces the headroom on top is a known intermittent tail worth
+    # ~12 minutes: a worker wedges mid-test and its share has to be
+    # redistributed to a replacement, or the session hangs after the last test
+    # on non-daemon threads that outlive it. Both are visible in this lane's
+    # uploaded diagnostics, and neither is bounded by anything the suite
+    # controls, so a cap tight enough to catch them also reds the runs where
+    # they merely cost time. The 40-minute step cap below sat at the healthy
+    # runtime for a day and did exactly that: main timed out on the macOS cell
+    # at 99% three times on 2026-09-01 with zero test failures.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -286,9 +286,9 @@ jobs:
       # have passed anyway; the value is deliberately loose for that reason, and
       # tightening it is how this lane starts flaking. 55 was sized when a cell
       # ran the whole suite and the slowest healthy one took ~41 min; a shard
-      # runs well under half of it, so the same cap leaves room for the slowest runner
-      # in the pool AND the tail. The previous 40 was sized for a ~18 min cell
-      # and became the healthy runtime itself.
+      # runs about half of it or less, so the same cap leaves room for the
+      # slowest runner in the pool AND the tail. The previous 40 was sized for
+      # a ~18 min cell and became the healthy runtime itself.
       timeout-minutes: 55
       env:
         # Switches on tests/ci_diagnostics.py: a continuously flushed event log

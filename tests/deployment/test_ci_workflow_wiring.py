@@ -10768,12 +10768,26 @@ def _test_tree_entries(root: Path = TESTS_ROOT) -> list[str]:
 
 def _shard_coverage_problems(wf: dict[str, Any], entries: list[str]) -> list[str]:
     """Why the shards do not partition *entries* (empty = each entry in exactly
-    one shard, and the `case` arms are the matrix's shards)."""
+    one shard, and the `case` arms are the matrix's shards).
+
+    The partition is checked at the top level of ``tests/``, so it holds only
+    while every shard path and ignore is a top-level entry: an ignore one level
+    deeper takes its files out of the shard that names the directory while no
+    other shard picks them up. A shard that reaches below the top level is
+    refused outright rather than checked file by file."""
     shards = _unit_shards(wf)
     matrix = sorted(_jobs(wf)[UNIT_TEST_JOB]["strategy"]["matrix"]["shard"])
     problems = []
     if sorted(shards) != matrix:
         problems.append(f"case arms {sorted(shards)} are not the matrix shards {matrix}")
+    for name, command in shards.items():
+        for token in command.split()[1:]:
+            path = token.removeprefix("--ignore=").rstrip("/")
+            if path.startswith("tests/") and path.count("/") > 1:
+                problems.append(
+                    f"shard '{name}' names {token}, below a top-level test directory; "
+                    f"a shard is a set of whole tests/<dir> entries"
+                )
     for entry in entries:
         # A probe file below a directory entry; a root module is its own probe.
         probe = entry if entry.endswith(".py") else f"{entry}/test_probe.py"
@@ -10865,3 +10879,18 @@ def test_the_unit_lane_runs_the_two_uid_log_case__mutation_moves_it_to_another_s
     )
     with pytest.raises(AssertionError, match="shard does not collect"):
         test_the_unit_lane_runs_the_two_uid_log_case_on_a_linux_cell(mutated)
+
+
+def test_the_unit_shards_cover_the_test_tree__mutation_ignores_below_the_top_level() -> None:
+    """A shard ignores a subdirectory of a directory it names: those files run in
+    no shard, and a top-level check alone would still see the directory once."""
+    wf = _load_workflow()
+    command = _unit_shards(wf)[TWO_UID_LOG_SHARD]
+    path, *args = command.split()[1:]
+    deeper = "tests/deployment/web_terminals"
+    assert "tests/deployment" in [path, *args], "rest-a no longer names tests/deployment"
+    mutated = _with_shard_arm(
+        wf, TWO_UID_LOG_SHARD, path.removeprefix("tests/"), " ".join([*args, f"--ignore={deeper}"])
+    )
+    with pytest.raises(AssertionError, match="below a top-level test directory"):
+        test_the_unit_shards_cover_the_test_tree_exactly_once(mutated)
