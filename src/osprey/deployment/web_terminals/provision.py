@@ -39,6 +39,7 @@ from osprey.deployment.compose_generator import (
     resolve_project_name,
     resolve_repo_root,
 )
+from osprey.deployment.compose_watch import watched_compose_up
 from osprey.deployment.runtime_helper import (
     ComposeProvider,
     get_container_image_id,
@@ -91,6 +92,11 @@ from osprey.deployment.web_terminals.postup_hooks import (
     run_verify_script,
     warn_if_web_stack_unreachable,
 )
+from osprey.deployment.web_terminals.readiness import (
+    readiness_targets,
+    wait_until_ready,
+    web_terminal_ready_timeout,
+)
 from osprey.deployment.web_terminals.render import (
     AUTH_SIDECAR_AUDIT_IDENTITY,
     _auth_tls_context,
@@ -106,8 +112,10 @@ def preflight_web_terminals(config: dict, *, repo_root: Path | str | None = None
     """Fail-fast web-terminal preflight, run BEFORE any image build.
 
     ``deploy_up`` invokes this ahead of its (minutes-long) project-image
-    build so the deploy aborts that need no image at all — an
-    unresolvable persona catalog, a persona that would hold
+    build so the deploy aborts that need no image at all — a roster
+    :func:`resolve_personas` refuses (no persona catalog or no
+    ``default_persona``, in either image source; an unknown reference; a
+    persona with no ``project``), checked first, a persona that would hold
     ``BLUESKY_LAUNCH_TOKEN`` while its agent may also run a shell
     (:func:`~osprey.deployment.web_terminals.artifacts.check_bash_launch_token_conflict`),
     a missing provider auth secret
@@ -153,16 +161,11 @@ def preflight_web_terminals(config: dict, *, repo_root: Path | str | None = None
     """
     root = _resolved_repo_root(config, repo_root)
     web_terminals = (config.get("modules") or {}).get("web_terminals") or {}
+    # First, in both image sources: a roster with no persona catalog, no
+    # default_persona, an unknown reference or a persona with no project is
+    # refused before anything below mints a credential.
+    resolved_users = resolve_personas(web_terminals, config.get("registry") or {}, strict=True)
     if effective_image_source(web_terminals) == "local":
-        facility_prefix = (config.get("facility") or {}).get("prefix") or ""
-        registry_cfg = config.get("registry") or {}
-        resolved_users = resolve_personas(
-            web_terminals,
-            registry_cfg,
-            facility_prefix,
-            project_name=resolve_project_name(config),
-            strict=True,
-        )
         verify_persona_renders(config, resolved_users, repo_root=root)
     # BEFORE ensure_env_production, for the same reason auth provisioning runs
     # last: a persona that would hold BLUESKY_LAUNCH_TOKEN while its shipped
@@ -248,16 +251,9 @@ def persona_render_problem(config: dict, repo_root: Path | str) -> str | None:
     web_terminals = (config.get("modules") or {}).get("web_terminals") or {}
     if effective_image_source(web_terminals) != "local" and not deployment_is_open(config):
         return None
-    facility_prefix = (config.get("facility") or {}).get("prefix") or ""
     registry_cfg = config.get("registry") or {}
     try:
-        resolved_users = resolve_personas(
-            web_terminals,
-            registry_cfg,
-            facility_prefix,
-            project_name=resolve_project_name(config),
-            strict=True,
-        )
+        resolved_users = resolve_personas(web_terminals, registry_cfg, strict=True)
         verify_persona_renders(config, resolved_users, repo_root=Path(repo_root))
     except ValueError as exc:
         return str(exc)
@@ -1041,18 +1037,8 @@ def _roster_identities(config: dict) -> list[str]:
     :rtype: list[str]
     """
     web_terminals = (config.get("modules") or {}).get("web_terminals") or {}
-    facility_prefix = (config.get("facility") or {}).get("prefix") or ""
     registry_cfg = config.get("registry") or {}
-    return [
-        entry["name"]
-        for entry in resolve_personas(
-            web_terminals,
-            registry_cfg,
-            facility_prefix,
-            project_name=resolve_project_name(config),
-            strict=False,
-        )
-    ]
+    return [entry["name"] for entry in resolve_personas(web_terminals, registry_cfg, strict=False)]
 
 
 def _ensure_control_target_dirs(config: dict, repo_root: Path | str) -> None:
@@ -1240,7 +1226,7 @@ def web_stack_compose_cmd(
 
         env_file_args = _env_file_args(root, provider)
     return compose_base_cmd(
-        with_plain_progress(get_runtime_command(config)),
+        with_plain_progress(get_runtime_command(config), provider=provider),
         [web_compose_file(root)],
         root,
         env_file_args,
@@ -1637,15 +1623,8 @@ def deploy_up_web_terminals(
         # (`web_terminal_preflight_problems`) blocks only on the open-door codes
         # of `_UP_BLOCKING_LINT_CODES`, so this strict resolve is still the only
         # preflight standing between a broken persona catalog and that opaque failure.
-        facility_prefix = (config.get("facility") or {}).get("prefix") or ""
         registry_cfg = config.get("registry") or {}
-        resolved_users = resolve_personas(
-            web_terminals,
-            registry_cfg,
-            facility_prefix,
-            project_name=resolve_project_name(config),
-            strict=True,
-        )
+        resolved_users = resolve_personas(web_terminals, registry_cfg, strict=True)
         # Every referenced persona must already have the project `osprey build`
         # rendered for it, so the image build below always finds a complete
         # context. This renders nothing: a gap is a stale or partial build, and
@@ -1684,7 +1663,7 @@ def deploy_up_web_terminals(
     # `up` on the network-only top-level file alone would fail outright.
     if config.get("deployed_services"):
         services_base = compose_base_cmd(
-            with_plain_progress(get_runtime_command(config)),
+            with_plain_progress(get_runtime_command(config), provider=provider),
             compose_files,
             repo_root,
             env_file_args,
@@ -1764,9 +1743,14 @@ def deploy_up_web_terminals(
             services_cmd.append("--no-build")
         services_cmd.append("-d")
         logger.debug(f"Running command:\n    {' '.join(services_cmd)}")
-        run_captured(
-            services_cmd, env=run_env, spool_name="compose-services-up", repo_root=repo_root
-        )
+        with watched_compose_up(services_cmd, config=config, env=run_env) as bounds:
+            run_captured(
+                services_cmd,
+                env=run_env,
+                spool_name="compose-services-up",
+                repo_root=repo_root,
+                **bounds,
+            )
         _report_step("backend services started")
 
     # ---- web-terminal stack (same pinned project directory: the repo root) --
@@ -1796,7 +1780,10 @@ def deploy_up_web_terminals(
 
     up_cmd = web_cmd + ["up", "-d"]
     logger.debug(f"Running command:\n    {' '.join(up_cmd)}")
-    run_captured(up_cmd, env=run_env, spool_name="compose-web-up", repo_root=repo_root)
+    with watched_compose_up(up_cmd, config=config, env=run_env) as bounds:
+        run_captured(
+            up_cmd, env=run_env, spool_name="compose-web-up", repo_root=repo_root, **bounds
+        )
     _report_step("web-terminal stack started")
 
     # Post-`up` recreate for podman's same-tag image drift. A changed
@@ -1833,8 +1820,17 @@ def deploy_up_web_terminals(
     # the stack to re-register a stale Docker Desktop port forward -- the one
     # failure mode `up -d` structurally cannot fix on its own, because the
     # containers' definitions are unchanged and compose reconciles nothing.
+    # Between linger and seeding, the readiness gate: `up` reports success only
+    # once every service of the stack answers its own healthcheck, and seeding
+    # then finds every terminal up rather than skipping the slow ones.
     # -----------------------------------------------------------------------
     enable_linger(config, run_env)
+    wait_until_ready(
+        get_runtime_command(config)[0],
+        readiness_targets(web_compose_file(repo_root), resolve_project_name(config)),
+        run_env,
+        web_terminal_ready_timeout(config),
+    )
     seed_user_containers(config, env=run_env)
     run_verify_script(str(repo_root), run_env)
     warn_if_web_stack_unreachable(config, web_cmd=web_cmd, run_env=run_env)

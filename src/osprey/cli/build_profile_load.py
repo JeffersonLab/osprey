@@ -4,7 +4,9 @@ Turns a raw profile mapping into the typed dataclasses — validating the
 per-server and per-section shapes that only the parser can see (MCP
 command/url/port exclusivity, mapping-vs-scalar sections) and rejecting keys
 the schema does not define, both at the top level and inside the closed
-``environment:`` and ``bluesky:`` blocks. :func:`load_profile` is the
+``environment:`` and ``bluesky:`` blocks, and inside the closed blocks of the
+otherwise open ``config:`` block (``claude_code.telemetry`` and the telemetry
+services). :func:`load_profile` is the
 plain single-file entry point; the preset/override/``--set`` layering path in
 :mod:`osprey.cli.build_profile_resolve` reuses :func:`_parse_profile` after it has
 assembled its own raw dict.
@@ -15,12 +17,17 @@ from __future__ import annotations
 import difflib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+from osprey.bluesky_bridge_connection import LANE_ONE, SECOND_LANE_KEYS
+from osprey.build.claude_code_telemetry import TELEMETRY_AUTH_KEYS, TELEMETRY_KEYS
 from osprey.config_guards import is_positive_int
 from osprey.dispatch_pool_defaults import DEFAULT_MAX_CONCURRENT_RUNS, DEFAULT_MAX_QUEUE_DEPTH
 from osprey.errors import BuildProfileError
+from osprey.facility.errors import FacilityBuildError
+from osprey.facility.served import SIMULATION_MODELS_KEY
 from osprey.port_layout import (
     DEFAULT_PORT_BASE,
     PORT_BASE_CONFIG_KEY,
@@ -28,17 +35,27 @@ from osprey.port_layout import (
     resolve_port_base,
 )
 from osprey_connectors.control_system.call_timeout import refuse_renamed_timeout_keys
-from osprey_connectors.types import SET_CONTROL_SYSTEM_TYPES
+from osprey_connectors.simulation import TICK_KEY, resolve_tick_s
+from osprey_connectors.standin import LIVE_STANDIN_PORT_KEY
+from osprey_connectors.types import (
+    RETIRED_CONTROL_SYSTEM_TYPES,
+    SET_CONTROL_SYSTEM_TYPES,
+    TARGET_STANDIN,
+    TARGET_VA,
+    baseline_target,
+    retired_type_message,
+    talks_to_network,
+)
 
-from .build_profile_archiver import parse_va_archiver_block
-from .build_profile_deploy import parse_deploy_block
+from .build_profile_archiver import _expand_dotted, parse_va_archiver_block
+from .build_profile_deploy import _limits_block_leaf, _rendered_leaf_paths, parse_deploy_block
 from .build_profile_document import (
     _normalize_empty_collections,
     _read_profile_document,
 )
 from .build_profile_merge import resolve_profile_document
-from .build_profile_model import BuildProfile
-from .build_profile_presets import PRESET_DATA_BUNDLE_KEY
+from .build_profile_model import SERVICE_AXES, BuildProfile
+from .build_profile_presets import PRESET_DATA_BUNDLE_KEY, PRESET_FACILITY_KEY
 from .build_profile_schema import (
     DEFAULT_DEVIATION_MARKER,
     BlueskyConfig,
@@ -174,7 +191,6 @@ _KNOWN_PROFILE_KEYS = frozenset(
         "provider",
         "model",
         "channel_finder_mode",
-        "tier",
         "config",
         "mcp_servers",
         "services",
@@ -417,9 +433,10 @@ def _reject_unknown_block_keys(keys: Iterable[str], known_keys: frozenset[str], 
     """Reject unrecognized keys in a closed profile block, naming every one at once.
 
     The shared body behind the closed-schema blocks this module parses — the
-    top level, ``environment``, ``dispatch``, ``bluesky``, ``provenance`` and
-    the virtual-accelerator blocks — so an operator meets one wording whichever
-    of them they mistyped. Two closed blocks parsed elsewhere answer in their
+    top level, ``environment``, ``dispatch``, ``bluesky``, ``provenance``, the
+    virtual-accelerator blocks and the closed blocks inside ``config:``
+    (:func:`reject_unknown_closed_config_keys`) — so an operator meets one
+    wording whichever of them they mistyped. Two closed blocks parsed elsewhere answer in their
     own words instead, because they COLLECT problems rather than raise on the
     first: ``va_archiver``
     (:func:`~osprey.cli.build_profile_archiver._reject_unknown_keys`) and the
@@ -450,6 +467,163 @@ def _reject_unknown_block_keys(keys: Iterable[str], known_keys: frozenset[str], 
     )
 
 
+#: The file that makes a directory a service template, bundled or custom.
+_SERVICE_TEMPLATE_FILE = "docker-compose.yml.j2"
+
+#: The second instance of the virtual accelerator, rendered off the same
+#: template under a service key of its own. Its block keeps its own manifest
+#: rows (``services.live_standin.*``): the instance is told apart by them.
+LIVE_STANDIN_SERVICE = LIVE_STANDIN_PORT_KEY.split(".")[1]
+
+
+def service_family(name: str) -> str:
+    """The service whose manifest rows close the ``services.<name>`` block.
+
+    A plan lane beyond lane one (``bluesky_va``, ``bluesky_live``,
+    ``bluesky_standin``) is an instance of the bluesky service, rendered off its
+    template, so it is closed against ``services.bluesky.*``. Every other
+    service — the live stand-in included — is its own family.
+    """
+    return LANE_ONE if name in SECOND_LANE_KEYS.values() else name
+
+
+@lru_cache(maxsize=1)
+def bundled_service_names() -> frozenset[str]:
+    """Every service key whose block OSPREY's own template reads.
+
+    The template directories shipped under ``osprey/templates/services``, plus
+    the instances rendered off one of them: the second plan lanes and the live
+    stand-in. A custom service is not here — its template is the facility's
+    own, so its block stays open.
+    """
+    import osprey.templates
+
+    root = Path(osprey.templates.__file__).parent / "services"
+    if not root.is_dir():
+        return frozenset()
+    templates = {
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and (entry / _SERVICE_TEMPLATE_FILE).is_file()
+    }
+    return frozenset(templates | set(SECOND_LANE_KEYS.values()) | {LIVE_STANDIN_SERVICE})
+
+
+@lru_cache(maxsize=1)
+def manifest_rows() -> Mapping[str, Any]:
+    """The config-key manifest's ``keys:`` rows, read once per process.
+
+    The same packaged manifest ``osprey config --defaults`` renders, through
+    its one loader, so a missing or unreadable manifest is refused as a broken
+    installation here too.
+
+    Returns:
+        Dotted key → the row's entry.
+    """
+    from .config_cmd import _load_key_manifest
+
+    return _load_key_manifest()
+
+
+def _reject_unknown_manifest_keys(
+    block: Mapping[Any, Any],
+    path: str,
+    extra: frozenset[str] = frozenset(),
+    *,
+    label: str | None = None,
+) -> None:
+    """Close one config block against the manifest rows beneath *path*.
+
+    A block's valid keys are the next segment of every manifest row under
+    ``<path>.``, plus *extra*. A member that is itself a mapping is checked the
+    same way when the manifest has rows below it, unless its own row is a
+    ``data-map`` (user-extensible data, open below). Non-string keys are left
+    to :meth:`~.build_profile_model.BuildProfile._validate_service_key_shapes`.
+
+    *label* is what the message calls the block when that differs from
+    *path* — a lane instance checked against its family's rows is still named
+    by its own key.
+
+    Raises:
+        BuildProfileError: Naming every unknown key, its closest spelling and
+            the valid set, in :func:`_reject_unknown_block_keys`'s wording.
+    """
+    rows = manifest_rows()
+    head = f"{path}."
+    known = {key[len(head) :].split(".", 1)[0] for key in rows if key.startswith(head)}
+    _reject_unknown_block_keys(
+        (key for key in block if isinstance(key, str)),
+        frozenset(known) | extra,
+        label or path,
+    )
+    for key, value in block.items():
+        if not isinstance(key, str) or not isinstance(value, Mapping):
+            continue
+        child = f"{path}.{key}"
+        entry = rows.get(child)
+        if isinstance(entry, Mapping) and entry.get("data-map"):
+            continue
+        if any(row.startswith(f"{child}.") for row in rows):
+            _reject_unknown_manifest_keys(value, child, label=f"{label or path}.{key}")
+
+
+def reject_unknown_closed_config_keys(config: Any) -> None:
+    """Refuse a key no reader takes in one of the closed blocks inside ``config:``.
+
+    The ``config:`` block is open — it addresses the rendered config, whose key
+    space belongs to every reader in the tree — except for the blocks whose
+    readers are known exactly:
+
+    * ``claude_code.telemetry``, closed to
+      :data:`~osprey.build.claude_code_telemetry.TELEMETRY_KEYS`, its ``auth``
+      member to ``TELEMETRY_AUTH_KEYS``; ``resource_attributes`` stays open;
+    * ``services.<name>`` for every bundled service
+      (:func:`bundled_service_names`), closed to the manifest's rows under its
+      family (:func:`service_family`) plus the generic service axes. A custom
+      service's block stays open: its template is the facility's own.
+
+    Read over every spelling at once — a nested mapping, a partly nested one
+    and dotted keys address the same tree
+    (:func:`~.build_profile_archiver._expand_dotted`) — so the check cannot be
+    stepped around by spelling a key differently. Works the same on a rendered
+    ``config.yml``, which is the fully nested spelling.
+
+    Args:
+        config: A profile's ``config:`` block, or a rendered config mapping.
+
+    Raises:
+        BuildProfileError: On the first closed block holding an unknown key,
+            naming every unknown key in it.
+    """
+    tree = _expand_dotted(config)
+    claude_code = tree.get("claude_code")
+    telemetry = claude_code.get("telemetry") if isinstance(claude_code, Mapping) else None
+    if isinstance(telemetry, Mapping):
+        _reject_unknown_block_keys(
+            (key for key in telemetry if isinstance(key, str)),
+            TELEMETRY_KEYS,
+            "claude_code.telemetry",
+        )
+        auth = telemetry.get("auth")
+        if isinstance(auth, Mapping):
+            _reject_unknown_block_keys(
+                (key for key in auth if isinstance(key, str)),
+                TELEMETRY_AUTH_KEYS,
+                "claude_code.telemetry.auth",
+            )
+    services = tree.get("services")
+    if isinstance(services, Mapping):
+        bundled = bundled_service_names()
+        for name, block in services.items():
+            if name in bundled and isinstance(block, Mapping):
+                _reject_unknown_manifest_keys(
+                    block,
+                    f"services.{service_family(name)}",
+                    SERVICE_AXES,
+                    label=f"services.{name}",
+                )
+
+
 #: What a profile that still carries the retired ``app_template:`` key is told.
 #: It gets its own message rather than the generic unknown-key one because the
 #: key was valid in every profile emitted before this schema: the build no
@@ -462,6 +636,139 @@ _RETIRED_APP_TEMPLATE_REFUSAL = (
     "`osprey profile expand` to fill in every key this profile is missing and "
     "drop the key."
 )
+
+#: What a profile that spells the preset-side ``facility:`` key is told. The
+#: key only names which bundled facility ``osprey init`` copies into
+#: ``data/facility/``; a profile's facility is the tree under its own ``data:``.
+_PRESET_FACILITY_REFUSAL = (
+    "facility is a preset key, not a profile key — this profile's facility is "
+    "the data/facility/ tree under its own `data:`. Drop the key."
+)
+
+
+#: A profile key that selects nothing: the ``in_context`` tag on a channel
+#: record is what puts it in the in_context index, and ``channel_finder_mode``
+#: picks the benchmark query set, so a profile that spells it is stopped with
+#: what does the selecting rather than told the key is merely unknown.
+_RETIRED_TIER_KEY = "tier"
+
+
+def _retired_tier_refusal() -> FacilityBuildError:
+    """The ``profile-invalid`` stop for a profile that spells ``tier:``."""
+    return FacilityBuildError(
+        "profile-invalid",
+        _RETIRED_TIER_KEY,
+        ["profile.yml"],
+        f"remove `{_RETIRED_TIER_KEY}` from the profile",
+        record_kind="path",
+        detail=(
+            "`tier` is not a profile key; the `in_context` tag on a channel "
+            "selects the in_context subset"
+        ),
+    )
+
+
+def _check_tick_s(raw: dict[str, Any]) -> None:
+    """Stop a profile whose simulation tick period is not a positive number.
+
+    Args:
+        raw: The resolved raw profile dict.
+
+    Raises:
+        FacilityBuildError: ``profile-invalid`` naming ``simulation.tick_s``
+            if the value is not a number of seconds greater than zero.
+    """
+    try:
+        resolve_tick_s(_expand_dotted(raw.get("config")))
+    except ValueError as error:
+        raise FacilityBuildError(
+            "profile-invalid",
+            TICK_KEY,
+            ["profile.yml"],
+            f"set `{TICK_KEY}` to a number of seconds greater than 0",
+            record_kind="path",
+            detail=str(error),
+        ) from error
+
+
+def _check_default_scenarios(raw: dict[str, Any]) -> None:
+    """Stop a profile whose start set is not a list of scenario names.
+
+    The names themselves are resolved when the set is activated, not here.
+
+    Args:
+        raw: The resolved raw profile dict.
+
+    Raises:
+        FacilityBuildError: ``profile-invalid`` naming
+            ``simulation.default_scenarios`` if the value is not a list of
+            non-empty strings.
+    """
+    from osprey.simulation.apply import DEFAULT_SCENARIOS_KEY, resolve_default_scenarios
+
+    try:
+        resolve_default_scenarios(_expand_dotted(raw.get("config")))
+    except ValueError as error:
+        raise FacilityBuildError(
+            "profile-invalid",
+            DEFAULT_SCENARIOS_KEY,
+            ["profile.yml"],
+            f"set `{DEFAULT_SCENARIOS_KEY}` to a list of scenario names",
+            record_kind="path",
+            detail=str(error),
+        ) from error
+
+
+#: The limits leaf that names a limits database file.
+_LIMITS_DATABASE_LEAF = "database_path"
+
+
+def _check_limits_database_path(raw: dict[str, Any]) -> None:
+    """Stop a profile that names its own limits database.
+
+    The build writes ``data/channel_limits.json`` from
+    ``<data>/facility/limits.yaml`` and names it as the limits database, so a
+    profile stating ``database_path`` in a limits block, deployment-wide or per
+    connector type, in any spelling, is refused. The deployment-wide key is
+    named before a per-type one, and per-type keys in sorted type order.
+
+    Args:
+        raw: The resolved raw profile dict.
+
+    Raises:
+        FacilityBuildError: ``profile-invalid`` naming the rendered key, if the
+            profile states one.
+    """
+    config = raw.get("config")
+    if not isinstance(config, dict):
+        return
+    stated: set[tuple[str, ...]] = set()
+    for _written, rendered, _value in _rendered_leaf_paths(config):
+        if _limits_block_leaf(rendered) != _LIMITS_DATABASE_LEAF:
+            continue
+        # The leaf sits at index 2 deployment-wide and at index 4 per type.
+        depth = 3 if rendered[1] != "connector" else 5
+        stated.add(tuple(rendered[:depth]))
+    if not stated:
+        return
+    first = min(stated, key=lambda path: (len(path), path))
+    key = ".".join(first)
+
+    from .build_injectors import LIMITS_DATABASE_PATH
+
+    written_data = raw.get("data")
+    data = PurePosixPath(written_data).as_posix() if isinstance(written_data, str) else "data"
+    raise FacilityBuildError(
+        "profile-invalid",
+        key,
+        ["profile.yml"],
+        f"move its limits into {data}/facility/limits.yaml and remove {key} from the profile",
+        record_kind="path",
+        detail=(
+            f"the build writes {LIMITS_DATABASE_PATH} from {data}/facility/limits.yaml "
+            "and names it as the limits database"
+        ),
+    )
 
 
 def _reject_unknown_keys(raw: dict[str, Any]) -> None:
@@ -477,9 +784,14 @@ def _reject_unknown_keys(raw: dict[str, Any]) -> None:
 
     Raises:
         BuildProfileError: If any key is unrecognized.
+        FacilityBuildError: ``profile-invalid`` if the profile spells ``tier``.
     """
     if PRESET_DATA_BUNDLE_KEY in raw:
         raise BuildProfileError(_RETIRED_APP_TEMPLATE_REFUSAL)
+    if PRESET_FACILITY_KEY in raw:
+        raise BuildProfileError(_PRESET_FACILITY_REFUSAL)
+    if _RETIRED_TIER_KEY in raw:
+        raise _retired_tier_refusal()
     _reject_unknown_block_keys(raw.keys(), _KNOWN_PROFILE_KEYS, "profile")
 
 
@@ -762,6 +1074,8 @@ def _apply_connector_shorthand(raw: dict[str, Any]) -> dict[str, Any]:
             f"one of: {', '.join(known)}."
         )
     value = value.strip()
+    if value in RETIRED_CONTROL_SYSTEM_TYPES:
+        raise BuildProfileError(retired_type_message(value))
     if value not in SET_CONTROL_SYSTEM_TYPES:
         # Case-insensitive first: difflib scores 'EPICS' against 'epics' at
         # zero, so the likeliest mistake would otherwise get no suggestion.
@@ -783,6 +1097,55 @@ def _apply_connector_shorthand(raw: dict[str, Any]) -> dict[str, Any]:
         )
     config[CONNECTOR_CONFIG_KEY] = value
     return raw
+
+
+def persona_served_models_error(
+    delta: Mapping[str, Any], resolved: Mapping[str, Any], delta_rel: str
+) -> FacilityBuildError | None:
+    """Refuse a persona's served-model list on a persona served by a container.
+
+    A persona's ``simulation.models`` selects what its simulator in process
+    runs. A persona whose baseline target is a VA instance (``va`` or
+    ``standin``) reached over the network is served by the deployment's
+    container, which serves one list: the deployment render's. A list in the
+    delta would silently not apply.
+
+    Args:
+        delta: The persona delta as read, before the merge.
+        resolved: The delta merged over its root profile.
+        delta_rel: The delta's path relative to the profile root.
+
+    Returns:
+        The ``profile-invalid`` stop, or ``None`` when the delta leaves the key
+        alone or the persona's baseline target is not a VA instance.
+    """
+    simulation = _expand_dotted(delta.get("config")).get("simulation")
+    if not (isinstance(simulation, dict) and "models" in simulation):
+        return None
+    control_system = _expand_dotted(resolved.get("config")).get("control_system")
+    section = dict(control_system) if isinstance(control_system, dict) else {}
+    shorthand = resolved.get(CONNECTOR_PROFILE_KEY)
+    if isinstance(shorthand, str) and shorthand.strip():
+        section["type"] = shorthand.strip()
+    target = baseline_target(section)
+    if target not in (TARGET_VA, TARGET_STANDIN):
+        return None
+    try:
+        if not talks_to_network(section):
+            return None
+    except ValueError:
+        return None
+    return FacilityBuildError(
+        "profile-invalid",
+        delta_rel,
+        [delta_rel],
+        f"remove `{SIMULATION_MODELS_KEY}` from {delta_rel}",
+        record_kind="path",
+        detail=(
+            f"a persona on the `{target}` target sets `{SIMULATION_MODELS_KEY}`, and that "
+            f"target serves the deployment's list"
+        ),
+    )
 
 
 def _apply_port_base_shorthand(raw: dict[str, Any]) -> dict[str, Any]:
@@ -865,9 +1228,18 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
     A present-but-empty selection key is flattened here as well as in the
     document pass: the document pass flattens it before the merge, and this
     pass flattens it for a hand-assembled mapping that never went through one.
+
+    Raises:
+        BuildProfileError: If the profile is malformed.
+        FacilityBuildError: ``profile-invalid`` for a retired ``tier`` key, an
+            unusable simulation tick or start set, or a limits database path
+            the profile states.
     """
     _normalize_empty_collections(raw)
     _reject_unknown_keys(raw)
+    _check_tick_s(raw)
+    _check_default_scenarios(raw)
+    _check_limits_database_path(raw)
     _apply_connector_shorthand(raw)
     _apply_port_base_shorthand(raw)
     mcp_servers: dict[str, McpServerDef] = {}
@@ -996,7 +1368,6 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
             timeout_sec=dispatch_raw.get("timeout_sec", 300),
             inactivity_sec=dispatch_raw.get("inactivity_sec", 120),
             max_turns=max_turns,
-            facility_name=dispatch_raw.get("facility_name", ""),
             channel_strip_prefix=dispatch_raw.get("channel_strip_prefix", ""),
             network=dispatch_raw.get("network", "bridge"),
             env=dispatch_raw.get("env", []),
@@ -1018,11 +1389,6 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
             raise BuildProfileError(
                 "bluesky.excluded_plans must be a list of plan-name strings "
                 f"(got {excluded_plans!r})"
-            )
-        devices_file = bluesky_raw.get("devices_file", BlueskyConfig.devices_file)
-        if not isinstance(devices_file, str) or not devices_file:
-            raise BuildProfileError(
-                f"bluesky.devices_file must be a non-empty path string (got {devices_file!r})"
             )
         device_page_size = bluesky_raw.get("device_page_size", BlueskyConfig.device_page_size)
         if not is_positive_int(device_page_size):
@@ -1092,7 +1458,6 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
             second_lane=bool(bluesky_raw.get("second_lane", False)),
             plan_dir=bluesky_raw.get("plan_dir"),
             excluded_plans=excluded_plans,
-            devices_file=devices_file,
             device_page_size=device_page_size,
             settle_timeout_s=float(settle_timeout_s),
             settle_tolerance=float(settle_tolerance),
@@ -1205,6 +1570,7 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
     # no single permissions list to check the shape of.
     _reject_mixed_claude_code_spellings(config)
     _reject_permission_list_shapes(config)
+    reject_unknown_closed_config_keys(config)
     if isinstance(config, dict):
         try:
             refuse_renamed_timeout_keys(config)
@@ -1220,7 +1586,6 @@ def _parse_profile(raw: dict[str, Any]) -> BuildProfile:
         provider=raw.get("provider"),
         model=raw.get("model"),
         channel_finder_mode=raw.get("channel_finder_mode"),
-        tier=(int(raw["tier"]) if raw.get("tier") is not None else None),
         config=config,
         mcp_servers=mcp_servers,
         services=services,

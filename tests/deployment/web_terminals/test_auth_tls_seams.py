@@ -59,7 +59,6 @@ def _config(users: list[str]) -> dict:
     """Minimal-but-complete facility config that exercises render_web_terminals()."""
     return {
         "facility": {
-            "name": "Demo Light Source",
             "prefix": "dls",
         },
         "system": {"timezone": "America/Los_Angeles"},
@@ -74,6 +73,8 @@ def _config(users: list[str]) -> dict:
                 "ariel_base_port": _BASE_PORTS["ariel"],
                 "lattice_base_port": _BASE_PORTS["lattice"],
                 "users": users,
+                "default_persona": "assistant",
+                "personas": {"assistant": {"project": "demo-assistant"}},
             }
         },
     }
@@ -335,7 +336,7 @@ def test_seam_auth_none_or_absent_emits_no_auth_surface_even_with_tls_on() -> No
 
     # Assert
     assert "listen 443 ssl;" in nginx_conf
-    for absent in ("auth_request", "_osprey_auth", "location /auth/", "error_page"):
+    for absent in ("auth_request", "_osprey_auth", "location /auth/", "error_page 401"):
         assert absent not in nginx_conf
 
     # Arrange — explicit auth.method: "none" (not merely absent)
@@ -346,7 +347,7 @@ def test_seam_auth_none_or_absent_emits_no_auth_surface_even_with_tls_on() -> No
     nginx_conf_explicit_none = _render_nginx(config_explicit_none)
 
     # Assert
-    for absent in ("auth_request", "_osprey_auth", "location /auth/", "error_page"):
+    for absent in ("auth_request", "_osprey_auth", "location /auth/", "error_page 401"):
         assert absent not in nginx_conf_explicit_none
 
 

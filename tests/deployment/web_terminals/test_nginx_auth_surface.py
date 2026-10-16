@@ -81,7 +81,6 @@ def _config(users: list) -> dict:
     """Minimal-but-complete facility config that exercises render_web_terminals()."""
     return {
         "facility": {
-            "name": "Demo Light Source",
             "prefix": "dls",
         },
         "system": {"timezone": "America/Los_Angeles"},
@@ -91,6 +90,8 @@ def _config(users: list) -> dict:
             "web_terminals": {
                 "enabled": True,
                 "users": users,
+                "default_persona": "assistant",
+                "personas": {"assistant": {"project": "demo-assistant"}},
             }
         },
     }
@@ -711,6 +712,7 @@ def test_the_open_render_holds_no_login_surface_anywhere() -> None:
         "= /",
         "= /u/alice",
         "= /u/ariel",
+        "@osprey_terminal_starting",
     }
 
 

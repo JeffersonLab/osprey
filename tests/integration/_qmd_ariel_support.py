@@ -28,6 +28,7 @@ from tests._container_support import (
     is_image_present,
     start_or_fail,
     stop_quietly,
+    wait_until_ready,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,9 +134,17 @@ SIDECAR_CORPUS_TARGET = "/corpus/ariel"
 #: and publishes the same number.
 SIDECAR_CONTAINER_PORT = default_port("qmd")
 
-#: How long to wait for the sidecar's ``/health``. The entrypoint runs the whole
-#: startup index pass *before* it opens the port, so this covers indexing too.
+#: How long the sidecar may stay silent before ``/health`` is given up on: the
+#: silence budget handed to :func:`~tests._container_support.wait_until_ready`.
+#: The entrypoint runs the whole startup index pass *before* it opens the port,
+#: and while the container keeps writing to its log -- the embed progress bar,
+#: the pass's own lines -- the wait goes on.
 SIDECAR_HEALTH_TIMEOUT = 300.0
+
+#: Seconds the whole ``/health`` wait may take. The startup index pass is the
+#: whole boot and its length follows the host's load; the ceiling bounds a
+#: chatty sidecar that never answers.
+SIDECAR_HEALTH_CEILING = 1200.0
 
 #: How long to wait for a corpus change to reach the index after a marker touch.
 #: The container polls markers every ``OSPREY_QMD_MARKER_POLL_INTERVAL`` seconds
@@ -285,27 +294,28 @@ def start_qmd_sidecar(request: pytest.FixtureRequest, corpus_root: Path, collect
 def wait_for_health(container, port: int) -> None:
     """Block until the sidecar answers ``/health``, or fail with its own logs.
 
-    A timeout is a failure, not a skip: the image is present and the daemon was
-    asked to start, so silence is a defect in the sidecar or the corpus rather
-    than an absent dependency, and skipping it would be exactly the vacuous green
-    this lane exists to rule out.
+    The wait is :func:`~tests._container_support.wait_until_ready`, given the
+    container: it is renewed while the log keeps advancing, ends at once when
+    the container exits, and is bounded by :data:`SIDECAR_HEALTH_CEILING`. A
+    failure is not a skip: the image is present and the daemon was asked to
+    start, so silence is a defect in the sidecar or the corpus rather than an
+    absent dependency.
     """
-    deadline = time.monotonic() + SIDECAR_HEALTH_TIMEOUT
-    last = "no attempt made"
-    while time.monotonic() < deadline:
-        try:
-            response = requests.get(f"http://127.0.0.1:{port}/health", timeout=5)
-            if response.ok and '"ok"' in response.text:
-                return
-            last = f"HTTP {response.status_code}: {response.text[:200]}"
-        except requests.RequestException as exc:
-            last = f"{type(exc).__name__}: {exc}"
-        time.sleep(1.0)
-
-    raise AssertionError(
-        f"qmd sidecar did not answer /health within {SIDECAR_HEALTH_TIMEOUT:.0f}s "
-        f"(last: {last})\n--- container logs ---\n{_tail_logs(container)}"
+    wait_until_ready(
+        lambda: _probe_health(port),
+        "qmd sidecar",
+        container=container,
+        timeout=SIDECAR_HEALTH_TIMEOUT,
+        interval=1.0,
+        ceiling=SIDECAR_HEALTH_CEILING,
     )
+
+
+def _probe_health(port: int) -> None:
+    """Raise unless the sidecar's ``/health`` answers ``ok``."""
+    response = requests.get(f"http://127.0.0.1:{port}/health", timeout=5)
+    if not (response.ok and '"ok"' in response.text):
+        raise AssertionError(f"HTTP {response.status_code}: {response.text[:200]}")
 
 
 def wait_for_indexed(client, collection: str, query: str, predicate, *, what: str):
@@ -513,16 +523,6 @@ def _combined_logs(container) -> str:
     """Everything the container has written so far, best effort."""
     try:
         return container.logs().decode("utf-8", errors="replace")
-    except Exception as exc:  # pragma: no cover - diagnostic path only
-        return f"(could not read container logs: {exc})"
-
-
-def _tail_logs(container) -> str:
-    """Best-effort tail of a container's combined output, for failure messages."""
-    try:
-        stdout, stderr = container.get_logs()
-        text = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
-        return text[-4000:]
     except Exception as exc:  # pragma: no cover - diagnostic path only
         return f"(could not read container logs: {exc})"
 

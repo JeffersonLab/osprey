@@ -58,6 +58,7 @@ PRIORITY_PACKAGES = (
     "matplotlib",
     "plotly",
     "at",
+    "pyaml",
     "lmfit",
     "h5py",
     "sympy",

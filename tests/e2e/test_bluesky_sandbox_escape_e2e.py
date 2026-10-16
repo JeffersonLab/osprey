@@ -93,7 +93,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e import _orm_stack, _queue_drive
+from tests.e2e import _facility_select, _orm_stack, _queue_drive
 from tests.e2e._deploy_diagnostics import queue_stack_logs
 from tests.e2e._volumes import remove_project_volumes
 
@@ -128,9 +128,9 @@ SCAN_TIMEOUT_SEC = 120.0
 CORRECTOR_COUNT = 3
 BPM_COUNT = 2
 
-# Within the corrector channel_limits band (+-12A, see
-# tests/va/e2e/test_limits_enforcement.py) but far from the identity-state
-# baseline (0.0 A) -- unambiguous if it ever actually lands.
+# Within the band of the corrector a limits record bounds (+-12A in the
+# example facility, see tests/va/e2e/test_limits_enforcement.py) but far from
+# the identity-state baseline (0.0 A) -- unambiguous if it ever actually lands.
 POISON_CURRENT = 5.0
 
 SPAN_A = 2.0
@@ -476,28 +476,6 @@ def deployed_sandbox_stack(
 ) -> Iterator[DeployedSandboxStack]:
     base = tmp_path_factory.mktemp("sandbox_escape_build")
 
-    # The plan devices are authored BETWEEN `init` and `build`: the build copies
-    # <repo>/data into the build zone and stages the device file it finds there
-    # for the queueserver worker, so a set written after the build would never
-    # reach a container. The escape target is one of those devices -- it has to
-    # be IN the worker's namespace for the refusal under test to be the limits
-    # facade refusing a legal device, not the worker rejecting an unknown name.
-    escape_sp = ""
-    escape_rb = ""
-    positive_correctors: dict[str, tuple[str, str]] = {}
-    bpms: dict[str, str] = {}
-
-    def author_devices(repo: Path) -> None:
-        nonlocal escape_sp, escape_rb, positive_correctors, bpms
-        records = _orm_stack.roster_records(repo)
-        correctors = _orm_stack.select_correctors(records, count=CORRECTOR_COUNT)
-        bpms = _orm_stack.select_bpms(records, count=BPM_COUNT)
-        escape_name, (escape_sp, escape_rb) = sorted(correctors.items())[0]
-        positive_correctors = {
-            name: pair for name, pair in correctors.items() if name != escape_name
-        }
-        _orm_stack.write_devices_file(repo, correctors=correctors, bpms=bpms)
-
     # The deployment REPO: `osprey up` runs here, `.env` lives here, and the
     # render `osprey build` produced is `<repo>/build`.
     repo = _orm_stack.build_project_subprocess(
@@ -509,9 +487,15 @@ def deployed_sandbox_stack(
         # landing on a real deployment's default 10000 block.
         port_base=21400,
         timeout=BUILD_TIMEOUT_SEC,
-        pre_build=author_devices,
     )
-    _orm_stack.assert_devices_authored(positive_correctors, bpms)
+    # The escape target is one of the staged devices -- it has to be IN the
+    # worker's namespace for the refusal under test to be the limits facade
+    # refusing a legal device, not the worker rejecting an unknown name.
+    _setpoint, _readback, model = _facility_select.bounded_corrector(repo)
+    correctors = _orm_stack.select_correctors(repo, count=CORRECTOR_COUNT, model=model)
+    bpms = _orm_stack.select_bpms(repo, count=BPM_COUNT, model=model)
+    escape_name, (escape_sp, escape_rb) = sorted(correctors.items())[0]
+    positive_correctors = {name: pair for name, pair in correctors.items() if name != escape_name}
 
     # The repo root's `.env` — the deployment's whole secret store, and the file
     # `osprey up` refuses to start without.

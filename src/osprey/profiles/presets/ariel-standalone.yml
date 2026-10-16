@@ -12,6 +12,10 @@ name: ARIEL Standalone
 # ARIEL config, no channel/benchmark databases).
 app_template: ariel_standalone
 
+# Which bundled facility this shows. Its files are copied into data/facility/,
+# and that copy is what the build reads from then on.
+facility: example
+
 # Which model answers. `osprey set provider=...` / `osprey set model=...` edit
 # these in place, keeping your comments.
 provider: anthropic
@@ -89,19 +93,6 @@ default_panel: ariel
 # `provider:` / `model:` above), the panel selection (from `web_panels:` /
 # `default_panel:`), and every host port.
 config:
-  # ── Facility ───────────────────────────────────────────────────────────────
-  # Display name woven into the agent prompts and the web landing page. Keep it
-  # in sync with .claude/rules/facility.md.
-  facility.name: Example Research Facility
-  # Short facility token. It keys the facility graph's identifiers and names
-  # the web-terminal directory `/app/<prefix>-assistant`. Container names come
-  # from the top-level `project_name:` instead.
-  # facility.prefix: ex
-  # This facility's compiled ontology table feeds the channel-finder subagent's
-  # vocabulary. No channel finder here: the graph agent reads the vocabulary
-  # out of the seeded store instead, so the key stays an example.
-  # facility.ontology: data/facility_ontology.json
-
   # ── Services ───────────────────────────────────────────────────────────────
   # Containerized companion services. Declare one as `services.<name>.*` and
   # add its name to `deployed_services` below to launch it with `osprey up`.
@@ -117,12 +108,19 @@ config:
   # container and the agent's ARIEL DSN, which is derived from this block.
   services.postgresql.database_name: ariel
   services.postgresql.username: ariel
-  # OpenObserve, the local telemetry store the agent emits to (see
-  # `claude_code.telemetry.*` below). Compose directory, under build/.
-  services.openobserve.path: ./services/openobserve
-  # Growth bound: drop data older than N days (min 3). A named volume has no
+  # The telemetry store and the gateway the agent emits to (see
+  # `claude_code.telemetry.*` below). Compose directories, under build/.
+  services.telemetry_store.path: ./services/telemetry_store
+  services.telemetry_gateway.path: ./services/telemetry_gateway
+  # Growth bound: the store drops rows older than N days. A named volume has no
   # size cap, so age is the size knob.
-  services.openobserve.retention_days: 14
+  services.telemetry_store.retention_days: 14
+  # Who may query the store with SQL: this preset has no roster, so the reader is the operator.
+  # `osprey up` mints each reader's key into `.env.telemetry-reader.<name>`
+  # (0600) and prints the file and the query page, never the key. Delete the
+  # file and rerun `osprey up` to rotate it; drop the entry to withdraw it.
+  services.telemetry_store.readers:
+    - name: operator
   # qmd, the semantic-search sidecar. It indexes the ARIEL markdown mirror that
   # `ariel.enhancement_modules.qmd_export` writes and answers the `hybrid`
   # search mode over HTTP, with its language models baked into the image (no
@@ -142,8 +140,8 @@ config:
   # exists and is non-empty, so until then it is legitimately unhealthy. Scale
   # it with the corpus: too short reports a working container as failed.
   # services.qmd.first_index_grace: 3600
-  # Neo4j graph store holding a DISPOSABLE mirror of an RDF/Turtle corpus. The
-  # TTL on disk stays the source of truth and `osprey knowledge seed-graph`
+  # Neo4j graph store holding a DISPOSABLE mirror of the build's graph view.
+  # The facility file stays the source of truth and `osprey build && osprey up`
   # rebuilds the graph from it. It answers the multi-hop questions keyword and
   # semantic search cannot: what a channel belongs to, what a subsystem
   # contains. No password key: the container reads GRAPHDB_PASSWORD from this
@@ -153,17 +151,6 @@ config:
   # the RDF, has no manifest entry for anything newer. Repoint it at a mirror
   # or a pre-baked image on an air-gapped host.
   services.graphdb.image: neo4j:5.26-community
-  # Corpus to seed the store from, relative to the build directory. This is
-  # the demo machine every OSPREY demo describes. Point it at your own TTL, or
-  # remove the key to bring the store up bootstrapped but empty.
-  services.graphdb.ttl_path: ./data/demo_machine.ttl
-  # Search index derived from the corpus above at build time, and the default —
-  # uncomment only to move it. The channel explorer's search, the channel roster
-  # and the agent's keyword tool read this file rather than querying the store,
-  # so it answers in milliseconds at any corpus size. Resolved against the
-  # render like `ttl_path`; rebuild it by hand after regenerating the TTL with
-  # `osprey knowledge build-index`.
-  # services.graphdb.index_path: ./data/channel_databases/graph.duckdb
   # JVM memory. Neo4j sizes nothing automatically inside a container, so all
   # three are spelled out. Budget roughly heap_max_size + pagecache_size +
   # ~0.5G overhead; a substantially larger graph wants more.
@@ -188,7 +175,8 @@ config:
   # together with their `services.<name>.*` keys above: remove both or neither.
   deployed_services:
     - postgresql
-    - openobserve
+    - telemetry_store
+    - telemetry_gateway
     - qmd
     - graphdb
   # Host interface the services publish on. 127.0.0.1 keeps every port
@@ -233,11 +221,11 @@ config:
   # ariel.web.host: 127.0.0.1
   # ariel.web.port: <a port outside this deployment's block>
   # ariel.web.auto_launch: true
-  # The demo narrative: the logbook entries of every control-assistant scenario,
-  # with the pictures they attach. `osprey up` seeds it into an empty logbook and
-  # `osprey ariel quickstart` adds embeddings and captions. Remove the key to
-  # start from an empty logbook.
-  ariel.demo_narrative: data/logbook_seed
+  # The demo narrative: the logbook entries of the facility's scenarios, `all`
+  # or a list of scenario names, with the pictures they attach. `osprey up`
+  # seeds it into an empty logbook and `osprey ariel quickstart` adds embeddings
+  # and captions. Remove the key to start from an empty logbook.
+  ariel.demo_narrative: all
   # Where your own entries come from: point an adapter and source_url at your
   # logbook system and run `osprey ariel ingest` (see the data-ingestion guide).
   # ariel.ingestion.adapter: generic_json
@@ -265,6 +253,9 @@ config:
   # Links from the agent's answers to each entry's page in your logbook: one
   # URL with an `{entry_id}` placeholder. Unset, the agent shows plain IDs.
   # ariel.entry_url_template: "https://logbook.example.org/entry/{entry_id}"
+  # The ARIEL tab inside the web terminal offers Browse and New Entry; the
+  # agent searches the logbook. true adds the Search view there and opens on it.
+  # ariel.embedded_search: false
   # Which module answers a search that names no mode: the web interface's
   # opening tab, `osprey ariel search` without `--mode`, and the service API.
   # Naming a module that is off below is refused at startup.
@@ -427,27 +418,22 @@ config:
   # claude_code.agent_models.logbook-search: claude-sonnet-5
 
   # ── Telemetry ──────────────────────────────────────────────────────────────
-  # The agent emits OTLP logs and metrics to the OpenObserve store this
-  # deployment runs (`services.openobserve.*` above). On by default: the
+  # The agent emits OTLP logs and metrics to the telemetry gateway this
+  # deployment runs, which stamps each record with its sender and writes it to
+  # the telemetry store (`services.telemetry_store.*` above). On by default: the
   # harness already records every prompt and API body to disk, so this adds no
   # exposure, only a queryable local store you own.
   claude_code.telemetry.enabled: true
-  # openobserve | generic
-  claude_code.telemetry.backend: openobserve
-  # http/protobuf | grpc. grpc needs an explicit `claude_code.telemetry.endpoint`
-  # and is refused against the auto-derived openobserve endpoint (HTTP only).
+  # gateway | generic
+  claude_code.telemetry.backend: gateway
+  # http/protobuf | http/json. The gateway receives HTTP only; grpc is for
+  # backend generic, with an explicit `claude_code.telemetry.endpoint`.
   claude_code.telemetry.protocol: http/protobuf
-  # No endpoint key: with backend openobserve it is derived per network
+  # No endpoint key: with backend gateway it is derived per network
   # context, so the in-container dispatch worker does not emit to its own
   # loopback.
-  # The store's INGEST account: `osprey up` creates a service account named by
-  # ZO_INGEST_USER_EMAIL and writes the token it issues to this repo's .env as
-  # ZO_INGEST_SA_TOKEN. No default for the token on purpose: a literal default
-  # would be a published credential.
-  claude_code.telemetry.openobserve.user: ${ZO_INGEST_USER_EMAIL:-ingest@example.com}
-  claude_code.telemetry.openobserve.password: ${ZO_INGEST_SA_TOKEN}
-  # OpenObserve organisation the records land in.
-  claude_code.telemetry.openobserve.org: default
+  # No credential key either: every sender logs in to the gateway with a
+  # login `osprey build` mints into a file of its own, outside the .env chain.
   # Content gates, all on: the store is local and loopback-bound. Set any to
   # false to keep that category out of the emitted telemetry. Rebinding the
   # store off localhost? Change its password first: these include raw API
@@ -582,3 +568,8 @@ config:
   # Container runtime `osprey up` uses: auto (Docker first, then Podman),
   # docker, or podman. CONTAINER_RUNTIME in the environment overrides it.
   container_runtime: auto
+  # Models the simulator serves, named from data/facility/models.yaml. null
+  # serves every model; [texture] serves no physics.
+  simulation.models: null
+  # Seconds between the simulator's ticks; must be greater than 0.
+  simulation.tick_s: 1.0

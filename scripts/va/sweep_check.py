@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Full-namespace Channel Access reachability sweep against a running VA container.
 
-Batched, single-shared-timeout bulk read of every address in the namespace-union
-manifest (``osprey.services.virtual_accelerator.manifest``) -- the same
-manifest baked into the ``osprey-va-full`` image. Never reads channels one at
-a time: every address is connected concurrently through aioca under one shared
+Batched, single-shared-timeout bulk read of every channel the simulator view
+lists -- the namespace the container serves. Never reads channels one at a
+time: every address is connected concurrently through aioca under one shared
 deadline, and every connected address is then read back concurrently too. Both
 batches run on the process's one Channel Access loop (``get_ca_loop()``, the
 loop the connector uses), so an in-process caller shares its channels and its
@@ -12,12 +11,11 @@ libca context rather than starting a second of either.
 
 Usable two ways:
 
-* As a script, against a container already published on the host (see
-  ``scripts/va/run_va.sh``)::
+* As a script, from a built project's root against its running container::
 
       export EPICS_CA_NAME_SERVERS=localhost:5064
       export EPICS_CA_AUTO_ADDR_LIST=NO
-      python scripts/va/sweep_check.py
+      python scripts/va/sweep_check.py [build/data/simulator]
 
 * Imported, so ``tests/va/e2e/test_full_sweep.py`` can drive the exact same
   sweep function against its own container fixture without duplicating the
@@ -34,13 +32,17 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from osprey_connectors.simulation.view import VIEW_RELPATH, SimulatorView
+
+#: The simulator view of a built project, relative to its root.
+DEFAULT_VIEW_DIR = Path("build") / VIEW_RELPATH
 
 
-def all_manifest_addresses() -> list[str]:
-    """Return every address in the namespace-union manifest (server-free import)."""
-    from osprey.services.virtual_accelerator.manifest import build_manifest
-
-    return [c["address"] for c in build_manifest()["channels"]]
+def served_addresses(view_dir: Path = DEFAULT_VIEW_DIR) -> list[str]:
+    """Every channel address the simulator view in ``view_dir`` lists, sorted."""
+    return list(SimulatorView.open(view_dir).channels())
 
 
 @dataclass
@@ -107,12 +109,13 @@ def sweep(
     )
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
     os.environ.setdefault("EPICS_CA_NAME_SERVERS", "localhost:5064")
     os.environ.setdefault("EPICS_CA_AUTO_ADDR_LIST", "NO")
 
-    addresses = all_manifest_addresses()
-    print(f"Sweeping {len(addresses)} manifest addresses ...")
+    source = Path(argv[0]) if argv else DEFAULT_VIEW_DIR
+    addresses = served_addresses(source)
+    print(f"Sweeping {len(addresses)} addresses from {source} ...")
     result = sweep(addresses)
 
     print(f"Connected: {result.connected}/{result.total} in {result.elapsed_s:.1f}s")
@@ -133,7 +136,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    code = main()
+    code = main(sys.argv[1:])
     sys.stdout.flush()
     sys.stderr.flush()
     # os._exit rather than sys.exit: with the name server unreachable, aioca's

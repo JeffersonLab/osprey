@@ -5,7 +5,7 @@ name: Writes Kill Switch
 description: Blocks ALL write operations under a readonly write posture or an unarmed target
 summary: Blocks write operations when the deployment is sandboxed or the target is not armed
 event: PreToolUse
-tools: channel_write, phoebus_drive, execute, execute_file, queue_add, queue_start
+tools: channel_write, phoebus_drive, execute, execute_file, pyaml_measure, queue_add, queue_start
 safety_layer: 1
 ---
 
@@ -63,7 +63,7 @@ order:
    operation staged on a writes-armed deployment included.
 2. **Deployment posture, per target.** Write posture is a property of the
    machine a call would reach, not of the deployment as a whole: a facility can
-   arm its virtual accelerator and leave its ring unarmed. So the question is
+   arm its virtual accelerator and leave its real machine unarmed. So the question is
    only answerable once the call has been pointed at a target — the one the
    control-context record names — and the answer comes from
    `control_system.connector.<type>.writes_enabled` over
@@ -226,7 +226,7 @@ def _is_lane_addressed(short_name):
     the lane-bound tools name their lane and refuse in-tool, and the one that
     only stages work composes tokenless by contract, so nothing it stages reaches
     a machine on its own. Gating them on the deployment's target would refuse a
-    plan queued for the simulator because the deployment points at the ring.
+    plan queued for the simulator because the deployment points at the real machine.
 
     The set is data, read from this render's hook_config, never a name spelled
     in this file — a renamed tool would otherwise detach its carve-out here

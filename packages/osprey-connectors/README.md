@@ -27,12 +27,11 @@ directly.
 | `osprey.connectors` | `osprey_connectors` |
 | `osprey.connectors.factory` | `osprey_connectors.factory` |
 | `osprey.connectors.types` | `osprey_connectors.types` |
-| `osprey.connectors.channel_taxonomy` | `osprey_connectors.channel_taxonomy` |
 | `osprey.connectors.control_system` | `osprey_connectors.control_system` |
 | `osprey.connectors.control_system.base` | `osprey_connectors.control_system.base` |
 | `osprey.connectors.control_system.epics_connector` | `osprey_connectors.control_system.epics_connector` |
 | `osprey.connectors.control_system.doocs_connector` | `osprey_connectors.control_system.doocs_connector` |
-| `osprey.connectors.control_system.mock_connector` | `osprey_connectors.control_system.mock_connector` |
+| `osprey.connectors.control_system.va_in_process_connector` | `osprey_connectors.control_system.va_in_process_connector` |
 | `osprey.connectors.control_system.va_connector` | `osprey_connectors.control_system.va_connector` |
 | `osprey.connectors.control_system.limits_validator` | `osprey_connectors.control_system.limits_validator` |
 | `osprey.connectors.archiver` | `osprey_connectors.archiver` |
@@ -45,11 +44,6 @@ directly.
 | `osprey.utils.config` | `osprey_connectors.config` |
 | `osprey.utils.logger` | `osprey_connectors.logger` |
 | `osprey.utils.relative_time` | `osprey_connectors.relative_time` |
-| `osprey.simulation` | `osprey_connectors.simulation` |
-| `osprey.simulation.engine` | `osprey_connectors.simulation.engine` |
-| `osprey.simulation.expressions` | `osprey_connectors.simulation.expressions` |
-| `osprey.simulation.machine` | `osprey_connectors.simulation.machine` |
-| `osprey.simulation.series` | `osprey_connectors.simulation.series` |
 
 ## Optional runtime dependencies
 
@@ -72,15 +66,19 @@ importing `osprey_connectors` never requires them:
 `osprey-connectors` follows semantic versioning starting at `0.1.0`.
 
 The exception taxonomy in `osprey_connectors.errors` is public API: the class
-names `ChannelWriteBlockedError`, `ChannelWriteFailedError`, and
-`ChannelLimitsViolationError`, and their `reason` codes, are load-bearing for
-callers that branch on them.
+names `ChannelWriteBlockedError`, `ChannelWriteFailedError`,
+`ChannelLimitsViolationError` and `ChannelNotFoundError`, and their `reason`
+codes, are load-bearing for callers that branch on them.
 
 - `ChannelWriteBlockedError` — the write was refused and no value was written.
-  `reason` is one of `WRITES_DISABLED`, `LIMITS`, `VALIDATION_ERROR`, or
-  `CONTROL_SYSTEM_REFUSED`. The first three are refused before any `caput`; the
-  last means the control system was asked and denied the write itself (EPICS
-  access security, for instance).
+  `reason` is one of `WRITES_DISABLED`, `LIMITS`, `VALIDATION_ERROR`,
+  `CONTROL_SYSTEM_REFUSED`, `RAW_CLIENT_WRITE`, or `CHANNEL_NOT_FOUND`. The
+  first three are refused before any `caput`; `CONTROL_SYSTEM_REFUSED` means
+  the control system was asked and denied the write itself (EPICS access
+  security, for instance); `RAW_CLIENT_WRITE` means user code called a client
+  library's put directly instead of `osprey.runtime.write_channel`; and
+  `CHANNEL_NOT_FOUND` means the address is not a channel of the facility.
+  Nothing was sent in any of these cases except `CONTROL_SYSTEM_REFUSED`.
 - `ChannelWriteFailedError` — the write was attempted but did not verifiably
   succeed. `reason` is one of `FAILED` (the control system did not take the
   value), `MISMATCH` (the channel holds a different value), or `UNCONFIRMED`
@@ -90,6 +88,10 @@ callers that branch on them.
   `observed_value`.
 - `ChannelLimitsViolationError` — a channel write violated configured safety
   limits (range, read-only, step size, or unlisted channel).
+- `ChannelNotFoundError` — a read named an address that is not a channel of the
+  facility. Only a connector that holds the facility's whole address set raises
+  it; `reason` is `CHANNEL_NOT_FOUND`, the refusal reason a write to such an
+  address carries.
 
 Removing or renaming any of these classes or reason codes is a major version
 bump. Adding new classes or reason codes is a minor version bump.

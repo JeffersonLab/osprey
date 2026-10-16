@@ -43,6 +43,9 @@ last.
    the runtime put it. A client put made from a monitor callback while a
    runtime write is in flight is refused too: the connector's write door is
    open only in the context that opened it, never in a callback libca woke.
+   The kernel makes no Channel Access context of its own: the context check
+   fires before the cell's raw client is made, and the raw client is addressed
+   by the cell.
 4. A cell run while writes are off for that target reads, and refuses a write
    with the connector's text plus the turn-writes-on line and exactly one audit
    record on the ``notebook_kernel`` surface, filed under the KERNEL's own
@@ -98,11 +101,13 @@ import yaml
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect as ws_connect
 
+from osprey.deployment.compose_generator import resolve_project_name
 from osprey.deployment.web_terminals.auth_credentials import terminal_secret_var
 from osprey.port_layout import PORT_BASE_CONFIG_KEY, default_port
 from osprey.utils.dotenv import parse_dotenv_file
 from osprey_connectors.control_context import RECORD_FILENAME
 from osprey_connectors.posture_store import STATE_DIR_NAME
+from tests.e2e._facility_select import repo_view
 from tests.e2e._orm_stack import VA_CA_PORT, VA_PVA_PORT
 from tests.e2e._volumes import remove_project_volumes
 from tests.e2e.profile_edits import set_pairs
@@ -114,7 +119,8 @@ RUNTIME = "docker"
 #: The repo DIRECTORY name — the compose project name and the ``com.osprey.project``
 #: label on every image this deploy builds.
 PROJECT_NAME = "osprey-e2e-jnb"
-PREFIX = "jnb"
+#: The compose project name the web tier's containers are named by.
+PROJECT = resolve_project_name({"project_name": PROJECT_NAME})
 PRESET = "control-assistant"
 USER = "alice"
 PERSONA = "operator"
@@ -185,7 +191,7 @@ CELL_TIMEOUT_SEC = 240.0
 CONTROL_TARGET_TIMEOUT_SEC = 240.0
 SWITCH_TIMEOUT_SEC = 120.0
 
-_ENV_APPEND = "ANTHROPIC_API_KEY=fake-llm-key-value\nZO_INGEST_SA_TOKEN=fake-telemetry-token\n"
+_ENV_APPEND = "ANTHROPIC_API_KEY=fake-llm-key-value\n"
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -229,7 +235,7 @@ def _run_osprey(
 
 
 def _web_container() -> str:
-    return f"{PROJECT_NAME}-web-{USER}"
+    return f"{PROJECT}-web-{USER}"
 
 
 def _logs(name: str) -> str:
@@ -334,8 +340,6 @@ def _profile_edits() -> dict[str, Any]:
     return {
         "config": {
             "container_runtime": RUNTIME,
-            "facility.name": "E2E Notebook Panel Fixture",
-            "facility.prefix": PREFIX,
             "system.timezone": "UTC",
             "deploy.fqdn": "127.0.0.1",
             PORT_BASE_CONFIG_KEY: PORT_BASE,
@@ -455,7 +459,7 @@ def _compose_project() -> str | None:
 def _teardown(project: str | None) -> None:
     """Exact-named sweep; failures swallowed (a safety net, never an assertion)."""
     _runtime_cli("rm", "-f", _web_container())
-    _runtime_cli("rm", "-f", f"{PROJECT_NAME}-nginx")
+    _runtime_cli("rm", "-f", f"{PROJECT}-nginx")
     for project_name in {project, PROJECT_NAME} - {None}:
         _runtime_cli("compose", "-p", str(project_name), "down", timeout=120)
         remove_project_volumes(str(project_name), runtime=RUNTIME)
@@ -738,21 +742,27 @@ WRITE_CELL = f"from osprey.runtime import write_channel\nwrite_channel({CHANNEL!
 #: A client library's own put, straight past the runtime. The kernel runs a
 #: cell's top-level ``await`` on its own loop, and aioca has no other spelling.
 RAW_CAPUT_CELL = f"import aioca\nawait aioca.caput({WRITE_TARGET!r}, 2.0)\n"
-#: How long a readback gets to follow its setpoint.
+#: How long a readback gets to follow its setpoint. The readback follows to
+#: within the motion its seed declares, never to the setpoint exactly.
 READBACK_SETTLE_SEC = 20.0
-#: A cell that prints the setpoint and, once it has followed or the wait runs
-#: out, its readback, as JSON.
-SETPOINT_CELL = (
-    "import json, time\n"
-    "from osprey.runtime import read_channel\n"
-    f"sp = read_channel({WRITE_TARGET!r})\n"
-    f"deadline = time.monotonic() + {READBACK_SETTLE_SEC}\n"
-    f"rb = read_channel({WRITE_READBACK!r})\n"
-    "while abs(rb - sp) > 1e-6 and time.monotonic() < deadline:\n"
-    "    time.sleep(0.5)\n"
-    f"    rb = read_channel({WRITE_READBACK!r})\n"
-    "print(json.dumps({'sp': sp, 'rb': rb}))\n"
-)
+
+
+def _setpoint_cell(band: float) -> str:
+    """A cell that prints the setpoint and, once its readback is within ``band``
+    of it or the wait runs out, the readback, as JSON."""
+    return (
+        "import json, time\n"
+        "from osprey.runtime import read_channel\n"
+        f"sp = read_channel({WRITE_TARGET!r})\n"
+        f"deadline = time.monotonic() + {READBACK_SETTLE_SEC}\n"
+        f"rb = read_channel({WRITE_READBACK!r})\n"
+        f"while abs(rb - sp) > {band!r} and time.monotonic() < deadline:\n"
+        "    time.sleep(0.5)\n"
+        f"    rb = read_channel({WRITE_READBACK!r})\n"
+        "print(json.dumps({'sp': sp, 'rb': rb}))\n"
+    )
+
+
 #: The real-libca door proof. aioca hands a monitor update to the loop that
 #: opened the subscription, woken from a thread libca started, so the callback
 #: never runs in the connector's context and never carries its write door. The
@@ -765,10 +775,33 @@ SETPOINT_CELL = (
 #: invisible on the watcher. The callback catches its own refusal, because aioca
 #: closes a subscription whose callback raises. The initial-value callback is
 #: allowed to land before the flag is set, so the flag marks only callbacks the
-#: in-flight write caused.
+#: in-flight write caused. The kernel's runtime holds no Channel Access client,
+#: so no CA context exists in the kernel before this cell and nothing in the
+#: kernel's environment addresses a raw one; the cell points its own client at
+#: the server named by the deployment's gateway row, as an operator's raw client
+#: would have to. aioca reads that environment when it makes its context, on
+#: the cell's first Channel Access call. aioca offers no public probe for an
+#: existing context, so the cell reads its private ``_Context._ca_context``; a
+#: release that renames it fails the cell at that line, never passes it.
 DOOR_PROOF_CELL = (
-    "import asyncio, json, threading, time\n"
+    "import asyncio, json, os, threading, time\n"
+    "from osprey_connectors.config import get_config_value\n"
+    "from osprey_connectors.control_system.va_connector import fill_gateway_ports\n"
+    "gateway = fill_gateway_ports(\n"
+    "    get_config_value('control_system.connector.virtual_accelerator', {})\n"
+    ")['gateways']['write_access']\n"
     "import aioca\n"
+    "from aioca._catools import _Context\n"
+    "assert _Context._ca_context is None, (\n"
+    "    'a Channel Access context was made in the kernel before the cell made one'\n"
+    ")\n"
+    "if gateway.get('use_name_server'):\n"
+    "    os.environ['EPICS_CA_NAME_SERVERS'] = f\"{gateway['address']}:{gateway['port']}\"\n"
+    "    os.environ.pop('EPICS_CA_ADDR_LIST', None)\n"
+    "else:\n"
+    "    os.environ['EPICS_CA_ADDR_LIST'] = str(gateway['address'])\n"
+    "    os.environ['EPICS_CA_SERVER_PORT'] = str(gateway['port'])\n"
+    "os.environ['EPICS_CA_AUTO_ADDR_LIST'] = 'NO'\n"
     "from osprey.runtime import write_channel\n"
     "in_flight = threading.Event()\n"
     "done = threading.Event()\n"
@@ -932,8 +965,17 @@ def test_attaching_a_terminal_finds_the_deployments_target(terminal: Terminal) -
 # ---------------------------------------------------------------------------
 
 
-def _setpoint(socket: Any, session_id: str) -> dict[str, float]:
-    return json.loads(_run_ok(socket, SETPOINT_CELL, session_id))
+def _setpoint(socket: Any, session_id: str, band: float) -> dict[str, float]:
+    return json.loads(_run_ok(socket, _setpoint_cell(band), session_id))
+
+
+def _assert_held(reading: dict[str, float], value: float, band: float) -> None:
+    """The setpoint holds ``value`` exactly; its readback is within ``band`` of it."""
+    assert reading["sp"] == pytest.approx(value), reading
+    assert abs(reading["rb"] - value) <= band, (
+        f"{WRITE_READBACK} read {reading['rb']}, not within {band:g} (its seed's noise "
+        f"and drift) of {value}"
+    )
 
 
 def test_a_raw_client_put_is_refused_while_a_runtime_write_lands(terminal: Terminal) -> None:
@@ -949,12 +991,15 @@ def test_a_raw_client_put_is_refused_while_a_runtime_write_lands(terminal: Termi
     an in-flight runtime write reaches the worker the connector hands the put
     to, and nothing else: a monitor callback libca delivers on its own thread
     during that write is outside it, so its client put is refused while the
-    write it was woken by is still going.
+    write it was woken by is still going. The kernel makes no Channel Access
+    context of its own: the context check fires before the cell's raw client is
+    made, and the raw client is addressed by the cell.
     """
     assert terminal.session_id and terminal.first_target
     # The baseline target is the only one whose limits make the setpoint writable.
     assert terminal.first_target == "va", terminal.first_target
     _wait_for_switch_to_settle(terminal, "va")
+    band = repo_view(terminal.repo).motion_envelope(WRITE_READBACK)
 
     session = terminal.start_notebook_session(STARTER_NOTEBOOK)
     kernel_id = session["kernel"]["id"]
@@ -970,14 +1015,14 @@ def test_a_raw_client_put_is_refused_while_a_runtime_write_lands(terminal: Termi
                 f"from osprey.runtime import write_channel\nwrite_channel({WRITE_TARGET!r}, 1.0)\n",
                 channel_session,
             )
-            assert _setpoint(socket, channel_session) == pytest.approx({"sp": 1.0, "rb": 1.0})
+            _assert_held(_setpoint(socket, channel_session, band), 1.0, band)
 
             records_before = len(terminal.ledger())
             refused = _run_cell(socket, RAW_CAPUT_CELL, channel_session)
             assert refused.error_name == "ChannelWriteBlockedError", refused
             assert RAW_CLIENT_WRITE_TEXT in refused.error_value, refused.error_value
             assert HINT_RAW_CLIENT_WRITE in refused.stdout, refused.stdout
-            assert _setpoint(socket, channel_session) == pytest.approx({"sp": 1.0, "rb": 1.0})
+            _assert_held(_setpoint(socket, channel_session, band), 1.0, band)
 
             new_records = terminal.ledger()[records_before:]
             raw = [r for r in new_records if r.get("reason") == "raw_client_write"]
@@ -994,7 +1039,7 @@ def test_a_raw_client_put_is_refused_while_a_runtime_write_lands(terminal: Termi
             during = [call for call in seen if call["in_flight"]]
             assert any(call["refused"] == "RAW_CLIENT_WRITE" for call in during), seen
             assert all(call["refused"] is not None for call in seen), seen
-            assert _setpoint(socket, channel_session) == pytest.approx({"sp": 3.0, "rb": 3.0})
+            _assert_held(_setpoint(socket, channel_session, band), 3.0, band)
     finally:
         terminal.delete(f"{PANEL}/api/sessions/{session['id']}")
 

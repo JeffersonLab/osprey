@@ -49,10 +49,9 @@ Three targets, two containers
 -----------------------------
 The deployment configures the facility's own machine, the virtual accelerator
 and the stand-in; the last two have a container behind them and are the only
-ones anything here dials. The facility machine is configured and never touched,
-because ``switch_capable`` — the predicate deciding whether the controls server
-serves its connector from a child at all — is defined over ``live`` and ``va``
-together; :func:`raw_config` says the rest.
+ones anything here dials. The facility machine is configured so the module runs
+the three-target world the chip is specified over, and is never written to;
+:func:`raw_config` says the rest.
 
 Container V backs the ``va`` target and container S the ``standin`` target.
 They are two so that "the virtual accelerator still writes while the stand-in
@@ -134,7 +133,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 REPO_PATHS = (str(REPO_ROOT / "src"), str(REPO_ROOT / "packages" / "osprey-connectors" / "src"))
 
 #: The image under test, and the simulation data both containers serve.
-IMAGE = os.environ.get("OSPREY_VA_E2E_IMAGE", "osprey-va-full:latest")
+IMAGE = e2e_conftest.IMAGE
 
 #: Container-name prefixes; ``_serving`` appends the run's own ephemeral port.
 #: Named for the *target* each instance backs, since that is what the deployment
@@ -158,8 +157,8 @@ MIN_COLLECTED_TESTS = 28
 PROBE_CHANNEL = "SR:MAG:HCM:01:CURRENT:RB"
 
 #: The setpoint every write leg in this module attempts. Listed in the shipped
-#: limits database (``[-12, 12]``), which is what lets this module keep the
-#: strict limits posture the stand-in's switch gate requires and still have a
+#: limits database (``[-12, 12]``), which is what lets this module run the
+#: exclusive limits mode and still have a
 #: write that reaches the machine: an unlisted channel would be refused by the
 #: limits validator, which is a different gate from the one under test.
 CORRECTOR_SP = "SR:MAG:HCM:01:CURRENT:SP"
@@ -236,18 +235,13 @@ def _require_image() -> None:
         "image", "inspect", IMAGE, "--format", "{{.Architecture}}|{{.Config.Cmd}}", timeout=60
     )
     if inspected.returncode != 0:
-        pytest.fail(
-            f"image {IMAGE!r} is not present. Build it with "
-            f"scripts/va/build_and_boot_check.sh, or name another with "
-            f"OSPREY_VA_E2E_IMAGE."
-        )
+        pytest.fail(f"image {IMAGE!r} is not present. {e2e_conftest.IMAGE_REMEDY}")
     architecture, _, command = inspected.stdout.strip().partition("|")
     if "EPICS_CAS_SERVER_PORT" not in command:
         pytest.fail(
             f"image {IMAGE!r} ({architecture}) does not derive EPICS_CAS_SERVER_PORT from "
             f"EPICS_CA_SERVER_PORT, so it cannot serve on any port but its baked default. "
-            f"Rebuild it (scripts/va/build_and_boot_check.sh) or point "
-            f"OSPREY_VA_E2E_IMAGE at a current build. Its entry point is: {command}"
+            f"{e2e_conftest.IMAGE_REMEDY} Its entry point is: {command}"
         )
 
 
@@ -302,10 +296,10 @@ def _serving(prefix: str):
     number also names the container, which is what keeps two concurrent runs
     from destroying each other. Nothing here goes near 5064.
 
-    ``VA_LATTICE`` is stated rather than left to the image's default, so both
-    boots differ in nothing at all: this module's subject is which machine a
-    write reaches, and two instances that were not identical would leave a
-    reader wondering whether something else told them apart.
+    Both boots carry the same instance and data root and differ only in their
+    port: this module's subject is which machine a write reaches, and two
+    instances that were not identical would leave a reader wondering whether
+    something else told them apart.
     """
     port = _free_port()
     name = f"{prefix}-{port}"
@@ -320,16 +314,12 @@ def _serving(prefix: str):
         name,
         "-e",
         f"EPICS_CA_SERVER_PORT={port}",
-        "-e",
-        f"VA_LATTICE={e2e_conftest.DEMO_LATTICE_FILENAME}",
         "-p",
         f"127.0.0.1:{port}:{port}/tcp",
         *e2e_conftest.demo_data_run_args(),
         # The namespace, named: the IOC refuses to boot without one rather
-        # than picking the framework's demo channels on its own. VA_LATTICE
-        # is already stated above, so only the manifest is added here.
-        "-e",
-        f"VA_CHANNELS_FILE={e2e_conftest.DEMO_MANIFEST_FILENAME}",
+        # than picking the framework's demo channels on its own.
+        *e2e_conftest.DEMO_NAMESPACE_RUN_ARGS,
         IMAGE,
     )
     if started.returncode != 0:
@@ -373,16 +363,9 @@ def raw_config(*, va_port: int, standin_port: int, project_root: Path) -> dict:
     ``live_standin`` block. Those two are the ones with a container behind them
     and the ones every leg below writes to.
 
-    **The facility's own machine is configured and never touched**, and that is
-    a requirement rather than scenery: ``switch_capable`` — the predicate that
-    decides whether the controls server serves its connector from a child at all,
-    and the predicate ``session_posture`` reads before it will answer a ceiling
-    per target — is defined over ``live`` and ``va`` together
-    (``osprey_connectors.types.switch_capable``). A deployment carrying only
-    ``virtual_accelerator`` and ``live_standin`` blocks answers ``False``, its
-    tools take the in-process connector, and every per-target ceiling but the
-    baseline's reads unarmed. So the ``epics`` block is here to put this module
-    in the two-target world the chip is specified over. Its writes stay unarmed
+    **The facility's own machine is configured and never written to**: the
+    ``epics`` block is here so this module runs the three-target world the chip
+    is specified over. Its writes stay unarmed
     (it inherits the deployment-wide ``false``) and nothing here ever switches
     to it — its gateways name a port nothing serves, which is the truth about a
     facility machine no test may reach.
@@ -394,11 +377,8 @@ def raw_config(*, va_port: int, standin_port: int, project_root: Path) -> dict:
     writes" would be untestable. The deployment-wide key stays off so that the
     per-type posture is doing the arming, exactly as a rendered profile does it.
 
-    **Strict limits, on purpose.** ``allow_unlisted_channels: false`` is the
-    FR-8 posture a switch *toward* the stand-in requires; loosening it would
-    make the stand-in ineligible and every switch leg below refuse for a reason
-    that has nothing to do with the posture store. Every write here therefore
-    names a channel the shipped database lists.
+    **Exclusive limits.** Under ``mode: exclusive`` only channels the shipped
+    database lists can be written, so every write here names one.
 
     The operator acknowledgment is deliberately absent — it is the live
     machine's alone, and the stand-in's equivalent was said at build time by the
@@ -426,7 +406,7 @@ def raw_config(*, va_port: int, standin_port: int, project_root: Path) -> dict:
             "writes_enabled": False,
             "limits_checking": {
                 "enabled": True,
-                "allow_unlisted_channels": False,
+                "mode": "exclusive",
                 "database_path": str(e2e_conftest.LIMITS_DB_PATH),
             },
             "connector": {
