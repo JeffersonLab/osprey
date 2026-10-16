@@ -189,7 +189,7 @@ FAILURE_KIND_APPROVAL_CONFIG_INVALID = "approval_config_invalid"
 #: :attr:`ExecutionResult.failure_kind` for a readwrite run that did not start
 #: because another guarded run holds its control target's lock. Nothing in the
 #: submitted code ran; the error message names the holder's pid and start time.
-#: Spelled like the approval hook's audit reason for the same refusal.
+#: Spelled like the sandbox wrapper's failure kind for the same refusal.
 FAILURE_KIND_GUARDED_RUN_BUSY = "guarded_run_busy"
 
 #: The call fields the approval prompt binds a guarded call to. Every one the
@@ -270,6 +270,33 @@ class ExecutionResult:
     #: a tool reads back from its own run are named under it. ``None`` for a
     #: run that never started.
     execution_folder: Path | None = None
+    #: The process id of the sandbox child this run started; ``None`` for a
+    #: run that never started its child.
+    pid: int | None = None
+
+
+def execution_timeout_seconds(value: object) -> float:
+    """The configured execution timeout as a finite, positive number of seconds.
+
+    The executor's kill at this timeout is the run's one time bound, so a run
+    with no bound does not start: a bool, a non-number, a non-finite or a
+    non-positive value raises.
+
+    Raises:
+        ValueError: The value is not a finite, positive number; the message
+            names ``python_executor.execution_timeout_seconds`` and the value.
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(
+            f"python_executor.execution_timeout_seconds is {value!r}; "
+            "it must be a finite, positive number of seconds"
+        )
+    return float(value)
 
 
 def _read_config() -> dict:
@@ -277,7 +304,13 @@ def _read_config() -> dict:
 
     Returns:
         dict: ``execution_method`` (always the resolved backend name, never the
-        raw config string) and ``timeout`` in seconds.
+        raw config string) and ``timeout``, always a finite, positive float in
+        seconds; an absent key takes the shared default.
+
+    Raises:
+        ValueError: ``execution.execution_method`` is unknown, or
+            ``python_executor.execution_timeout_seconds`` is not a finite,
+            positive number (an explicit null included).
     """
     from osprey.utils.config import resolve_execution_method
     from osprey.utils.workspace import load_osprey_config
@@ -287,8 +320,10 @@ def _read_config() -> dict:
 
     return {
         "execution_method": resolve_execution_method(config),
-        "timeout": config.get("python_executor", {}).get(
-            "execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS
+        "timeout": execution_timeout_seconds(
+            config.get("python_executor", {}).get(
+                "execution_timeout_seconds", DEFAULT_EXECUTION_TIMEOUT_SECONDS
+            )
         ),
     }
 
@@ -1171,6 +1206,7 @@ async def _execute_via_local(
                     returncode=proc.returncode,
                     elapsed=elapsed,
                     control_target=control_target,
+                    pid=proc.pid,
                     stderr_notice=notice,
                 )
             return ExecutionResult(
@@ -1183,6 +1219,7 @@ async def _execute_via_local(
                 control_target=control_target,
                 failure_kind=FAILURE_KIND_TIMEOUT,
                 written_channels=_read_written_channels(execution_folder),
+                pid=proc.pid,
             )
 
         return _result_from_run(
@@ -1193,6 +1230,7 @@ async def _execute_via_local(
             returncode=proc.returncode,
             elapsed=time.time() - start_time,
             control_target=control_target,
+            pid=proc.pid,
         )
 
 
@@ -1302,6 +1340,7 @@ def _result_from_run(
     returncode: int | None,
     elapsed: float,
     control_target: str,
+    pid: int | None,
     stderr_notice: str | None = None,
 ) -> ExecutionResult:
     """Build the result of a run that ran its script, from its record.
@@ -1348,6 +1387,7 @@ def _result_from_run(
         failure_kind=failure_kind,
         written_channels=_read_written_channels(execution_folder),
         execution_folder=execution_folder,
+        pid=pid,
     )
 
 

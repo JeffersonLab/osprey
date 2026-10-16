@@ -26,7 +26,9 @@ The `pty` and `wallclock` markers are run serially by `scripts/ci_check.sh`,
 by `scripts/gate.sh` and by their own CI steps.
 
 `scripts/gate.sh` is the one local spelling of the merge gate: anything that
-gates a branch calls it and adds nothing to its marker expression.
+gates a branch calls it and adds nothing to its marker expression. It runs every
+CI step that needs no secret or Docker, and `--base <ref>` (default
+`origin/main`) is what its changelog and plugin-version checks compare against.
 
 Both must pass. Parallel is the real gate; serial is the one that gives you
 readable output when something is wrong.
@@ -39,18 +41,27 @@ just run one of them:
 | `scripts/quick_check.sh` | Fast loop while working; skips `@pytest.mark.slow` |
 | `scripts/premerge_check.sh` | Quiet pass/fail before opening a PR |
 | `scripts/ci_check.sh` | Full CI mirror, with coverage |
-| `scripts/gate.sh full` | The merge gate: lint, types, the parallel sweep, each serial step, JS tests. `fast <paths>` runs the same over named tests |
+| `scripts/gate.sh full` | The merge gate: lint, lockfile, config keys, changelog, plugin version, types, the parallel sweep, each serial step, JS typecheck/lint/tests, and the docs build. `fast [--base <ref>] <paths>` sends `.py` paths to pytest and `*.test.js`/`*.test.mjs` to vitest |
 
 Each script bounds its pytest runs with `scripts/run_bounded.py`, which exits
-124 when a run passes its bound. A run that outlives its last test prints the
-non-daemon threads keeping it alive (`tests/_live_threads.py`).
+124 when a run passes its bound. A run stopped by its bound prints every
+process's Python stacks before it is killed. Every pytest process the suite
+starts carries an exit report (`tests/_live_threads.py`): after its last test it
+names the non-daemon threads and child processes keeping it alive, and a slow
+final garbage collection (`SLOW_CLEANUP_SECONDS`). A serial run or the xdist
+controller still running `EXIT_BOUND_SECONDS` after its summary, or an xdist
+worker still running at half of the clock xdist kills it on after its exit
+began, writes once to the terminal the main thread's stack, so the module
+holding it, and the exit callbacks registered with `atexit`.
+`tests/integration/test_suite_exit_bound.py` (`wallclock`) holds a facility
+test module under `-n 2` to that bound.
 
 A run keeps only failing tests' `tmp_path` directories
 (`tmp_path_retention_policy = "failed"` in `pyproject.toml`): a passing test's
 files are gone after the run, and a failing test's files stay under
 `{temproot}/pytest-of-<user>/pytest-N/`. A run that exits in silence after its
-summary while that root holds other runs' trees is pytest pruning them at exit,
-not a thread, so the live-thread report shows nothing for it.
+summary while that root holds other runs' trees is pytest pruning them at exit;
+the exit report names it (`cleanup_numbered_dir`).
 
 **E2E tests are separate.** Run them with `pytest tests/e2e/`, never with
 `-m e2e`.

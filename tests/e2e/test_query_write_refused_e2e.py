@@ -38,6 +38,7 @@ from click.testing import CliRunner
 
 from osprey.agent_runner.write_tools import read_only_disallowed_tools
 from osprey.cli.query_cmd import query
+from tests.e2e._facility_select import bounded_setpoint, repo_view
 from tests.e2e.sdk_helpers import (
     HAS_SDK,
     enable_writes_in_project,
@@ -54,18 +55,22 @@ pytestmark = [
     pytest.mark.skipif(not is_claude_code_available(), reason="claude CLI not available"),
 ]
 
-# Directive prompt: explicit tool name so the agent commits to the write path
-# on its first turn rather than dithering with reads or refusals.
-_WRITE_PROMPT = (
-    "Use the mcp__controls__channel_write tool to write the value 1.5 to the channel 'example'."
-)
+
+def _write_prompt(repo: Path) -> str:
+    """A directive prompt naming the tool, so the agent commits to the write
+    path on its first turn rather than dithering with reads or refusals."""
+    channel, value = bounded_setpoint(repo_view(repo))
+    return (
+        f"Use the mcp__controls__channel_write tool to write the value {value} "
+        f"to the channel '{channel}'."
+    )
 
 
 @pytest.mark.parametrize("writes_enabled", [False, True])
 def test_query_refuses_write(tmp_path: Path, writes_enabled: bool) -> None:
     """``osprey query`` never executes ``channel_write``, regardless of the kill switch.
 
-    Preset used: ``hello_world`` (has the ``controls`` mock server with both
+    Preset used: ``hello_world`` (has the ``controls`` server with both
     ``channel_read`` and ``channel_write``; defaults to ``writes_enabled=False``).
 
     Guard 1 — disallowed_tools set contains the write tool at the SDK layer
@@ -93,7 +98,7 @@ def test_query_refuses_write(tmp_path: Path, writes_enabled: bool) -> None:
     runner = CliRunner()
     res = runner.invoke(
         query,
-        ["--repo", str(repo), "--json", _WRITE_PROMPT],
+        ["--repo", str(repo), "--json", _write_prompt(repo)],
         catch_exceptions=False,
     )
     output = res.output.strip()
@@ -108,6 +113,11 @@ def test_query_refuses_write(tmp_path: Path, writes_enabled: bool) -> None:
     json_start = output.find("{")
     assert json_start >= 0, f"No JSON found in command output:\n{output}"
     payload, _ = json.JSONDecoder().raw_decode(output[json_start:].strip())
+    # No tool calls and a failing exit: the agent never ran (e.g. "Not logged
+    # in"), so the empty trace below says nothing about the guard.
+    assert payload["tool_traces"] or payload["exit_code"] == 0, (
+        f"The agent never ran (exit {payload['exit_code']}): {payload['final_text']!r}"
+    )
     write_traces = [
         t for t in payload["tool_traces"] if t["name"] == "mcp__controls__channel_write"
     ]
@@ -163,6 +173,9 @@ def test_query_refuses_builtin_bash(tmp_path: Path) -> None:
     json_start = output.find("{")
     assert json_start >= 0, f"No JSON found in command output:\n{output}"
     payload, _ = json.JSONDecoder().raw_decode(output[json_start:].strip())
+    assert payload["tool_traces"] or payload["exit_code"] == 0, (
+        f"The agent never ran (exit {payload['exit_code']}): {payload['final_text']!r}"
+    )
     bash_traces = [t for t in payload["tool_traces"] if t["name"] == "Bash"]
     for t in bash_traces:
         assert t["is_error"] and "No such tool available" in (t["result"] or ""), (

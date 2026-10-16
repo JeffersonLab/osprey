@@ -6,10 +6,11 @@ that names a deck and has a ``measurement/<model>.yaml``::
     configuration.yaml   the pyAML accelerator: its design simulator, the
                          ``live`` OSPREY control system, one device per magnet,
                          BPM and instrument the measurement file's groups and
-                         instruments name, one array per group role (one
-                         group named as both ``hcor`` and ``vcor`` is two
-                         arrays, one per plane) and one tool per measurement
-                         kind
+                         instruments name, one array per group role, named
+                         after its group, or after the role when the role
+                         names several (one group named as both ``hcor`` and
+                         ``vcor`` is two arrays, one per plane), and one tool
+                         per measurement kind
     lattice.json         the design simulator's lattice, referenced as
                          ``${path:lattice.json}``: the model's deck with each
                          corrector the view drives carrying its kick as the
@@ -58,6 +59,7 @@ __all__ = [
     "LATTICE_FILE",
     "PYAML_DIR",
     "ROLE_PLANES",
+    "SINGLE_PASS_KINDS",
     "TOOL_KEYS",
     "TRM_FILE",
     "measured_models",
@@ -153,6 +155,9 @@ KIND_MEMBERS: dict[str, tuple[str, ...]] = {
     "crm": ("sext", "tune", "rf"),
     "chromaticity_monitor": ("tune", "rf"),
 }
+
+#: The kinds a model solved in a single pass allows.
+SINGLE_PASS_KINDS: tuple[str, ...] = ("orm",)
 
 #: The setpoints each kind writes: its group roles, and ``rf`` for the setpoint
 #: the view's RF plant steps. The approval prompt lists every one of them.
@@ -313,8 +318,9 @@ def measurement_groups(doc: Mapping[str, Any], model: str) -> dict[str, list[str
     ``bpm`` is the readbacks the model wires as monitors, in both planes;
     ``hcor`` the setpoints the model wires whose plane its engine describes as
     ``x``, ``vcor`` those it describes as ``y``; ``quad`` and ``sext`` every
-    setpoint the model wires. Each is taken over the channels on a member device
-    of the role's group and the channels naming one as an endpoint, visiting the
+    setpoint the model wires. Each is taken over the member devices of every
+    group the role names: the channels on a member device and the channels
+    naming one as an endpoint, visiting the
     devices in ``(s, id)`` order, an address listed once at its first device and
     the addresses within a device sorted. A combined corrector, one device
     steered in both planes, keeps each setpoint in the role of its own plane, so
@@ -331,6 +337,7 @@ def measurement_groups(doc: Mapping[str, Any], model: str) -> dict[str, list[str
     Raises:
         KeyError: The facility file has no model ``model``.
     """
+    from osprey.facility.sources import group_families
     from osprey.facility.views.simulator import simulator_wiring
 
     record = _model_record(doc, model)
@@ -340,12 +347,15 @@ def measurement_groups(doc: Mapping[str, Any], model: str) -> dict[str, list[str
     on_device = _channels_of(doc)
     found: dict[str, list[str]] = {}
     for role in GROUP_ROLES:
-        group_id = groups_named.get(role)
-        if group_id is None:
+        if groups_named.get(role) is None:
             continue
         wanted = "monitor" if role == "bpm" else "setpoint"
         plane = ROLE_PLANES.get(role)
-        members = (groups.get(str(group_id)) or {}).get("members") or []
+        members = [
+            member
+            for group_id in group_families(groups_named.get(role))
+            for member in (groups.get(group_id) or {}).get("members") or []
+        ]
         addresses: dict[str, None] = {}
         for device in _device_order(doc, members):
             for address in sorted(set(on_device.get(device, ()))):
@@ -364,9 +374,9 @@ def measurement_groups(doc: Mapping[str, Any], model: str) -> dict[str, list[str
 
 def _yaml_text(body: Mapping[str, Any]) -> str:
     """``body`` as block-style YAML in insertion order, no line folded."""
-    import yaml
+    from osprey_connectors import yaml_loader
 
-    return yaml.safe_dump(
+    return yaml_loader.safe_dump(
         dict(body),
         sort_keys=False,
         default_flow_style=False,
@@ -741,12 +751,15 @@ def _tuning_matrix(
 def _names(
     magnets: Sequence[_Magnet], bpms: Sequence[_Bpm], groups_named: Mapping[str, Any], rf: Any
 ) -> ViewNames:
+    from osprey.facility.sources import group_families
     from pyaml_cs_osprey.names import ViewNames
 
     return ViewNames.build(
         magnets=[magnet.address for magnet in magnets],
         bpms=[bpm.device for bpm in bpms],
-        groups={role: str(groups_named[role]) for role in GROUP_ROLES if role in groups_named},
+        groups={
+            role: group_families(groups_named[role]) for role in GROUP_ROLES if role in groups_named
+        },
         rf=str(rf) if rf is not None else None,
     )
 
@@ -878,7 +891,7 @@ def _configuration(
         arrays.append(
             {
                 "type": array_type,
-                "name": names.array_name(role, str(groups_named[role])),
+                "name": names.array_name(role),
                 "elements": members,
             }
         )
@@ -925,7 +938,7 @@ def _configuration(
             monitor["rf_plant_name"] = RF_PLANT_NAME
         devices.append(monitor)
 
-    array_of = {role: names.array_name(role, str(group)) for role, group in groups_named.items()}
+    array_of = {role: names.array_name(role) for role in groups_named}
     for kind in kinds:
         tool_type, tool_name = KIND_TOOLS[kind]
         section = {"type": tool_type}

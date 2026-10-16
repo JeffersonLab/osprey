@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from osprey.mcp_server.python_executor.executor import (
+    FAILURE_KIND_SETUP,
     ExecutionResult,
     _collect_figures,
     _create_execution_folder,
@@ -143,6 +144,32 @@ def test_config_timeout_default(tmp_path, monkeypatch):
     (tmp_path / "config.yml").write_text(yaml.dump({}))
     config = _read_config()
     assert config["timeout"] == DEFAULT_EXECUTION_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, float("inf"), float("nan"), True, "600"])
+def test_config_refuses_an_unbounded_timeout(tmp_path, monkeypatch, value):
+    """A timeout that leaves the run without a finite, positive bound is refused by name."""
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, {"python_executor": {"execution_timeout_seconds": value}})
+    with pytest.raises(ValueError, match="python_executor.execution_timeout_seconds"):
+        _read_config()
+
+
+async def test_an_unbounded_timeout_starts_no_run(tmp_path, monkeypatch):
+    """A null timeout fails setup: no execution folder is made and no child is started."""
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, {"python_executor": {"execution_timeout_seconds": None}})
+    run = AsyncMock()
+    monkeypatch.setattr("osprey.mcp_server.python_executor.executor._execute_via_local", run)
+
+    result = await execute_code("print('hi')", "readonly", "unbounded")
+
+    assert result.success is False
+    assert result.failure_kind == FAILURE_KIND_SETUP
+    assert "python_executor.execution_timeout_seconds" in result.error_message
+    assert result.execution_folder is None
+    run.assert_not_called()
+    assert not list(tmp_path.rglob("python_executions"))
 
 
 def test_config_timeout_default_matches_the_builder_default(tmp_path, monkeypatch):
@@ -724,6 +751,7 @@ async def test_completed_script_is_reported_when_the_sandbox_fails_to_exit(tmp_p
     )
 
     proc = _hanging_proc()
+    proc.pid = 4241
     with patch(
         "osprey.mcp_server.python_executor.executor.asyncio.create_subprocess_exec",
         new_callable=AsyncMock,
@@ -732,6 +760,7 @@ async def test_completed_script_is_reported_when_the_sandbox_fails_to_exit(tmp_p
         result = await execute_code("print('x')", "readwrite", "test")
 
     proc.kill.assert_called_once()
+    assert result.pid == 4241
     assert result.success is True
     assert result.failure_kind is None
     assert result.stdout == "Before: 0.0\nAfter: 0.1\n"
@@ -749,6 +778,7 @@ async def test_a_script_still_running_at_the_timeout_is_a_timeout(tmp_path, monk
     )
 
     proc = _hanging_proc()
+    proc.pid = 4242
     with patch(
         "osprey.mcp_server.python_executor.executor.asyncio.create_subprocess_exec",
         new_callable=AsyncMock,
@@ -757,6 +787,7 @@ async def test_a_script_still_running_at_the_timeout_is_a_timeout(tmp_path, monk
         result = await execute_code("while True: pass", "readonly", "test")
 
     proc.kill.assert_called_once()
+    assert result.pid == 4242
     assert result.success is False
     assert result.failure_kind == "timeout"
     assert result.stdout == ""

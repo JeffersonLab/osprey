@@ -61,7 +61,7 @@ from typing import Any
 import pytest
 
 from osprey.services.bluesky_bridge.figure import rows_from_columnar
-from tests.e2e import _orm_stack, _queue_drive
+from tests.e2e import _facility_select, _orm_stack, _queue_drive
 from tests.e2e._deploy_diagnostics import queue_stack_logs
 from tests.e2e._volumes import remove_project_volumes
 
@@ -105,9 +105,9 @@ SCAN_TIMEOUT_SEC = 120.0
 # rectangular grid (not a degenerate single-point scan) -- 3 is the smallest
 # value that lets the "every point visited" check (b) distinguish "grid
 # actually swept" from "coincidentally saw the endpoints twice". Values stay
-# well inside the corrector channel_limits band (+-12A, same band
-# test_orm_roundtrip.py's SPAN_A documents) and grid_scan's own `ge=2`
-# num_points floor.
+# well inside the band of the corrector a limits record bounds (+-12A in the
+# example facility, the band test_orm_roundtrip.py's SPAN_A documents), and
+# NUM_POINTS meets grid_scan's own `ge=2` num_points floor.
 AXIS_START_A = -3.0
 AXIS_STOP_A = 3.0
 NUM_POINTS = 3
@@ -161,8 +161,9 @@ def deployed_grid_scan_stack(
     # the orm plan, grid_scan doesn't sweep every named corrector against
     # every named detector, so there is no benefit to _orm_stack's usual
     # DEFAULT_CORRECTOR_COUNT/DEFAULT_BPM_COUNT of 4.
-    correctors = _orm_stack.select_correctors(repo, count=1)
-    bpms = _orm_stack.select_bpms(repo, count=1)
+    _setpoint, _readback, model = _facility_select.bounded_corrector(repo)
+    correctors = _orm_stack.select_correctors(repo, count=1, model=model)
+    bpms = _orm_stack.select_bpms(repo, count=1, model=model)
 
     # The repo root's `.env` — the deployment's whole secret store, and the file
     # `osprey up` refuses to start without.
@@ -316,7 +317,7 @@ def test_grid_scan_roundtrip_produces_a_well_formed_grid(
         f"the commanded grid points {commanded} are not {NUM_POINTS} distinct values"
     )
     readback = deployed_grid_scan_stack.corrector_readback
-    band = _orm_stack.repo_view(deployed_grid_scan_stack.repo).motion_envelope(readback)
+    band = _facility_select.repo_view(deployed_grid_scan_stack.repo).motion_envelope(readback)
     visits = list(zip(commanded, corrector_values, strict=True))
     missed = [(point, read, band) for point, read in visits if abs(read - point) > band]
     assert not missed, (

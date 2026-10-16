@@ -71,7 +71,20 @@ Quickstart
    osprey build                            # renders the container repo too
    cd build/.image/my-project              # the context the build rendered
    docker build -t my-project -f build/Dockerfile .
-   docker run --rm -p 10100:10100 --env-file .env my-project
+   cd -                                    # back to the deployment repo root
+   docker run --rm -p 10100:10100 --env-file .env \
+     --env-file .env.telemetry-sender.<host identity> my-project
+
+The second ``--env-file`` is the sender login gateway telemetry needs
+(``claude_code.telemetry.enabled: true`` with ``backend: gateway``).
+``osprey build`` mints ``.env.telemetry-sender.<identity>`` at the repo root,
+mode 0600, for each sender; a container run by hand is a host launch and sends
+under ``deployment.host_identity`` from ``config.yml``, so that is the
+``<host identity>`` to pass. Without it the container's ``osprey web`` refuses
+to start. With gateway telemetry off, drop that flag. Records reach the gateway
+only while the deployment's gateway runs (``osprey up``) and the container
+shares the host network: replace ``-p 10100:10100`` with ``--network host``,
+and the container sends to the gateway's loopback publish.
 
 Then open http://localhost:10100. The container's ``osprey web`` prints a login
 URL (``…/?token=…``) to its logs at startup; open that URL to set your session
@@ -81,7 +94,7 @@ sets ``OSPREY_TERMINAL_SECRET`` itself, the container uses that value and
 explains why it is printing no URL — browse to
 ``http://localhost:10100/?token=<that value>`` instead. Secrets are
 passed at runtime via ``--env-file`` — the ``.dockerignore`` guarantees
-``.env`` itself never enters the image.
+``.env`` and every ``.env.telemetry-*`` file never enter the image.
 
 Build Arguments
 ===============
@@ -432,6 +445,18 @@ to whatever the base image hands out, and the image states the pair in
 it — the multi-user stack's per-user volume seeding, for one — reads it out of
 the image instead of guessing.
 
+The agent and the server that spawned it are both ``osprey``, so the split
+between them is not a second user but what the server keeps from a process of
+its own uid. Before it serves anything, ``osprey web`` takes its credentials
+— the operator secret and the event-dispatcher bearer — out of its
+environment into memory, and on Linux marks itself non-dumpable, so its
+exec-time environment and memory are closed to the agent and everything the
+agent runs. The panel token is not among them: the agent's own panel tooling
+is handed it by design. The dispatch worker does the same with its bearer. The approval
+prompt the operator answers at the terminal therefore records that a person
+intended a write; what contains agent code is the connector's checks and the
+container, as :doc:`/architecture/safety-chain` lays out.
+
 What the entrypoint does
 ------------------------
 
@@ -609,6 +634,7 @@ Two kinds of state are worth persisting across container restarts:
 .. code-block:: bash
 
    docker run --rm -p 10100:10100 --env-file .env \
+     --env-file .env.telemetry-sender.<host identity> \
      -v my-project-agent-data:/app/my-project/var/agent_data \
      -v my-project-home:/home/osprey \
      my-project
@@ -653,7 +679,8 @@ matches the usual amd64 deployment target:
 .. code-block:: bash
 
    docker build --platform linux/amd64 -t my-project .
-   docker run --platform linux/amd64 --rm -p 10100:10100 --env-file .env my-project
+   docker run --platform linux/amd64 --rm -p 10100:10100 --env-file .env \
+     --env-file .env.telemetry-sender.<host identity> my-project
 
 Customizing
 ===========

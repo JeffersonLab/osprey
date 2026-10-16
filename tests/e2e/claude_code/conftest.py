@@ -209,11 +209,12 @@ def safety_project_mixed_render(tmp_path_factory):
     target and ``osprey_approval`` deferring.
 
     The limits mode is pinned ``optional`` like the other safety renders.
-    Scenario 11 asserts that the refusal it gets back is ``osprey_writes_check``'s
-    — the one naming the live target. Under ``exclusive`` the limits hook
-    refuses the same unlisted channel in the same PreToolUse chain, and which
-    of two denies surfaces as the reason is not something the test controls;
-    the pin leaves the writes gate as the only hook with a say.
+    The per-target scripted test asserts that the refusal it gets back is
+    ``osprey_writes_check``'s — the one naming the live target. Under
+    ``exclusive`` the limits hook refuses the same unlisted channel in the same
+    PreToolUse chain, and which of two denies surfaces as the reason is not
+    something the test controls; the pin leaves the writes gate as the only
+    hook with a say.
     """
     tmp = tmp_path_factory.mktemp("safety-mixed-render")
     repo = init_project(tmp, "safety-mixed-render", provider="als-apg")
@@ -224,7 +225,12 @@ def safety_project_mixed_render(tmp_path_factory):
     section["type"] = MIXED_RENDER_LIVE_TYPE
     section["writes_enabled"] = False
     connector = section["connector"]
-    connector[MIXED_RENDER_LIVE_TYPE] = dict(connector["virtual_accelerator"])
+    live_block = dict(connector["virtual_accelerator"])
+    # The simulator dials no gateway. A gateways table on ``live``'s block would
+    # derive an endpoint its child never configures, and the connector host
+    # refuses a child that did not come up where its target derives.
+    live_block.pop("gateways", None)
+    connector[MIXED_RENDER_LIVE_TYPE] = live_block
     # On a deployment whose own type is a real machine, ``va`` is the served
     # venue; the in-process venue belongs to the simulator's own deployments.
     connector["virtual_accelerator"].pop("serving", None)

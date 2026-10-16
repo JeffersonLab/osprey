@@ -327,6 +327,7 @@ def config_derived_context(config: dict, project_dir: Path) -> dict[str, Any]:
         # with a deck has no lattice for it to load. A plain truthiness test,
         # merged before resolve_agents runs, like the server gates above.
         "served_decks": _served_decks(facility_facts, facility),
+        "simulator_dir": _simulator_dir(),
         "pyaml_view_present": bool(facility_facts["measurement_models"]),
         "measurement": hook_measurement(facility_facts, project_dir),
         # `ariel.attachments.view.enabled`: whether the ARIEL agents may look at
@@ -392,6 +393,19 @@ def _read_facility(project_dir: Path) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
+def _simulator_dir() -> str:
+    """The simulator view's directory, relative to the deployment root.
+
+    The deployment root is the directory ``mcp__python__execute`` runs in, so a
+    prompt that names a simulator file by this prefix names a path the
+    executed code resolves.
+    """
+    from osprey_connectors.simulation.view import VIEW_RELPATH
+    from osprey_connectors.workspace import BUILD_DIR_NAME
+
+    return f"{BUILD_DIR_NAME}/{VIEW_RELPATH}"
+
+
 def _served_decks(facts: dict[str, Any], facility: dict[str, Any]) -> list[dict[str, str]]:
     """The decks a render serves that the pyat-specialist can load.
 
@@ -403,11 +417,11 @@ def _served_decks(facts: dict[str, Any], facility: dict[str, Any]) -> list[dict[
         ``{"model", "path"}`` for each of the facts' served models, engine
         other than ``texture``, whose facility-file record names a deck,
         sorted by model; ``path`` is the file the simulator view writes the
-        deck to, relative to the render root.
+        deck to, relative to the deployment root, the directory
+        ``mcp__python__execute`` runs in.
     """
     from osprey.facility import TEXTURE
     from osprey.facility.views.simulator import served_deck_path
-    from osprey_connectors.simulation.view import VIEW_RELPATH
 
     paths = {
         str(model.get("name")): served_deck_path(model)
@@ -415,7 +429,7 @@ def _served_decks(facts: dict[str, Any], facility: dict[str, Any]) -> list[dict[
         if isinstance(model, dict)
     }
     return [
-        {"model": name, "path": f"{VIEW_RELPATH}/{paths[name]}"}
+        {"model": name, "path": f"{_simulator_dir()}/{paths[name]}"}
         for name in sorted(
             str(model["name"])
             for model in facts.get("models", [])
@@ -844,20 +858,20 @@ def build_claude_code_context(
 
     # Model provider resolution for Claude Code
     from osprey.agent_runner.provider_env import ClaudeCodeModelResolver
-    from osprey.build.claude_code_telemetry import openobserve_published_port
+    from osprey.build.claude_code_telemetry import build_gateway_url
 
     api_providers = config.get("api", {}).get("providers", {})
     try:
         # Build time: telemetry credentials may legitimately be the
         # deployment's to supply (the runtime re-resolves them at agent-spawn),
         # so an unresolved ${VAR} omits the auth header instead of aborting.
-        # The store's port is the one this config publishes — never the
+        # The gateway's address is the one this config publishes — never the
         # builder's environment, which a rendered artifact must not bake in.
         model_spec = ClaudeCodeModelResolver.resolve(
             claude_code_config,
             api_providers,
             defer_unresolved_telemetry_creds=True,
-            openobserve_port=openobserve_published_port(config),
+            gateway_url=build_gateway_url(config),
         )
     except ValueError as exc:
         warnings.warn(str(exc), stacklevel=2)

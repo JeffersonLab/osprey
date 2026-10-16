@@ -107,7 +107,8 @@ from osprey.port_layout import PORT_BASE_CONFIG_KEY, default_port
 from osprey.utils.dotenv import parse_dotenv_file
 from osprey_connectors.control_context import RECORD_FILENAME
 from osprey_connectors.posture_store import STATE_DIR_NAME
-from tests.e2e._orm_stack import VA_CA_PORT, VA_PVA_PORT, repo_view
+from tests.e2e._facility_select import repo_view
+from tests.e2e._orm_stack import VA_CA_PORT, VA_PVA_PORT
 from tests.e2e._volumes import remove_project_volumes
 from tests.e2e.profile_edits import set_pairs
 
@@ -190,7 +191,7 @@ CELL_TIMEOUT_SEC = 240.0
 CONTROL_TARGET_TIMEOUT_SEC = 240.0
 SWITCH_TIMEOUT_SEC = 120.0
 
-_ENV_APPEND = "ANTHROPIC_API_KEY=fake-llm-key-value\nZO_INGEST_SA_TOKEN=fake-telemetry-token\n"
+_ENV_APPEND = "ANTHROPIC_API_KEY=fake-llm-key-value\n"
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
