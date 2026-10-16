@@ -865,7 +865,7 @@ DEMO_GROUPS = {
     "LINE": ["BPM", "HCM", "VCM"],
     "SR": [
         *("BPM", "DIAG", "DIPOLE", "HCM", "MAG", "QD", "QF", "QFA"),
-        *("RF", "SD", "SF", "SHD", "SHF", "VAC", "VCM"),
+        *("RF", "SD", "SEPTUM", "SF", "SHD", "SHF", "VAC", "VCM"),
     ],
 }
 
@@ -892,7 +892,7 @@ def test_every_demo_group_and_ungrouped_class_is_a_family(
     assert _families(document) == {
         system: sorted([*DEMO_GROUPS[system], *DEMO_DERIVED[system]]) for system in DEMO_GROUPS
     }
-    assert sum(len(families) for families in _families(document).values()) == 39
+    assert sum(len(families) for families in _families(document).values()) == 40
     fields = [
         field
         for system, families in document.items()
@@ -901,8 +901,8 @@ def test_every_demo_group_and_ungrouped_class_is_a_family(
         if not key.startswith("_")
         for field in _fields(family)
     ]
-    assert len(fields) == 1538
-    assert by_address == 1387
+    assert len(fields) == 1542
+    assert by_address == 1388
     assert left_out == 4
     assert document["count"] == len(built_control_assistant.facility["channels"]) - left_out
     assert left_out == sum(
@@ -1050,7 +1050,7 @@ def test_the_demo_database_holds_a_row_per_channel_and_family(
     finally:
         con.close()
 
-    assert counts == (5856, 2948)
+    assert counts == (5863, 2955)
     assert bpm and bpm < diag
     assert quads and quads < magnets
 

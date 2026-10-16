@@ -639,5 +639,12 @@
       "SR:MAG:SD:10:CURRENT:RB"
     ],
     "category": "near-miss"
+  },
+  {
+    "user_query": "What is the storage ring SEK injection septum current readback?",
+    "targeted_pv": [
+      "SR:MAG:SEPTUM:01:CURRENT:RB"
+    ],
+    "category": "single-target"
   }
 ]

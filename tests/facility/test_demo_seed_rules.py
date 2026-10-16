@@ -18,6 +18,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import yaml
 
 from osprey.facility.sources import read_yaml
 
@@ -84,7 +85,7 @@ def test_every_moving_channel_is_matched_by_exactly_one_rule() -> None:
     module = reseed_module()
     channels, devices = records("channel"), records("device")
     moving = [a for a, seed in generated().items() if set(MOTION_KEYS) & set(seed)]
-    assert len(moving) == 626
+    assert len(moving) == 628
     for address in moving:
         channel = channels[address]
         device = channel["on"]["device"]
@@ -126,8 +127,12 @@ def test_a_micrometre_rule_lands_in_each_channels_unit() -> None:
 
 def test_every_setpoint_carries_a_tolerance() -> None:
     channels = read_yaml(reseed_module().stamp())
-    setpoints = [channel for channel in channels if channel.get("role") == "setpoint"]
-    assert len(setpoints) == 412
+    setpoints = [
+        channel
+        for channel in channels
+        if channel.get("role") == "setpoint" and channel.get("value_type") != "bool"
+    ]
+    assert len(setpoints) == 414
     assert sum(channel["id"].startswith("LINE:") for channel in setpoints) == 16
     for channel in setpoints:
         assert set(channel["tolerance"]) == {"absolute"}, channel["id"]
@@ -211,6 +216,110 @@ def test_non_motion_keys_are_untouched() -> None:
         if key not in MOTION_KEYS
     )
     assert carried == BASELINE
+
+
+#: A two-device tree: a pulsed waveform readback, its driver and enable, a gated
+#: float readback, and a bool setpoint with no tolerance row.
+SMALL_DEVICES = """\
+- id: T/SEK
+  class: Kicker
+- id: T/DIP
+  class: Dipole
+"""
+
+SMALL_CHANNELS = """\
+- id: T:DIP:CURRENT:RB
+  on: {device: T/DIP}
+  signal: current
+  unit: A
+- id: T:DIP:CURRENT:SP
+  on: {device: T/DIP}
+  signal: current_setpoint
+  role: setpoint
+  unit: A
+  pair: T:DIP:CURRENT:RB
+- id: T:SEK:STATUS:ON
+  on: {device: T/SEK}
+  signal: enable
+  role: setpoint
+  value_type: bool
+  pair: T:SEK:STATUS:ON
+- id: T:SEK:VOLTAGE:RB
+  on: {device: T/SEK}
+  signal: voltage
+  unit: V
+- id: T:SEK:WAVEFORM
+  on: {device: T/SEK}
+  signal: trace
+  unit: V
+"""
+
+SMALL_SEEDS = """\
+T:DIP:CURRENT:RB:
+  nominal: 100.0
+T:SEK:STATUS:ON:
+  nominal: 'TRUE'
+T:SEK:VOLTAGE:RB:
+  clamp: [0.0, null]
+  gate:
+    inputs: {T:SEK:STATUS:ON: 'FALSE'}
+    gated: 0.5
+  nominal: 10.0
+T:SEK:WAVEFORM:
+  pulse: {driver: T:SEK:VOLTAGE:RB, enable: T:SEK:STATUS:ON}
+  nominal: 0.0
+"""
+
+SMALL_RULES: list[dict[str, Any]] = [
+    {
+        "class": "Dipole",
+        "signal": "current_setpoint",
+        "tolerance": {"value": 0.01, "unit": "A"},
+        "source": "test",
+    },
+]
+
+
+@pytest.fixture
+def small_tree(tmp_path: Path) -> Path:
+    """A facility tree whose seeds carry ``pulse`` and ``gate`` and a bool setpoint."""
+    (tmp_path / "records").mkdir()
+    (tmp_path / "records/devices.yaml").write_text(SMALL_DEVICES, encoding="utf-8")
+    (tmp_path / "records/channels.yaml").write_text(SMALL_CHANNELS, encoding="utf-8")
+    (tmp_path / "seeds.yaml").write_text(SMALL_SEEDS, encoding="utf-8")
+    return tmp_path
+
+
+def test_pulse_and_gate_round_trip_in_content_and_in_key_order(small_tree: Path) -> None:
+    module = reseed_module()
+    committed = read_yaml(SMALL_SEEDS)
+    seeds = module.reseed(small_tree, rules=SMALL_RULES)
+    assert seeds == committed
+    assert list(seeds["T:SEK:WAVEFORM"]) == ["nominal", "pulse"]
+    assert list(seeds["T:SEK:VOLTAGE:RB"]) == ["nominal", "gate", "clamp"]
+    assert list(module.KEY_ORDER[:3]) == ["nominal", "pulse", "gate"]
+    rendered = yaml.safe_dump(seeds, sort_keys=False)
+    (small_tree / "seeds.yaml").write_text(rendered, encoding="utf-8")
+    again = module.reseed(small_tree, rules=SMALL_RULES)
+    assert yaml.safe_dump(again, sort_keys=False) == rendered
+
+
+def test_a_bool_setpoint_reseeds_without_a_tolerance_and_keeps_its_nominal(
+    small_tree: Path,
+) -> None:
+    module = reseed_module()
+    assert module.reseed(small_tree, rules=SMALL_RULES)["T:SEK:STATUS:ON"] == {"nominal": "TRUE"}
+    assert module.tolerances(small_tree, rules=SMALL_RULES) == {"T:DIP:CURRENT:SP": 0.01}
+    text = module.stamp(tree=small_tree, rules=SMALL_RULES)
+    stamped = {channel["id"]: channel for channel in read_yaml(text)}
+    assert "tolerance" not in stamped["T:SEK:STATUS:ON"]
+    assert stamped["T:DIP:CURRENT:SP"]["tolerance"] == {"absolute": 0.01}
+
+
+def test_a_float_setpoint_with_no_tolerance_row_still_stops_the_stamper(small_tree: Path) -> None:
+    module = reseed_module()
+    with pytest.raises(module.ReseedError, match="no tolerance rule"):
+        module.tolerances(small_tree, rules=[])
 
 
 #: Every seed's ``nominal``, ``clamp`` and ``linear`` before the rule table owned
@@ -1835,6 +1944,15 @@ BASELINE: tuple[tuple[str, str, Any], ...] = (
     ("SR:MAG:SD:24:STATUS:FAULT", "nominal", "TRUE"),
     ("SR:MAG:SD:24:STATUS:ON", "nominal", "TRUE"),
     ("SR:MAG:SD:24:STATUS:READY", "nominal", "TRUE"),
+    ("SR:MAG:SEPTUM:01:CURRENT:SP", "nominal", 3000.0),
+    (
+        "SR:MAG:SEPTUM:01:CURRENT:WAVEFORM",
+        "pulse",
+        {"driver": "SR:MAG:SEPTUM:01:CURRENT:SP", "enable": "SR:MAG:SEPTUM:01:STATUS:ON"},
+    ),
+    ("SR:MAG:SEPTUM:01:STATUS:ON", "nominal", "TRUE"),
+    ("SR:MAG:SEPTUM:02:CURRENT:SP", "nominal", 800.0),
+    ("SR:MAG:SEPTUM:02:STATUS:ON", "nominal", "TRUE"),
     ("SR:MAG:SF:01:CURRENT:GOLDEN", "nominal", 150.0),
     ("SR:MAG:SF:01:CURRENT:RB", "clamp", [0.0, None]),
     ("SR:MAG:SF:01:STATUS:FAULT", "nominal", "TRUE"),

@@ -17,6 +17,11 @@ written to avoid:
   half file. Treating that as an answer would stop and restart recording on a
   write that changed nothing at all. The poll asks who is on the other end, not
   merely what the config calls them — see :data:`RECORDING_CONTROL_SYSTEM`.
+
+Waveform channels take their own path. A trace is not one number, so it is read
+apart from the scalar channels and written into the waveform collection, one
+document per channel per instant, and only on the tail grid: a trace is hundreds
+of samples, and the tail cadence is the density the seeder stores them at.
 """
 
 from __future__ import annotations
@@ -26,11 +31,14 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+import numpy as np
 
 from osprey_connectors.standin import DEPLOYED_SERVICES_KEY, LIVE_STANDIN_PORT_KEY
 from osprey_connectors.types import TRANSPORT_IN_PROCESS, VIRTUAL_ACCELERATOR
 
-from .config import RecorderConfigError, RecorderSettings, read_recording_facts
+from .config import ChannelSet, RecorderConfigError, RecorderSettings, read_recording_facts
 from .store import ArchiveWriter
 
 logger = logging.getLogger(__name__)
@@ -74,7 +82,8 @@ logger = logging.getLogger(__name__)
 RECORDING_CONTROL_SYSTEM = VIRTUAL_ACCELERATOR
 
 #: Reads a set of addresses and returns the ones that answered.
-ChannelReader = Callable[[Sequence[str]], Awaitable[Mapping[str, float]]]
+#: A waveform channel answers with an array.
+ChannelReader = Callable[[Sequence[str]], Awaitable[Mapping[str, Any]]]
 
 
 class Recorder:
@@ -91,13 +100,20 @@ class Recorder:
         recording: bool = False,
     ) -> None:
         self._settings = settings
-        self._addresses = list(addresses)
+        # A plain sequence carries no value types, so all of it is scalar.
+        if isinstance(addresses, ChannelSet):
+            self._addresses = list(addresses.scalars)
+            self._waveforms = list(addresses.waveforms)
+        else:
+            self._addresses = list(addresses)
+            self._waveforms = []
         self._writer = writer
         self._config_path = Path(config_path)
         self._reader = reader if reader is not None else channel_access_reader(settings)
         self._recording = recording
         self._announced = False
         self._last_slot: int | None = None
+        self._last_waveform_slot: int | None = None
         self._last_poll: float | None = None
         self._non_numeric: set[str] = set()
         self._stop = asyncio.Event()
@@ -143,10 +159,12 @@ class Recorder:
         if should_record != self._recording or not self._announced:
             if should_record:
                 logger.info(
-                    "Recording %d channels every %ds into %s.%s "
+                    "Recording %d channels every %ds and %d waveforms every %ds into %s.%s "
                     "(control_system.type=%s, this archive is the stand-in's: %s).",
                     len(self._addresses),
                     self._settings.cadence_sec,
+                    len(self._waveforms),
+                    self._settings.tail_cadence_sec,
                     self._settings.database,
                     self._settings.collection,
                     facts.control_system_type or "<unset>",
@@ -182,15 +200,19 @@ class Recorder:
 
         Returns True if a document was written. A slot already recorded is
         skipped rather than written twice, so a restart mid-interval cannot
-        double-write the instant the previous run just covered.
+        double-write the instant the previous run just covered. A slot on the
+        tail grid also records the waveform channels.
         """
         if not self.refresh_enablement(now):
             return False
 
         slot = self.slot_for(now)
+        wrote_waveforms = await self._record_waveforms(slot)
         if slot == self._last_slot:
-            return False
+            return wrote_waveforms
+        return await self._record_scalars(slot) or wrote_waveforms
 
+    async def _record_scalars(self, slot: int) -> bool:
         values = await self._read_channels()
         if not values:
             logger.warning(
@@ -215,6 +237,37 @@ class Recorder:
 
         self._last_slot = slot
         logger.debug("Stored %d channel values at %s", len(values), timestamp.isoformat())
+        return True
+
+    async def _record_waveforms(self, slot: int) -> bool:
+        """Record the waveform channels, when ``slot`` is a tail-grid instant.
+
+        Only the tail grid's own instants are recorded — the ones the seeder
+        stores traces at — so a slot the loop missed is a gap rather than a
+        trace stamped with an instant it was not read at.
+        """
+        if (
+            not self._waveforms
+            or slot % self._settings.tail_cadence_sec != 0
+            or slot == self._last_waveform_slot
+        ):
+            return False
+        self._last_waveform_slot = slot
+
+        traces = await self._read_waveforms()
+        timestamp = datetime.fromtimestamp(slot, tz=UTC)
+        if not traces:
+            logger.warning(
+                "No waveform channel answered at %s; writing no traces for this instant.",
+                timestamp.isoformat(),
+            )
+            return False
+        try:
+            await asyncio.to_thread(self._writer.write_waveforms, timestamp, traces)
+        except Exception as exc:  # the same reasoning as a failed sample write
+            logger.warning("Failed to store the traces at %s: %s", timestamp.isoformat(), exc)
+            return False
+        logger.debug("Stored %d traces at %s", len(traces), timestamp.isoformat())
         return True
 
     async def run_forever(self) -> None:
@@ -263,6 +316,28 @@ class Recorder:
                         value,
                     )
         return values
+
+    async def _read_waveforms(self) -> dict[str, list[float]]:
+        raw = await self._reader(self._waveforms)
+        traces: dict[str, list[float]] = {}
+        for address, value in raw.items():
+            try:
+                trace = np.asarray(value, dtype=np.float64).ravel()
+            except (TypeError, ValueError):
+                trace = None
+            if trace is None or trace.size == 0:
+                # A waveform channel that answered with something that is not
+                # a trace has no document to go into — said once per address.
+                if address not in self._non_numeric:
+                    self._non_numeric.add(address)
+                    logger.warning(
+                        "Waveform channel %s returned no trace (%r); it will not be recorded.",
+                        address,
+                        value,
+                    )
+                continue
+            traces[address] = trace.tolist()
+        return traces
 
 
 def channel_access_reader(settings: RecorderSettings) -> ChannelReader:

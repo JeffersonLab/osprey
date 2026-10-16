@@ -28,9 +28,12 @@ repos:
         # The BuildKit captures are byte-exact for the same reason: a vertex
         # line whose payload is empty ends in the space that separated them,
         # and trimming it rewrites the thing the fixture exists to preserve.
+        # The demo element table is tab-separated with a fixed column count,
+        # so a row whose last cells are empty ends in tabs.
         exclude: |
           (?x)^(
             .*\.min\.(js|css)|
+            scripts/facility_demo/injector_elements\.tsv|
             tests/deployment/web_terminals/golden/.*|
             tests/deployment/fixtures/.*\.log|
             tests/templates/render_defaults/.*|

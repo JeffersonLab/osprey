@@ -35,17 +35,17 @@ BINDING = corpora.BINDING
 
 #: Store-verified counts for the control-assistant build's graph view, as
 #: ``tests/integration/test_graph_mcp.py`` pins them against Neo4j.
-#: ``DEMO_DEVICES`` counts every binding owner: the 532 typed devices and the
+#: ``DEMO_DEVICES`` counts every binding owner: the 534 typed devices and the
 #: top place ``SR``, which carries the tune and chromaticity channels itself.
-DEMO_DEVICES = 533
-DEMO_TYPED_DEVICES = 532
-DEMO_BINDINGS = 2952
-DEMO_WRITE_ONLY = 412
-DEMO_READ_ONLY = 2536
-DEMO_MAGNETS = 398
+DEMO_DEVICES = 535
+DEMO_TYPED_DEVICES = 534
+DEMO_BINDINGS = 2959
+DEMO_WRITE_ONLY = 414
+DEMO_READ_ONLY = 2541
+DEMO_MAGNETS = 400
 #: 21 ``owl:Class`` subjects less the ``SemanticSignal`` and ``ChannelBinding``
 #: leaves that pruning drops.
-DEMO_CLASS_COUNT = 19
+DEMO_CLASS_COUNT = 20
 #: The channels bound to the top place rather than to a device: no system, no
 #: signal, no class.
 DEMO_PLACE_BOUND = frozenset(
@@ -487,7 +487,7 @@ class TestTheBuildsGraphView:
         assert sum(row.direct_devices for row in demo.class_rows) == DEMO_TYPED_DEVICES
 
     def test_censuses(self, demo):
-        assert demo.signal_count == 31
+        assert demo.signal_count == 32
         assert demo.section_codes == frozenset(
             {"SR", "BR", "BTS", "LINE", *(f"SECT{number}" for number in range(1, 13))}
         )

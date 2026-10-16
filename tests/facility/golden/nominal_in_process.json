@@ -5808,6 +5808,24 @@
     "SR:MAG:SD:24:STATUS:READY": {
       "nominal": 100.0
     },
+    "SR:MAG:SEPTUM:01:CURRENT:RB": {
+      "nominal": 3000.0
+    },
+    "SR:MAG:SEPTUM:01:CURRENT:SP": {
+      "nominal": 3000.0
+    },
+    "SR:MAG:SEPTUM:01:STATUS:ON": {
+      "nominal": 1.0
+    },
+    "SR:MAG:SEPTUM:02:CURRENT:RB": {
+      "nominal": 800.0
+    },
+    "SR:MAG:SEPTUM:02:CURRENT:SP": {
+      "nominal": 800.0
+    },
+    "SR:MAG:SEPTUM:02:STATUS:ON": {
+      "nominal": 1.0
+    },
     "SR:MAG:SF:01:CURRENT:GOLDEN": {
       "nominal": 150.0
     },

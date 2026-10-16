@@ -187,7 +187,7 @@ CHROMATICITY = frozenset({"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y"})
 
 #: The noisy served channels of the demo: every served address whose seed
 #: declares noise or drift. The transfer line adds none: it carries no seeds.
-EXPECTED_NOISY_CHANNELS = 626
+EXPECTED_NOISY_CHANNELS = 628
 #: The example facility's seeds, keyed by address.
 DEMO_SEEDS = REPO_ROOT / "src" / "osprey" / "templates" / "facilities" / "example" / "seeds.yaml"
 #: The address prefix of the demo's transfer line, the physics model solved single-pass.

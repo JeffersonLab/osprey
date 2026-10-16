@@ -12,8 +12,8 @@ The copies are read to prove nothing was lost, never to fix the index's shape.
 The parity tests hold the hierarchical and middle-layer views, called as pure
 functions on the shared control-assistant build's facility file, to those
 copies: the same address set plus the declared fingerprint additions each
-view files (the middle-layer view files the transfer line's, which its
-devices hold, and leaves out those bound only to a place), the
+view files (the middle-layer view files those a device holds, and leaves
+out those bound only to a place), the
 machine, system and family descriptions kept, every field and subfield
 sentence on the channels it described, every benchmark target indexed, and no
 fewer benchmark queries answerable by whole index cells than the copies answer. The in_context view,
@@ -372,10 +372,10 @@ def test_pre_line_in_context_index_holds_the_fingerprint_addresses() -> None:
     assert {row["address"] for row in rows} == fingerprint_addresses()
 
 
-def test_pre_line_queries_target_fingerprint_addresses() -> None:
+def test_pre_line_queries_target_fingerprint_or_addition_addresses() -> None:
     queries = pre_line_queries()
-    assert len(queries) == 60
-    addresses = fingerprint_addresses()
+    assert len(queries) == 61
+    addresses = fingerprint_addresses() | addition_addresses()
     for query in queries:
         assert query["targeted_pv"], query["user_query"]
         assert set(query["targeted_pv"]) <= addresses, query["user_query"]
@@ -480,12 +480,17 @@ def test_the_hierarchical_view_holds_the_pre_line_addresses(
 
 @pytest.mark.slow
 def test_the_middle_layer_view_holds_the_pre_line_addresses(
+    built_control_assistant: BuiltProject,
     middle_layer_view: dict[str, Any],
 ) -> None:
     golden = set().union(*middle_layer_cells(pre_line_index("middle_layer")))
     view = set().union(*middle_layer_cells(middle_layer_view))
-    line = {address for address in addition_addresses() if address.startswith("LINE:")}
-    assert view == golden | line
+    held = {
+        channel["id"]
+        for channel in built_control_assistant.facility["channels"]
+        if "device" in channel.get("on", {})
+    }
+    assert view == golden | (addition_addresses() & held)
 
 
 @pytest.mark.slow
@@ -686,3 +691,41 @@ def test_every_line_device_sits_in_each_family_derived_from_its_records(
         assert setup["CommonNames"] == [d.get("label") or d["id"] for d in members], name
         assert setup["DeviceList"] == _derived_rows(members, index), name
         assert setup["PlaceList"] == _derived_places(members), name
+
+
+#: The demo's served waveform channel: the SEK injection septum's current pulse.
+SEK_WAVEFORM = "SR:MAG:SEPTUM:01:CURRENT:WAVEFORM"
+
+
+@pytest.mark.slow
+def test_the_in_context_view_rows_the_septum_waveform_once_it_is_tagged(
+    built_control_assistant: BuiltProject, in_context_view: dict[str, Any]
+) -> None:
+    from osprey.facility.views.channel_finder import IN_CONTEXT_TAG, in_context_document
+
+    assert SEK_WAVEFORM not in {row["address"] for row in in_context_view["channels"]}
+    (sek,) = [c for c in built_control_assistant.facility["channels"] if c["id"] == SEK_WAVEFORM]
+    tagged = {"channels": [sek | {"tags": [IN_CONTEXT_TAG]}]}
+
+    assert in_context_document(tagged)["channels"] == [
+        {"channel": SEK_WAVEFORM, "address": SEK_WAVEFORM, "description": sek["description"]}
+    ]
+    assert "500 samples" in sek["description"]
+
+
+@pytest.mark.slow
+def test_the_hierarchical_view_files_the_septum_waveform_under_the_septum_class(
+    hierarchical_view: dict[str, Any],
+) -> None:
+    levels = [level["name"] for level in hierarchical_view["hierarchy"]["levels"]]
+    (path,) = [
+        path for path, address in hierarchical_leaves(hierarchical_view) if address == SEK_WAVEFORM
+    ]
+    assert dict(zip(levels, path, strict=True))["class"] == "Septum"
+
+
+@pytest.mark.slow
+def test_the_middle_layer_view_holds_the_septum_waveform(
+    middle_layer_view: dict[str, Any],
+) -> None:
+    assert any(SEK_WAVEFORM in cell for cell in middle_layer_cells(middle_layer_view))

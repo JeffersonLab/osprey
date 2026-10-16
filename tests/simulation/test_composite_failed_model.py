@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import numpy
 import pytest
 from click.testing import CliRunner
 from lume.model import LUMEModel
@@ -172,7 +173,12 @@ async def test_a_solve_that_raises_fails_sr_and_leaves_the_texture(
     assert readbacks and texture
     assert [address for address in readbacks if not math.isnan(read[address])] == []
     assert failed.output_severity(readbacks) == dict.fromkeys(readbacks, {"condition": "udf"})
-    assert failed.get(texture) == serving.get(texture)
+    failed_texture, serving_texture = failed.get(texture), serving.get(texture)
+    assert failed_texture.keys() == serving_texture.keys()
+    assert all(
+        numpy.array_equal(failed_texture[address], serving_texture[address])
+        for address in failed_texture
+    )
     assert math.isnan(reading.value)
     assert reading.metadata.alarm_severity == 3
     assert model_status(connector, "SR") == str(error)

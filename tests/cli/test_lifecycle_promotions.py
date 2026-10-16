@@ -739,6 +739,7 @@ def archiver_stubs(monkeypatch: pytest.MonkeyPatch) -> dict:
             "username": "root",
             "host": "localhost",
             "port": 27017,
+            "collection": "pv_history",
         },
     )
     monkeypatch.setattr(container_lifecycle, "runtime_env", lambda config, env: dict(env))

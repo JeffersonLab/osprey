@@ -266,6 +266,11 @@ enums:
       current_y_readback:
         description: Power-supply current readback of the coil that acts in the vertical plane.
         aliases: [vertical current readback, vertical coil readback, y current readback]
+      pulse_waveform:
+        description: >-
+          Sampled time trace of one output pulse of a pulsed device (e.g. a septum or
+          kicker current pulse), read as an array of samples rather than a scalar.
+        aliases: [pulse waveform, pulse trace, pulse shape, current pulse waveform, waveform]
 
   property_name_enum:
     description: >-
@@ -407,6 +412,13 @@ classes:
     is_a: Magnet
     description: Crossed-field Wien filter used for velocity and spin manipulation with minimal orbit distortion.
     aliases: [wien filter, wien]
+
+  Septum:
+    is_a: Magnet
+    description: >-
+      Pulsed or DC septum magnet that deflects the injected or extracted beam into or out
+      of the machine while shielding the circulating beam.
+    aliases: [septum, septum magnet, injection septum, extraction septum]
 
   Vacuum:
     is_a: AcceleratorDevice

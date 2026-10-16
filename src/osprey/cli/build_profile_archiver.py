@@ -167,7 +167,9 @@ class VAArchiverConfig:
     """How often one of those samples is additionally kept for the full
     retention span. Recorded reality survives at the tail cadence as the dense
     copy ages out, which is what keeps steady-state storage bounded while
-    leaving no hole where the seeded history ended."""
+    leaving no hole where the seeded history ended. Must equal
+    :attr:`tail_cadence_sec`: the seed and the recorder write one history, and
+    two tail cadences would put its seeded and live parts on different grids."""
 
     recorder_poll_sec: int = 30
     """How often the recorder re-reads the deployment's config to decide whether
@@ -388,6 +390,23 @@ def va_archiver_errors(
                 f"va_archiver.{sparse} ({coarse}) must be a whole multiple of "
                 f"{dense} ({fine}), so both tiers land on the same timestamps"
             )
+
+    # The seed and the live recorder write the same history, waveforms
+    # included: the seed lays its tail down at one cadence and the recorder
+    # carries it forward at its own. Two different numbers leave live and
+    # seeded history on two grids that disagree where they meet, and the build
+    # is the earliest place a profile author can see that.
+    if (
+        cfg.tail_cadence_sec >= 1
+        and cfg.recorder_tail_cadence_sec >= 1
+        and cfg.recorder_tail_cadence_sec != cfg.tail_cadence_sec
+    ):
+        errors.append(
+            f"va_archiver.recorder_tail_cadence_sec ({cfg.recorder_tail_cadence_sec}) "
+            f"differs from va_archiver.tail_cadence_sec ({cfg.tail_cadence_sec}) — the "
+            f"live recorder and the seed write the same history and must keep it on "
+            f"one cadence; set them equal"
+        )
 
     if cfg.compression not in COMPRESSORS:
         errors.append(

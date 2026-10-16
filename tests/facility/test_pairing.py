@@ -250,7 +250,7 @@ def test_the_demo_pairs_are_the_derived_pairs(tmp_path: Path) -> None:
         }
 
     authored = pairs(stated)
-    assert len(authored) == 412
+    assert len(authored) == 414
     assert pairs(derived) == authored
 
 

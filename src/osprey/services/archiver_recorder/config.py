@@ -36,9 +36,10 @@ disagreement is the bypass.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 import yaml
 
@@ -53,7 +54,12 @@ from osprey.mcp_server.control_system.target_eligibility import endpoint_is_live
 # library and nothing else, no Channel Access stack, no PVA, no Mongo driver.
 from osprey_connectors.connection import read_connection_settings
 from osprey_connectors.ipc.verification import derive_endpoints
-from osprey_connectors.simulation.view import ADDRESSES_FILE, NoSimulatorView, SimulatorView
+from osprey_connectors.simulation.view import (
+    ADDRESSES_FILE,
+    VARIABLES_FILE,
+    NoSimulatorView,
+    SimulatorView,
+)
 
 # Whose past the store holds, decided in one place for the recorder's compose
 # entry, this enablement gate and the deploy-time archive seed alike. A guard
@@ -245,7 +251,67 @@ def read_control_system_type(config_path: Path) -> str:
     return _control_system_type(_load_mapping(config_path), config_path)
 
 
-def resolve_channel_addresses(data_dir: Path | None = None) -> list[str]:
+#: The value type whose readings are traces rather than one number.
+WAVEFORM_VALUE_TYPE = "waveform"
+
+
+class ChannelSet(Sequence[str]):
+    """The addresses to record, in view order, partitioned by value type.
+
+    As a sequence it is every recorded address, exactly the view's ``channels``
+    list, so it compares equal to that list. The partition is what decides
+    where a reading goes: a scalar channel is one number per instant and goes
+    into the per-timestamp snapshot documents, a waveform channel is a trace
+    and goes into the waveform collection beside them, one document per
+    channel per instant. Neither is ever written into the other's documents.
+    """
+
+    def __init__(self, addresses: Sequence[str], waveforms: Sequence[str] = ()) -> None:
+        self._addresses = tuple(addresses)
+        traced = set(waveforms)
+        unknown = traced.difference(self._addresses)
+        if unknown:
+            raise ValueError(f"waveform channels not in the channel set: {sorted(unknown)}")
+        self._waveforms = tuple(a for a in self._addresses if a in traced)
+        self._scalars = tuple(a for a in self._addresses if a not in traced)
+
+    @property
+    def scalars(self) -> tuple[str, ...]:
+        """The channels recorded as one number per instant, in view order."""
+        return self._scalars
+
+    @property
+    def waveforms(self) -> tuple[str, ...]:
+        """The channels recorded as traces, in view order."""
+        return self._waveforms
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[str]: ...
+    def __getitem__(self, index: int | slice) -> str | Sequence[str]:
+        return self._addresses[index]
+
+    def __len__(self) -> int:
+        return len(self._addresses)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._addresses)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ChannelSet):
+            return self._addresses == other._addresses and self._waveforms == other._waveforms
+        if isinstance(other, list | tuple):
+            return list(self._addresses) == list(other)
+        return NotImplemented
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"ChannelSet({list(self._addresses)!r}, waveforms={list(self._waveforms)!r})"
+
+
+def resolve_channel_addresses(data_dir: Path | None = None) -> ChannelSet:
     """The addresses to record, in the order the simulator view lists them.
 
     The source is the ``channels`` list of the build's simulator view,
@@ -258,13 +324,20 @@ def resolve_channel_addresses(data_dir: Path | None = None) -> list[str]:
     under this facility's name is indistinguishable, later, from a real record
     of the facility.
 
+    The set is partitioned by each channel's value type in the view's
+    ``variables.json``: a ``waveform`` channel is recorded as a trace, every
+    other channel as one number. A channel ``variables.json`` does not list —
+    or a view with no ``variables.json`` at all — carries the default value
+    type, which is a number.
+
     Args:
         data_dir: The simulator view's directory; :data:`DEFAULT_DATA_DIR`
             when ``None``.
 
     Raises:
         RecorderConfigError: if ``addresses.json`` cannot be read or holds no
-            ``channels`` list of strings.
+            ``channels`` list of strings, or if ``variables.json`` is present
+            but unreadable.
     """
     root = Path(data_dir) if data_dir is not None else Path(DEFAULT_DATA_DIR)
     path = root / ADDRESSES_FILE
@@ -281,7 +354,33 @@ def resolve_channel_addresses(data_dir: Path | None = None) -> list[str]:
             f"cannot record: the simulator view's {ADDRESSES_FILE} ({path}) holds no "
             f"`channels` list of addresses. Rebuild the project with `osprey build`."
         )
-    return list(view.channels())
+    addresses = list(view.channels())
+    return ChannelSet(addresses, _waveform_addresses(view, addresses, root))
+
+
+def _waveform_addresses(view: SimulatorView, addresses: Sequence[str], root: Path) -> list[str]:
+    """The ``addresses`` whose value type in ``variables.json`` is a waveform."""
+    if not (root / VARIABLES_FILE).is_file():
+        return []
+    waveforms: list[str] = []
+    try:
+        # Parsed up front so a file without a channel list is refused here,
+        # not read below as "this address is not listed".
+        view.document(VARIABLES_FILE)["channels"]
+        for address in addresses:
+            try:
+                channel = view.channel(address)
+            except KeyError:
+                continue
+            if channel.value_type == WAVEFORM_VALUE_TYPE:
+                waveforms.append(address)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise RecorderConfigError(
+            f"cannot record: the simulator view's {VARIABLES_FILE} ({root / VARIABLES_FILE}) "
+            f"could not be read for the channels' value types: {exc}. "
+            f"Rebuild the project with `osprey build`."
+        ) from exc
+    return waveforms
 
 
 # ---------------------------------------------------------------------------
