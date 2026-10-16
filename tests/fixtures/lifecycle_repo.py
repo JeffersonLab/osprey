@@ -1183,6 +1183,10 @@ config:
   # snapshot, so a database with more channels than this is skipped (the build
   # says so) and the fields simply offer no suggestions.
   web.channel_suggestions.max_channels: 50000
+  # The SYSTEM tab is served but starts off the rail: the status bar's health
+  # dot opens it, and so does ⋯ More on the rail, which can also pin it there.
+  # Delete this line to give it a rail entry from the first load.
+  web.panels.system-health.hidden: true
   # Custom panels are `web.panels.<id>.*` keys here; the built-in tabs are
   # switched by `web_panels:` above. `rewrite_json_paths` opts a backend's
   # JSON bootstrap endpoints into the reverse proxy's path rewrite. The proxy
