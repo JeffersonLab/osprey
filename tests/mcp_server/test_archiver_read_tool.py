@@ -1564,7 +1564,7 @@ class TestWaveformThroughRealMongoConnector:
         ]
         connector = _waveform_connector(waveforms=docs)
         with patch(
-            "osprey.connectors.factory.ConnectorFactory.create_archiver_connector",
+            "osprey_connectors.factory.ConnectorFactory.create_archiver_connector",
             new_callable=AsyncMock,
             return_value=connector,
         ):

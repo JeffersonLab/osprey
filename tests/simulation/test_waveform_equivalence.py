@@ -205,7 +205,7 @@ def store(mongodb_container):  # noqa: F811
 @pytest.fixture
 def connector_config(mongodb_container, store, monkeypatch):  # noqa: F811
     """The connector config of the store, password by environment name."""
-    from osprey.connectors.archiver.mongodb_archiver_connector import (
+    from osprey_connectors.archiver.mongodb_archiver_connector import (
         HOST_OVERRIDE_ENV,
         PORT_OVERRIDE_ENV,
     )
@@ -232,7 +232,7 @@ def connector_config(mongodb_container, store, monkeypatch):  # noqa: F811
 @pytest.fixture
 async def connector(connector_config):
     """A connected ``MongoDBArchiverConnector`` on the store."""
-    from osprey.connectors.archiver.mongodb_archiver_connector import MongoDBArchiverConnector
+    from osprey_connectors.archiver.mongodb_archiver_connector import MongoDBArchiverConnector
 
     archiver = MongoDBArchiverConnector()
     await archiver.connect(connector_config)
@@ -257,7 +257,7 @@ def read_tool(connector, tmp_path, monkeypatch):
     (tmp_path / "config.yml").write_text("archiver:\n  type: mongodb_archiver\n")
     initialize_server_context()
     with patch(
-        "osprey.connectors.factory.ConnectorFactory.create_archiver_connector",
+        "osprey_connectors.factory.ConnectorFactory.create_archiver_connector",
         new_callable=AsyncMock,
         return_value=connector,
     ):
