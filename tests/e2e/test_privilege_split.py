@@ -108,12 +108,14 @@ import yaml
 from click.testing import CliRunner
 
 from osprey.cli.main import cli
+from osprey.deployment.compose_generator import resolve_project_name
 from osprey.deployment.web_terminals.naming import web_container_name
 from osprey.deployment.web_terminals.seeding import seed_user_containers
 from osprey.deployment.wheel_build import _copy_local_framework_for_override
 from osprey.port_layout import default_port
 from osprey.utils.workspace import container_image_context
 from tests._container_support import docker_cli_unavailable_reason_once
+from tests.e2e._telemetry_sender import sender_env_file_args
 
 _DOCKER_UNAVAILABLE = docker_cli_unavailable_reason_once()
 
@@ -389,11 +391,30 @@ def admin_image(preset_repo: Path, admin_project: str):
         _docker("rmi", "-f", tag, timeout=120)
 
 
-def _run_web(tag: str, *extra: str) -> str:
-    """Start a container on the image's own CMD, port published on loopback."""
+@pytest.fixture(scope="module")
+def sender_args(preset_repo: Path, rendered_config: dict) -> list[str]:
+    """The env-file arguments that hand ``osprey web`` its telemetry sender login."""
+    return sender_env_file_args(preset_repo, rendered_config)
+
+
+def _run_web(tag: str, sender_args: list[str], *extra: str) -> str:
+    """Start a container on the image's own CMD, port published on loopback.
+
+    *sender_args* hand the server its sender login the way a deployment does:
+    the image's pre-flight refuses a gateway-telemetry launch without one.
+    """
     name = f"{TAG_PREFIX}-{uuid.uuid4().hex[:8]}"
     run = _docker(
-        "run", "-d", "--name", name, "-p", f"127.0.0.1:0:{_WEB_SLOT}", *extra, tag, timeout=120
+        "run",
+        "-d",
+        "--name",
+        name,
+        "-p",
+        f"127.0.0.1:0:{_WEB_SLOT}",
+        *sender_args,
+        *extra,
+        tag,
+        timeout=120,
     )
     assert run.returncode == 0, f"docker run failed: {run.stderr}"
     return name
@@ -403,7 +424,7 @@ def _run_web(tag: str, *extra: str) -> str:
 
 
 @pytest.fixture(scope="class")
-def ro_container(ro_image):
+def ro_container(ro_image, sender_args):
     """The base image, running its real CMD (``osprey web``), healthy.
 
     The real CMD and not ``sleep infinity``: the uid assertion below is about
@@ -416,7 +437,7 @@ def ro_container(ro_image):
     and the second one's health wait is where that shows up.
     """
     tag, project = ro_image
-    cid = _run_web(tag)
+    cid = _run_web(tag, sender_args)
     try:
         _wait_for_health(f"http://127.0.0.1:{_host_port(cid)}", cid)
         yield SimpleNamespace(cid=cid, project=project, root=f"/app/{project}")
@@ -479,7 +500,7 @@ class TestReadOnlyRenderZone:
 
 
 @pytest.fixture(scope="module")
-def admin_state(admin_image):
+def admin_state(admin_image, sender_args):
     """Drive the admin tier's whole config-write lifecycle once, and snapshot it.
 
     One container, one restart, four assertions — because the restart is the
@@ -499,6 +520,7 @@ def admin_state(admin_image):
 
     cid = _run_web(
         tag,
+        sender_args,
         "-v",
         f"{volume}:{CLAUDE_CONFIG_DIR}",
         "-e",
@@ -966,17 +988,17 @@ def seeded_container(admin_image, preset_repo: Path, rendered_config: dict):
     The container is named the way the compose service names it, because
     ``seed_user_containers`` finds its target by that name and nothing else —
     so the name is made unique by giving the seeding a config whose
-    ``project_name`` is unique to this run. The render carries the repo's
-    FIXED name, which means the compose-dictated ``<project>-web-carol``
-    collides with any real deployment of this repo on the developer's own
-    machine; a developer running one would otherwise silently lose this whole
+    ``project_name`` is unique to this run. The render's own project name is
+    the one a real deployment of this preset on the developer's machine may
+    already use, so the compose-dictated ``<project>-web-carol`` could collide
+    with it; a developer running one would otherwise silently lose this whole
     class to a skip. Overriding the project name keeps both properties: the
     test never touches a container it did not create, and it always runs.
 
-    Only carol's persona is seeded, and the rendered catalog names its
-    ``project``, so the override cannot reach the project path —
-    ``project_name`` feeds ``resolve_personas`` solely as the default for a
-    persona that names none. Asserted below rather than assumed.
+    Only carol's persona is seeded, and it names its own ``project``, so the
+    override cannot reach the project path — the project name feeds
+    ``resolve_personas`` solely as the default for a persona that names none.
+    Asserted below rather than assumed.
     """
     tag, project = admin_image
     user = "carol"
@@ -988,13 +1010,12 @@ def seeded_container(admin_image, preset_repo: Path, rendered_config: dict):
         "roster no longer maps carol onto it"
     )
 
-    project_name = f"{TAG_PREFIX}-{uuid.uuid4().hex[:8]}"
-    rendered_config["project_name"] = project_name
+    rendered_config["project_name"] = f"{TAG_PREFIX}-{uuid.uuid4().hex[:8]}"
     assert web_terminals["personas"][persona]["project"] == project, (
-        "the project_name override changed the persona's project; it is only "
+        "the project-name override changed the persona's project; it is only "
         "supposed to be the default for a persona that names none"
     )
-    name = web_container_name(project_name, user)
+    name = web_container_name(resolve_project_name(rendered_config), user)
     skill = "e2e-privsplit-probe"
 
     context_dir = preset_repo / "build" / "docker" / "web-terminal-context"
@@ -1008,7 +1029,7 @@ def seeded_container(admin_image, preset_repo: Path, rendered_config: dict):
     volume = f"{TAG_PREFIX}-seed-{uuid.uuid4().hex[:8]}"
     # Still refuse to reclaim a name that is somehow taken -- `docker rm -f`
     # here would delete somebody's running terminal to make room for a test --
-    # but with a run-unique project name this is now a genuine "should never happen",
+    # but with a run-unique project name this is a genuine "should never happen",
     # so it fails rather than skipping. A skip here used to hide the entire
     # class on any host running this preset.
     existing = _docker("ps", "-aq", "--filter", f"name=^{name}$", timeout=60)
