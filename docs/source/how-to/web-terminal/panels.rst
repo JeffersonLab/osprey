@@ -63,20 +63,12 @@ with the retro theme for a navy-and-teal terminal — see :doc:`theming`.)
 Taking panels off the rail
 --------------------------
 
-**Remove from rail** on a rail entry's or a tile's right-click menu, the
-entry's **×** corner, or :kbd:`Delete` on a focused entry takes the panel off
-the rail and closes its tile. A notice at the foot of the page says so for
-three seconds and offers **Undo**, which puts the entry back where it was and
-reopens the tile if it was open. **Close terminal tile** offers the same Undo.
-A panel the agent takes off the rail, or that another tab removes, goes without
-a notice.
+**Remove from rail** (right-click, or the entry's **×**) can be undone for a
+few seconds.
 
-A panel can also be on screen without a rail entry. SYSTEM is one in the
-``control-assistant`` preset (``web.panels.system-health.hidden: true``): it
-opens from the status bar's health dot and from **⋯ More** at the foot of the
-rail, and its tile's right-click menu offers **Pin to rail** in place of
-Remove. Closing such a tile, or reloading the page, puts it away until it is
-opened again. Every panel stays in the **+** menu and the command palette.
+A panel can be open without a rail entry. In the ``control-assistant`` preset
+SYSTEM starts that way (``web.panels.system-health.hidden: true``): open it
+from the health dot or **⋯ More**, and right-click its tile to **Pin to rail**.
 
 When a panel stops answering
 ----------------------------

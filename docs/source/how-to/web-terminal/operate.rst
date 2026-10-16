@@ -64,10 +64,8 @@ The window has three working areas plus a header:
 - **Utility controls** — pinned to the far end of the same rail, a
   **Documentation** link, a **Feedback** button that lets whoever is at the
   terminal report a problem without leaving it (see :doc:`send-feedback`), and
-  **⋯ More**, which holds SYSTEM, **Take tour** and **Activity log**. Docs and
-  Feedback can be hidden from their own right-click menu; while one is hidden,
-  More offers **Show Docs** or **Show Feedback** to bring it back. The choice is
-  kept with your bar layout, so it follows you to another browser.
+  **⋯ More** with SYSTEM, the tour and the activity log. Right-click Docs or
+  Feedback to hide it; More brings it back.
 - **Header** — the :ref:`control-target chip <web-terminal-session-posture>`
   (which machine this deployment writes to, and whether it may), the display menu
   (a small dot holding the light/dark, Expert/Simple, and theme controls — see
@@ -453,12 +451,8 @@ button and the display menu. The status bar starts nearly bare: a space, the
 right. The **Docs** link and the rest of the catalog are one drag away. Which items sit in which bar, and in what order, is yours
 to change.
 
-**Right-click any item** for what it offers on the spot, without customizing:
-its own actions first (**Reset stopwatch** on a stopwatch with a reading), then
-its options where it has any (**Clock options…**), then **Remove**. A removal
-shows a notice at the foot of the page for three seconds with **Undo**, which
-puts the item back in the same place with the same options; pointing at the
-notice keeps it up. An edit that is refused says why in the same place.
+**Right-click any item** for its options and **Remove**, no customizing
+needed. A removal can be undone for a few seconds.
 
 Rearranging the bars
 ~~~~~~~~~~~~~~~~~~~~
@@ -516,8 +510,7 @@ there is, drawn as it will look in the bar. From there:
 Customize bars in Expert view, light and dark. Captured with OSPREY
 |captured_customize_sheet|.
 
-Some edits are refused, and the sheet says why rather than failing quietly
-(outside Customize, the notice at the foot of the page does).
+Some edits are refused, and the sheet says why rather than failing quietly.
 Most items go in once: a tile that is already in a bar is dimmed, and says
 where it is on hover. A tile for something this
 deployment does not render is disabled and carries the reason. If an
