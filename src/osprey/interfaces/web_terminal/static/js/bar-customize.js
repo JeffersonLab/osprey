@@ -302,6 +302,8 @@ function draftOf(layout) {
     status: layout.status.map((item) => ({ type: item.type, options: { ...item.options } })),
     header_visible: layout.header_visible,
     status_visible: layout.status_visible,
+    rail_docs_visible: layout.rail_docs_visible,
+    rail_feedback_visible: layout.rail_feedback_visible,
   };
 }
 
@@ -518,6 +520,33 @@ export function setBarVisible(host, visible, root = activeRoot) {
 /** Whether the held document shows `host`. @param {BarHost} host @returns {boolean} */
 export function barVisible(host) {
   return currentLayout()?.[`${host}_visible`] !== false;
+}
+
+/**
+ * The rail utility controls an operator may hide. ⋯ More is deliberately not
+ * one: it is where a hidden control comes back from.
+ * @typedef {'docs' | 'feedback'} RailUtility
+ */
+
+/**
+ * Show or withdraw one of the rail's hideable utility controls. Stored with the
+ * bar layout, so the choice follows the operator to another browser and
+ * Reset to default brings the control back.
+ * @param {RailUtility} name
+ * @param {boolean} visible
+ * @param {BarRoot} [root]
+ * @returns {Promise<boolean>}
+ */
+export function setRailUtilityVisible(name, visible, root = activeRoot) {
+  return applyEdit((draft) => {
+    draft[`rail_${name}_visible`] = visible;
+    return draft;
+  }, root);
+}
+
+/** Whether the held document shows rail utility `name`. @param {RailUtility} name */
+export function railUtilityVisible(name) {
+  return currentLayout()?.[`rail_${name}_visible`] !== false;
 }
 
 /* ---- edit mode ---- */
