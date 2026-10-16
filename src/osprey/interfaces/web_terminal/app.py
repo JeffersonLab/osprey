@@ -497,7 +497,7 @@ DEFAULT_RAIL_POSITION = "left"
 #: this again", or completing the tour). ``always``: the invite shows on
 #: every load and offers no permanent dismissal — the shared read-only
 #: screen case. ``never``: no automatic invite; the tour stays reachable
-#: from the rail's Tour control and the command palette.
+#: from the rail's More menu and the command palette.
 TOUR_POLICIES = ("once", "always", "never")
 DEFAULT_TOUR_POLICY = "once"
 
@@ -616,6 +616,8 @@ DEFAULT_BAR_LAYOUT: dict = {
     ],
     "header_visible": True,
     "status_visible": True,
+    "rail_docs_visible": True,
+    "rail_feedback_visible": True,
 }
 
 #: The ADOPTED item types: the ones whose body is a literal block in
@@ -938,6 +940,8 @@ class BarRenderPlan(NamedTuple):
             place — their nodes go into ``#bar-item-pool``.
         header_visible: False ⇒ ``<html data-header-bar="hidden">``.
         status_visible: False ⇒ ``<html data-status-bar="hidden">``.
+        rail_docs_visible: False ⇒ ``<html data-rail-docs="hidden">``.
+        rail_feedback_visible: False ⇒ ``<html data-rail-feedback="hidden">``.
     """
 
     header: list[dict]
@@ -945,6 +949,8 @@ class BarRenderPlan(NamedTuple):
     pooled: list[str]
     header_visible: bool
     status_visible: bool
+    rail_docs_visible: bool = True
+    rail_feedback_visible: bool = True
 
 
 def effective_bar_layout(app: FastAPI) -> dict:
@@ -1133,6 +1139,8 @@ def bar_render_plan(layout: dict, *, context: dict) -> BarRenderPlan:
         pooled=pooled,
         header_visible=bool(layout.get("header_visible", True)),
         status_visible=bool(layout.get("status_visible", True)),
+        rail_docs_visible=bool(layout.get("rail_docs_visible", True)),
+        rail_feedback_visible=bool(layout.get("rail_feedback_visible", True)),
     )
 
 
@@ -2948,6 +2956,8 @@ def create_app(
                 "bar_pooled": plan.pooled,
                 "bar_header_visible": plan.header_visible,
                 "bar_status_visible": plan.status_visible,
+                "rail_docs_visible": plan.rail_docs_visible,
+                "rail_feedback_visible": plan.rail_feedback_visible,
                 "bar_context": bar_context,
                 # The registry's own labels for the built-in panels, stamped so
                 # panel-catalog.js can read them at module load. /api/panels
