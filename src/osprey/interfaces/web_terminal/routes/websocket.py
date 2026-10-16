@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from osprey.agent_runner.launcher import NoConversationWatch, build_session_argv
 from osprey.audit.posture import OSPREY_AGENT_DATA_ROOT
+from osprey.build.claude_code_telemetry import terminal_session_env
 from osprey.interfaces.common_middleware import (
     HTTP_MUTATION_POSTURE,
     HTTP_MUTATION_SURFACE,
@@ -543,10 +544,14 @@ def _build_extra_env(
     # authoritative for all of them; a child that held the key without it would
     # be told whose posture to read and left to guess where. Never one without
     # the other, and a test pins that.
+    #
+    # The terminal session travels with the posture session and equals it, so
+    # the child's OTLP resource and its ledger lines carry one value.
     if session_key:
         extra_env[POSTURE_SOURCE_ENV] = POSTURE_SOURCE_LIVE
         extra_env[POSTURE_SESSION_ENV] = session_key
         extra_env[OSPREY_AGENT_DATA_ROOT] = resolve_agent_data_root(websocket.app)
+        extra_env.update(terminal_session_env(session_key, os.environ))
     return extra_env
 
 
@@ -1553,6 +1558,8 @@ class _TargetRequestFacts:
     configured: tuple[str, ...]
     #: The whole rendered config, which is what the switch gate reads.
     config: Any
+    #: The file ``config`` was parsed from, which the gate fills unset gateway ports from.
+    config_path: str | None
     #: Its ``control_system:`` section, for the ceilings the gate is handed.
     section: Any
     #: The target this deployment's own config selects.
@@ -1582,6 +1589,7 @@ def _target_request_facts(app: Any, config_path: Path | None) -> _TargetRequestF
     return _TargetRequestFacts(
         configured=_configured_target_names(section),
         config=config,
+        config_path=str(config_path) if config_path else None,
         section=section,
         baseline=_baseline_target(section),
         in_flight=in_flight,
@@ -1695,6 +1703,7 @@ def _switch_mutation(
         # A pure lookup: the sidecar was asked in the facts hop, because this
         # call happens under the record lock.
         kernel_name=facts.kernel_names.get,
+        config_path=facts.config_path,
     )
     applied = verdict.allowed
     if applied:
@@ -1998,8 +2007,12 @@ def _target_writes_key(section: Any, target: str) -> str:
         return WRITES_ENABLED_KEY
 
 
-def _narrowing_refusals(config: Any, targets: tuple[str, ...]) -> dict[str, str]:
+def _narrowing_refusals(
+    config: Any, targets: tuple[str, ...], *, config_path: str | None
+) -> dict[str, str]:
     """Which of *targets* cannot be narrowed, and why. ``{target: detail}``.
+
+    *config_path* is the file *config* was parsed from; an unset gateway port is filled from it.
 
     Delegated to
     :func:`~osprey.mcp_server.control_system.target_eligibility.narrowing_refusal`,
@@ -2023,7 +2036,7 @@ def _narrowing_refusals(config: Any, targets: tuple[str, ...]) -> dict[str, str]
         from osprey.mcp_server.control_system.target_eligibility import narrowing_refusal
 
         for target in targets:
-            verdict = narrowing_refusal(config, target)
+            verdict = narrowing_refusal(config, target, config_path=config_path)
             if verdict is not None:
                 refusals[target] = verdict.detail
     except Exception:  # an underivable narrowing is not a refusal
@@ -2064,13 +2077,16 @@ def _posture_post_facts(
     # otherwise let it refuse on behalf of a change nobody requested.
     current = _recorded_posture()
     changing = tuple(t for t in wanted if current.get(t) != POSTURE_SANDBOX)
+    derive_path = str(config_path) if config_path else None
 
     return _PostureRequestFacts(
         configured=configured,
         wanted=wanted,
         ceilings=_session_ceilings(section),
         writes_keys={t: _target_writes_key(section, t) for t in wanted},
-        narrowing_refusals={} if widening else _narrowing_refusals(config, changing),
+        narrowing_refusals={}
+        if widening
+        else _narrowing_refusals(config, changing, config_path=derive_path),
         in_flight=_first_live_execution() if widening else None,
         current=current,
     )
@@ -2355,15 +2371,13 @@ async def set_terminal_posture(body: PostureRequest, request: Request):
 SHORT_LIVE = "LIVE"
 SHORT_STANDIN = "STAND-IN"
 SHORT_VIRTUAL = "VIRTUAL"
-SHORT_SIMULATED = "SIMULATED"
 
-#: The same four in plain language, for the popover's simple density: one word
+#: The same three in plain language, for the popover's simple density: one word
 #: per row, chosen so an operator who has never met the word "target" can still
 #: tell the facility's machine from a simulation of it.
 KIND_LIVE = "live machine"
 KIND_STANDIN = "stand-in"
 KIND_VIRTUAL = "virtual accelerator"
-KIND_SIMULATED = "simulated"
 
 #: The two reachability states the prober never publishes, because both are
 #: read-time verdicts: ``unknown`` is the absence of a row (no live server has
@@ -2426,15 +2440,14 @@ def _short_label_and_kind(label: Any, real_machine: bool) -> tuple[str, str]:
     ``real_machine`` decides the loud half — it is true for the facility's own
     machine AND for a stand-in, both of which get every strict limit and
     approval prompt hardware gets — and the label's shape then separates those
-    two. An unrecognised label falls back to its half's louder answer, which is
-    the direction this stack must fail in.
+    two. An unrecognised real-machine label falls back to the louder answer,
+    which is the direction this stack must fail in. A row that is not a real
+    machine is the simulator.
     """
-    text = str(label or "").strip().lower()
-    if real_machine:
-        return (SHORT_STANDIN, KIND_STANDIN) if "(stand-in)" in text else (SHORT_LIVE, KIND_LIVE)
-    if text.startswith("virtual accelerator"):
+    if not real_machine:
         return SHORT_VIRTUAL, KIND_VIRTUAL
-    return SHORT_SIMULATED, KIND_SIMULATED
+    text = str(label or "").strip().lower()
+    return (SHORT_STANDIN, KIND_STANDIN) if "(stand-in)" in text else (SHORT_LIVE, KIND_LIVE)
 
 
 def _probe_staleness_threshold_s(config: Any) -> float | None:
@@ -2554,8 +2567,12 @@ def _effective_writes(section: Any, target: str) -> bool:
         return False
 
 
-def _row_selected_role(config: Any, target: str, writes_enabled: bool) -> str | None:
+def _row_selected_role(
+    config: Any, target: str, writes_enabled: bool, *, config_path: str | None
+) -> str | None:
     """The gateway role a connector would select for *target* under this posture.
+
+    *config_path* is the file *config* was parsed from; an unset gateway port is filled from it.
 
     The reachability collapse keys on it, so it is derived through
     :func:`~osprey_connectors.ipc.verification.derive_endpoints`
@@ -2573,14 +2590,18 @@ def _row_selected_role(config: Any, target: str, writes_enabled: bool) -> str | 
     try:
         from osprey_connectors.ipc.verification import derive_endpoints
 
-        return derive_endpoints(config, target, writes_enabled=writes_enabled).selected_role
+        return derive_endpoints(
+            config, target, writes_enabled=writes_enabled, config_path=config_path
+        ).selected_role
     except Exception:  # an underivable target selects no role
         logger.warning("Could not derive the selected gateway role for target %s", target)
         return None
 
 
-def _row_narrowing_refusal(config: Any, target: str) -> str | None:
+def _row_narrowing_refusal(config: Any, target: str, *, config_path: str | None) -> str | None:
     """What narrowing *target* would cost, as a reason word, or ``None``.
+
+    *config_path* is the file *config* was parsed from; an unset gateway port is filled from it.
 
     :func:`~osprey.mcp_server.control_system.target_eligibility.narrowing_refusal`
     — the same hypothetical derivation the POST answers its 409 with, so the
@@ -2606,7 +2627,7 @@ def _row_narrowing_refusal(config: Any, target: str) -> str | None:
     try:
         from osprey.mcp_server.control_system.target_eligibility import narrowing_refusal
 
-        verdict = narrowing_refusal(config, target)
+        verdict = narrowing_refusal(config, target, config_path=config_path)
     except Exception:  # an underivable narrowing is not a refusal
         logger.warning("Could not evaluate what narrowing target %s would cost", target)
         return None
@@ -2614,9 +2635,17 @@ def _row_narrowing_refusal(config: Any, target: str) -> str | None:
 
 
 def _row_availability(
-    config: Any, target: str, control_target: str, baseline: str, writes_enabled: bool
+    config: Any,
+    target: str,
+    control_target: str,
+    baseline: str,
+    writes_enabled: bool,
+    *,
+    config_path: str | None,
 ) -> tuple[bool, str | None, str | None]:
     """Whether a switch to *target* is offered now, plus the reason and its sentence.
+
+    *config_path* is the file *config* was parsed from; an unset gateway port is filled from it.
 
     :func:`~osprey.mcp_server.control_system.target_eligibility.target_availability`
     and nothing else, so the reason under a missing Switch button is the reason
@@ -2643,7 +2672,12 @@ def _row_availability(
         return False, REASON_TARGET_UNRESOLVABLE, None
     try:
         verdict = target_availability(
-            config, target, control_target, baseline, writes_enabled=writes_enabled
+            config,
+            target,
+            control_target,
+            baseline,
+            writes_enabled=writes_enabled,
+            config_path=config_path,
         )
     except Exception:  # an unjudgeable target is not an available one
         logger.warning("Could not judge availability for control target %s", target)
@@ -2865,6 +2899,8 @@ def _target_display(
     config: Any,
     published: Mapping[str, Any],
     effective_writes: Mapping[str, bool],
+    *,
+    config_path: str | None,
 ) -> dict[str, dict[str, Any]]:
     """Per-target ``label`` / ``endpoint`` / ``real_machine``, published first.
 
@@ -2898,6 +2934,8 @@ def _target_display(
         effective_writes: Per-target effective write posture, keyed by target
             name. A target the mapping does not answer for is rendered from the
             deployment ceiling and this run's mode.
+        config_path: The file *config* was parsed from; an unset
+            virtual-accelerator gateway port is filled from it.
     """
     derived: dict[str, Any] = {}
     if config is not _UNREADABLE_SECTION and isinstance(config, dict):
@@ -2906,7 +2944,11 @@ def _target_display(
                 target_display_metadata,
             )
 
-            derived = dict(target_display_metadata(config, effective_writes=effective_writes))
+            derived = dict(
+                target_display_metadata(
+                    config, effective_writes=effective_writes, config_path=config_path
+                )
+            )
         except Exception:  # the roster must render, not 500
             logger.warning("Could not derive the control targets' display metadata")
 
@@ -2961,6 +3003,7 @@ def _posture_view(app: Any, config_path: Path | None) -> dict[str, Any]:
     names who is asking and decides nothing about what they are told.
     """
     config = _rendered_config(config_path)
+    derive_path = str(config_path) if config_path else None
     section = _section_of(config)
     record = control_context.read_record()
     reports = _live_reports()
@@ -2990,7 +3033,9 @@ def _posture_view(app: Any, config_path: Path | None) -> dict[str, Any]:
         target: bool(ceilings.get(target, False)) and _effective_writes(section, target)
         for target in configured
     }
-    display = _target_display(config, _published_targets(reports), effective_by_target)
+    display = _target_display(
+        config, _published_targets(reports), effective_by_target, config_path=derive_path
+    )
     threshold_s = _probe_staleness_threshold_s(config)
     probed = _published_reachability(reports)
 
@@ -3007,9 +3052,13 @@ def _posture_view(app: Any, config_path: Path | None) -> dict[str, Any]:
         # "targets the request would touch" rule: a target already narrowed
         # cannot be stranded by narrowing it, and reporting the refusal there
         # would lock the toggle that brings it back.
-        narrowing = None if posture == POSTURE_SANDBOX else _row_narrowing_refusal(config, target)
+        narrowing = (
+            None
+            if posture == POSTURE_SANDBOX
+            else _row_narrowing_refusal(config, target, config_path=derive_path)
+        )
         available_now, reason, reason_detail = _row_availability(
-            config, target, control_target, baseline, effective
+            config, target, control_target, baseline, effective, config_path=derive_path
         )
         rows.append(
             {
@@ -3031,7 +3080,7 @@ def _posture_view(app: Any, config_path: Path | None) -> dict[str, Any]:
                 "narrowing_refusal": narrowing,
                 "reachability": _collapse_reachability(
                     probed.get(target),
-                    _row_selected_role(config, target, effective),
+                    _row_selected_role(config, target, effective, config_path=derive_path),
                     threshold_s,
                 ),
             }

@@ -21,38 +21,43 @@ from urllib.parse import quote
 from jinja2 import Environment, FileSystemLoader
 
 from osprey.agent_runner.claude_state import CLAUDE_CONFIG_VOLUME_SUFFIX
-from osprey.bluesky_bridge_connection import LANE_KEYS, lane_env_prefix
+from osprey.bluesky_bridge_connection import LANE_KEYS, LANE_ONE, lane_env_prefix
 from osprey.config_guards import is_positive_int
+from osprey.deployment import telemetry_config, telemetry_credentials
 from osprey.deployment.compose_generator import (
     DISPATCH_WORKER_SERVICE_PREFIX,
     FIXED_SERVICE_AUDIT_IDENTITIES,
     configured_ariel_mirror_path,
+    guarded_run_relpath,
     repo_identity,
     repo_relative_mount_source,
     resolve_project_name,
     resolve_repo_root,
+    simulated_target_configured,
 )
 from osprey.deployment.control_identity import CONTROL_IDENTITY_CONTAINER_PATH
 from osprey.deployment.qmd_service import is_loopback_bind
+from osprey.deployment.telemetry_config import (
+    HISTORY_SERVICE,
+    RESERVED_ACCOUNT_NAMES,
+    RESERVED_ACCOUNT_PREFIX,
+    play_script_sha256,
+    reader_play_url,
+    reader_port,
+    store_deployed,
+    store_limits,
+    store_port,
+)
 from osprey.deployment.web_terminals.auth_credentials import (
     TERMINAL_SECRET_VAR_PREFIX,
     terminal_secret_var,
 )
-from osprey.deployment.web_terminals.env_production import telemetry_delivered_vars
 from osprey.deployment.web_terminals.personas import (
     REGISTRY_MODE_MISSING_URL,
     SUPPORTED_MCP_TOPOLOGY,
     USERNAME_CHARSET_RE,
     access_wire_value,
     as_dict,
-    config_archiver_credential_envs,
-    config_needs_ariel_mirror,
-    config_needs_ariel_password,
-    config_needs_dispatcher_token,
-    config_needs_facility_bundle,
-    config_needs_graphdb_password,
-    config_needs_launch_token_for,
-    config_needs_phoebus_handles,
     configured_registry_url,
     control_identity_problems,
     effective_image_source,
@@ -73,13 +78,26 @@ from osprey.docs_links import PERIMETER_LIMITS_URL
 # stdlib-only, so importing it here cannot cycle.
 from osprey.interfaces.web_auth import DEFAULT_SESSION_LIFETIME
 from osprey.port_layout import _MAX_PORT, default_port, resolve_port_base
-from osprey.services.auth_sidecar.roster_env import env_var_suffix, env_var_suffix_collisions
+from osprey.services.auth_sidecar.roster_env import (
+    HISTORY_ALL,
+    HISTORY_ORIGIN_VAR,
+    READER_SUBJECT_VAR_PREFIX,
+    READER_TABLES_VAR_PREFIX,
+    READERS_VAR,
+    ROLE_HISTORY_VAR_PREFIX,
+    ROSTER_HISTORY_VAR_PREFIX,
+    env_var_suffix,
+    env_var_suffix_collisions,
+)
 
 # A stdlib-only leaf of the sidecar: the throttle's defaults and its one
 # validity predicate, shared with the sidecar that builds the throttle.
 from osprey.services.auth_sidecar.throttle import THROTTLE_DEFAULTS, throttle_problems
-from osprey.utils.facility import resolve_facility_name
-from osprey.utils.workspace import AUDIT_DIR_RELPATH, agent_data_base_dir
+from osprey.utils.workspace import (
+    AUDIT_DIR_RELPATH,
+    SIMULATOR_LOG_DIR_RELPATH,
+    agent_data_base_dir,
+)
 from osprey_connectors.posture_store import CONTROL_CONTEXT_DIR_ENV_VAR, STATE_DIR_NAME
 
 # Package-relative location of the .j2 sources (Tasks 1.3/1.6). Resolved via
@@ -371,6 +389,38 @@ def _secret_template_content(username: str) -> str:
     )
 
 
+#: The history page's gate snippet, by the name its ``include`` and its rendered
+#: template share. Outside the ``secret-<user>`` namespace, so no roster name
+#: can ever be rendered to the same file.
+_HISTORY_GATE_SNIPPET = "history-gate"
+
+
+def _history_gate_template_path() -> str:
+    """Output-relative path of the history page's rendered nginx template snippet."""
+    return f"{NGINX_TEMPLATES_OUTPUT_DIR}/{_HISTORY_GATE_SNIPPET}{_SECRET_TEMPLATE_SUFFIX}"
+
+
+def _history_gate_template_content() -> str:
+    """The history page's snippet: the gate secret the history app accepts.
+
+    The same mechanism as a roster user's snippet (see
+    :func:`_secret_template_content`), naming the one variable the history
+    app's gate file carries. The file reaches nginx as its ``env_file``, so the
+    value is substituted at container start and appears in no rendered
+    artifact; quoted for the same reason, and with no ``$`` in a comment.
+    """
+    env_var = telemetry_credentials.HISTORY_GATE_ENV
+    return (
+        "# Rendered by OSPREY (osprey.deployment.web_terminals.render).\n"
+        "# Injects the history page's gate secret into requests proxied to the\n"
+        "# history app. Included only from the readers' origin's history\n"
+        "# location, after the sign-in check. The value is substituted by nginx's\n"
+        f"# entrypoint at container start from {env_var}, and appears in no\n"
+        "# rendered artifact.\n"
+        f'proxy_set_header {TERMINAL_SECRET_HEADER} "${{{env_var}}}";\n'
+    )
+
+
 def clear_nginx_templates_dir(dest: Path | str) -> list[Path]:
     """Empty the rendered nginx-templates directory beneath *dest*.
 
@@ -583,7 +633,7 @@ def _container_bundle_dir(config: Any, container_project_dir: str) -> str | None
     Per-service rather than one shared path, because personas differ: two
     personas built from different projects have different
     ``container_project_dir`` values, so the same configured
-    ``data/facility_knowledge`` resolves to two different in-container paths and
+    ``data/facility/knowledge`` resolves to two different in-container paths and
     a single hardcoded target would mount the bundle where only one of them
     looks. An ABSOLUTE ``bundle_path`` names the same absolute path on both
     sides and is NOT re-anchored — the same distinction
@@ -734,7 +784,6 @@ def _control_context_mount_source(config: Any, identity: str) -> str:
 
 
 def _launch_token_env_vars(
-    config: Any,
     entry: dict[str, Any],
     launch_token_personas: dict[str, set[str]] | None,
 ) -> list[str]:
@@ -746,11 +795,6 @@ def _launch_token_env_vars(
     entitled persona every rendered lane's token would let a launch approved
     against one machine be replayed against the other.
 
-    A persona-less roster entry — the zero-migration path, where the web image IS
-    the deploy project — is answered from this same config, with no disk read, so
-    the determinism contract holds either way.
-
-    :param config: The parsed facility config (the deploy config's own root).
     :param entry: One resolved roster entry.
     :param launch_token_personas: ``{lane: personas}`` — see
         :func:`render_web_terminals`.
@@ -762,11 +806,7 @@ def _launch_token_env_vars(
     return [
         f"{lane_env_prefix(lane)}_LAUNCH_TOKEN"
         for lane in LANE_KEYS
-        if (
-            persona in entitled_by_lane.get(lane, set())
-            if persona
-            else config_needs_launch_token_for(config, lane)
-        )
+        if persona in entitled_by_lane.get(lane, set())
     ]
 
 
@@ -783,11 +823,12 @@ def render_web_terminals(
     ariel_mirror_gid: int | None = None,
     archiver_credential_personas: dict[str, tuple[str, ...]] | None = None,
     archiver_ca_bundle_personas: dict[str, tuple[str, ...]] | None = None,
-    archiver_ca_bundles: tuple[str, ...] = (),
     telemetry_vars_personas: dict[str, tuple[str, ...]] | None = None,
     phoebus_handle_personas: set[str] | None = None,
     terminal_secrets: dict[str, str] | None = None,
     proxy_env_names: tuple[str, ...] = (),
+    facility_name: str = "",
+    telemetry_cred_digests: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Render the compose overlay, nginx fragment, and landing page for one facility config.
 
@@ -931,10 +972,6 @@ def render_web_terminals(
             Each file is bind-mounted read-only at the same path into the
             user's container, so the key names one file on the host and in the
             container. ``None`` emits no mount.
-        archiver_ca_bundles: The same host CA files for persona-less entries,
-            from the deploy config itself. Resolved by the caller rather than
-            here, like the map above, because whether a file is on the host is
-            a filesystem read. ``()`` emits no mount.
         telemetry_vars_personas: ``{persona_name: names}`` for the personas
             whose telemetry block needs variables no fixed route delivers,
             resolved from disk by
@@ -979,6 +1016,18 @@ def render_web_terminals(
             name and its lowercase twin, both ``${NAME:-}``; a name left out
             renders neither. ``()`` (the default, and the scaffold preview)
             renders none.
+        facility_name: The facility's display name: the landing page's title
+            and the sign-in page's ``OSPREY_WEB_APP_NAME``. The deploy resolves
+            it from the build's facility identity through
+            :func:`osprey.deployment.web_terminals.artifacts.resolve_render_inputs`,
+            because this function reads no file. ``""`` (the default) emits no
+            sign-in name and leaves the landing page its own title.
+        telemetry_cred_digests: The sha256 of each terminal's telemetry login
+            file, by audit identity
+            (:func:`osprey.deployment.telemetry_credentials.sender_digests`),
+            emitted as that terminal's
+            :data:`~osprey.deployment.telemetry_credentials.DIGEST_LABEL` label
+            for the reason ``auth_env_digest`` is. ``None`` emits no label.
 
     Returns:
         Mapping of output-relative-path to rendered content: the three artifacts
@@ -1025,10 +1074,9 @@ def render_web_terminals(
     if auth_env_digest and not re.fullmatch(r"[0-9a-f]{64}", auth_env_digest):
         raise ValueError("auth_env_digest must be a sha256 hex digest")
     root = as_dict(config)
-    facility = as_dict(root.get("facility"))
     registry = as_dict(root.get("registry"))
     web_terminals = as_dict(as_dict(root.get("modules")).get("web_terminals"))
-    facility_prefix = facility.get("prefix") or ""
+    project_name = resolve_project_name(root)
 
     _check_mcp_topology(web_terminals)
     if effective_image_source(web_terminals) == "registry" and not configured_registry_url(
@@ -1036,13 +1084,7 @@ def render_web_terminals(
     ):
         raise ValueError(REGISTRY_MODE_MISSING_URL)
 
-    resolved_users = resolve_personas(
-        web_terminals,
-        registry,
-        facility_prefix,
-        project_name=resolve_project_name(root),
-        strict=True,
-    )
+    resolved_users = resolve_personas(web_terminals, registry, strict=True)
     # The other half of what a roster `role:` says. `resolve_personas` above
     # consumed it into each entry's persona (which image, which project); this
     # is the role NAME, which the auth sidecar carries on that user's password
@@ -1057,7 +1099,7 @@ def render_web_terminals(
     services = []
     for entry in resolved_users:
         user_ports = allocate_ports(base_ports, entry["index"])
-        launch_token_env_vars = _launch_token_env_vars(root, entry, launch_token_personas)
+        launch_token_env_vars = _launch_token_env_vars(entry, launch_token_personas)
         # Bound once because two keys below are anchored on it — the volume's
         # own mount target and the control-context directory nested inside it.
         # Resolving it twice would let one anchor be changed without the other.
@@ -1249,25 +1291,11 @@ def render_web_terminals(
                     for family, env_var in PANEL_ENV_VARS.items()
                 ],
                 # Whether this user's container gets the event dispatcher's
-                # bearer (see the `dispatcher_personas` arg). A persona-less
-                # roster entry — the zero-migration path, where the web image
-                # IS the deploy project — is answered from this same config,
-                # with no disk read, so the determinism contract holds either
-                # way.
-                "wants_dispatcher": (
-                    entry["persona"] in (dispatcher_personas or set())
-                    if entry.get("persona")
-                    else config_needs_dispatcher_token(root)
-                ),
+                # bearer (see the `dispatcher_personas` arg).
+                "wants_dispatcher": entry["persona"] in (dispatcher_personas or set()),
                 # Whether this user's container gets the ARIEL Postgres password
-                # (see the `ariel_personas` arg). Persona-less entries are
-                # answered from this same config, with no disk read, exactly as
-                # above.
-                "wants_ariel_db": (
-                    entry["persona"] in (ariel_personas or set())
-                    if entry.get("persona")
-                    else config_needs_ariel_password(root)
-                ),
+                # (see the `ariel_personas` arg).
+                "wants_ariel_db": entry["persona"] in (ariel_personas or set()),
                 # Which plan lanes' launch tokens this user's container gets
                 # (see the `launch_token_personas` arg), and whether it gets any
                 # at all. Both derived from the one list, so the template's gate
@@ -1275,58 +1303,30 @@ def render_web_terminals(
                 "wants_launch_token": bool(launch_token_env_vars),
                 "launch_token_env_vars": launch_token_env_vars,
                 # Whether this user's container gets the graph store's Neo4j
-                # password (see the `graphdb_personas` arg). Persona-less
-                # entries are answered from this same config, with no disk read,
-                # exactly as above.
-                "wants_graphdb": (
-                    entry["persona"] in (graphdb_personas or set())
-                    if entry.get("persona")
-                    else config_needs_graphdb_password(root)
-                ),
+                # password (see the `graphdb_personas` arg).
+                "wants_graphdb": entry["persona"] in (graphdb_personas or set()),
                 # The NAMES of the variables this user's archiver connector
                 # authenticates with (see the `archiver_credential_personas`
-                # arg), or an empty tuple for no grant. Persona-less entries
-                # are answered from this same config, with no disk read,
-                # exactly as above.
-                "archiver_credential_envs": (
-                    (archiver_credential_personas or {}).get(entry["persona"], ())
-                    if entry.get("persona")
-                    else config_archiver_credential_envs(root)
+                # arg), or an empty tuple for no grant.
+                "archiver_credential_envs": (archiver_credential_personas or {}).get(
+                    entry["persona"], ()
                 ),
                 # The host CA files this user's archiver block names under
                 # `tls.ca_bundle` (see the `archiver_ca_bundle_personas` arg),
                 # each mounted read-only at the same path, or () for none.
-                # Persona-less entries read the caller-resolved
-                # `archiver_ca_bundles`, since the render reads no filesystem.
-                "ca_bundle_mounts": (
-                    (archiver_ca_bundle_personas or {}).get(entry["persona"], ())
-                    if entry.get("persona")
-                    else archiver_ca_bundles
-                ),
+                "ca_bundle_mounts": (archiver_ca_bundle_personas or {}).get(entry["persona"], ()),
                 # The NAMES of the variables this user's telemetry block needs
                 # (see the `telemetry_vars_personas` arg), or () for none.
-                # Persona-less entries are answered from this same config, with
-                # no disk read, exactly as above.
-                "telemetry_vars": (
-                    (telemetry_vars_personas or {}).get(entry["persona"], ())
-                    if entry.get("persona")
-                    else telemetry_delivered_vars(root)
-                ),
+                "telemetry_vars": (telemetry_vars_personas or {}).get(entry["persona"], ()),
                 # Where the deployment's knowledge bundle mounts inside THIS
                 # user's container, or None when the user is not entitled or the
                 # deployment configures no bundle. One key rather than a
                 # boolean + a shared path: personas differ in
                 # container_project_dir, so the target is per service and the
                 # template must not be able to emit a mount without one.
-                # Persona-less entries are answered from this same config with
-                # no disk read, exactly as the four grants above.
                 "container_bundle_dir": (
                     _container_bundle_dir(root, entry["container_project_dir"])
-                    if (
-                        entry["persona"] in (facility_bundle_personas or set())
-                        if entry.get("persona")
-                        else config_needs_facility_bundle(root)
-                    )
+                    if entry["persona"] in (facility_bundle_personas or set())
                     else None
                 ),
                 # Where the deployment's ARIEL qmd mirror mounts inside THIS
@@ -1336,24 +1336,14 @@ def render_web_terminals(
                 # cannot emit the mount without a target.
                 "container_mirror_dir": (
                     _container_mirror_dir(root, entry["container_project_dir"])
-                    if (
-                        entry["persona"] in (ariel_mirror_personas or set())
-                        if entry.get("persona")
-                        else config_needs_ariel_mirror(root)
-                    )
+                    if entry["persona"] in (ariel_mirror_personas or set())
                     else None
                 ),
                 # Whether this user's container carries PHOEBUS_REQUIRE_HANDLE=1,
                 # which makes the Phoebus MCP server refuse the implicit
-                # "active" display. Persona-less entries are answered from this
-                # same config with no disk read, exactly as the grants above.
-                # Not a credential: a switch the Phoebus MCP server reads from
-                # the environment it inherits.
-                "phoebus_require_handle": (
-                    entry["persona"] in (phoebus_handle_personas or set())
-                    if entry.get("persona")
-                    else config_needs_phoebus_handles(root)
-                ),
+                # "active" display. Not a credential: a switch the Phoebus MCP
+                # server reads from the environment it inherits.
+                "phoebus_require_handle": entry["persona"] in (phoebus_handle_personas or set()),
             }
         )
 
@@ -1503,11 +1493,7 @@ def render_web_terminals(
     )
 
     compose_ctx = {
-        # Every container name and the sidecar's local tag are spelled on the
-        # deployment's compose project, read off the facility config being
-        # deployed (never a persona's), so naming.py and the template agree.
-        "project_name": resolve_project_name(root),
-        "facility_prefix": facility_prefix,
+        "project_name": project_name,
         "registry_url": registry.get("url") or "",
         "image_source": image_source,
         "services": services,
@@ -1539,6 +1525,41 @@ def render_web_terminals(
         # can gate the label block on plain truthiness.
         "auth_env_digest": auth_env_digest or "",
         "auth_env_digest_label": AUTH_ENV_DIGEST_LABEL,
+        # The history page's carriers into the sidecar, as `KEY=value` lines.
+        # Inline environment, not `.env.auth`: they are configuration, never a
+        # secret, and a changed line is a changed service definition, which
+        # recreates the sidecar on the next `osprey up` under every compose
+        # implementation. Empty unless the page is deployed.
+        "history_carriers": history_carriers(config),
+        # The nginx service reads the history page's gate secret from this
+        # file, and carries the digest label that recreates it when the file
+        # is minted anew. Empty unless the page is deployed, because the file
+        # exists only then and compose refuses an `env_file` that does not.
+        "nginx_history_gate_file": (
+            telemetry_credentials.HISTORY_GATE_FILE
+            if telemetry_config.history_page_deployed(config)
+            else ""
+        ),
+        "nginx_cred_digest_env": telemetry_credentials.digest_env_name("nginx"),
+        # A terminal emits to the telemetry gateway exactly when the
+        # deployment runs one, and is then handed its own login file. The
+        # prefix is empty otherwise, so the template gates both the entry and
+        # the label on plain truthiness.
+        "telemetry_sender_file_prefix": (
+            telemetry_credentials.SENDER_FILE_PREFIX
+            if telemetry_config.gateway_deployed(config)
+            else ""
+        ),
+        "telemetry_cred_digests": dict(telemetry_cred_digests or {}),
+        "telemetry_cred_digest_label": telemetry_credentials.DIGEST_LABEL,
+        # Where a terminal reaches the gateway: terminals share the host's
+        # network namespace, so the address the gateway publishes on. Empty
+        # without a gateway, so the template gates the pair on truthiness.
+        "telemetry_gateway_address": (
+            list(telemetry_config.gateway_address(config, bridge=False))
+            if telemetry_config.gateway_deployed(config)
+            else []
+        ),
         # The variable name this overlay ASSIGNS the per-owner control-context
         # directory to, handed to the template rather than spelled there: the
         # readers resolve their state directory through this same constant, and
@@ -1588,7 +1609,7 @@ def render_web_terminals(
         # unconditionally and gated in the template, so an unset value emits no
         # env line and the page keeps its built-in fallbacks.
         "web_theme": str(as_dict(root.get("web")).get("theme") or ""),
-        "web_app_name": resolve_facility_name(root, ""),
+        "web_app_name": facility_name,
         # The proxy names that hold a value, in the order PROXY_ENV_NAMES
         # spells them, so the render does not depend on the caller's order.
         "proxy_env_names": tuple(name for name in PROXY_ENV_NAMES if name in proxy_env_names),
@@ -1613,6 +1634,20 @@ def render_web_terminals(
             repo_relative_mount_source(mirror_path) if mirror_path is not None else ""
         ),
         "ariel_mirror_gid": str(ariel_mirror_gid) if ariel_mirror_gid is not None else "",
+        # The ONE host directory every container that runs the composite appends
+        # its model logs to, mounted into each terminal whenever the deployment
+        # configures a simulated target. Empty string otherwise, so the
+        # template gates on plain truthiness.
+        "simulator_log_source": (
+            repo_relative_mount_source(SIMULATOR_LOG_DIR_RELPATH)
+            if simulated_target_configured(root)
+            else ""
+        ),
+        "simulator_log_relpath": SIMULATOR_LOG_DIR_RELPATH,
+        # The ONE host directory guarded runs keep their per-target locks in,
+        # mounted into every terminal: each runs the agent, and a run in any
+        # of them has to contend for the same lock.
+        "guarded_run_source": repo_relative_mount_source(guarded_run_relpath()),
         **auth_tls_ctx,
     }
 
@@ -1632,6 +1667,8 @@ def render_web_terminals(
         "url_mount_root": URL_MOUNT_ROOT,
         "url_mount_root_pattern": re.escape(URL_MOUNT_ROOT),
         **auth_tls_ctx,
+        **_reader_origin_context(root),
+        **_history_location_context(root, external_origin),
     }
     landing_cfg = as_dict(web_terminals.get("landing"))
     # Which users reach their terminal by opening a `?token=` URL rather than by
@@ -1653,7 +1690,7 @@ def render_web_terminals(
 
     token_login_names = frozenset(token_login_users(root))
     landing_ctx = {
-        "facility_name": resolve_facility_name(root, ""),
+        "facility_name": facility_name,
         "groups": _build_groups(
             landing_cfg, resolved_users, token_login_names, sign_in_url=ENTRY_PATH
         ),
@@ -1696,6 +1733,14 @@ def render_web_terminals(
         # none in hand (the scaffold path) returns exactly the three artifacts
         # it always did, byte for byte.
         **secret_templates,
+        # Under the predicate that renders the history location's `include`,
+        # and nothing else: the snippet holds a variable reference, not a value,
+        # so a render needs no secret in hand to write it.
+        **(
+            {_history_gate_template_path(): _history_gate_template_content()}
+            if nginx_ctx["history_location"]
+            else {}
+        ),
         **identity_module,
     }
 
@@ -1819,6 +1864,62 @@ _EXTERNAL_ORIGIN_RE = re.compile(
     r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
     r"(?::(?P<port>\d+))?"
 )
+
+
+def history_carriers(config: Any) -> list[str]:
+    """The sidecar's history-page carriers, one ``KEY=value`` line each.
+
+    Rendered only when :func:`~osprey.deployment.telemetry_config.history_page_deployed`
+    holds; empty otherwise, so a deployment without the page renders exactly
+    what it did before. The variable names come from
+    :mod:`~osprey.services.auth_sidecar.roster_env`, which the sidecar reads
+    them back through:
+
+    * the readers' origin, where a login may return to ``/history/``;
+    * ``own`` or ``all`` per roster entry (default ``own``);
+    * a marker per role whose ``history`` is ``all``;
+    * every reader's name, each reader's tables, and the IdP identity of each
+      reader that signs in without a roster entry.
+
+    Args:
+        config: The parsed facility config.
+
+    Returns:
+        The lines, in a fixed order, for the template to quote and emit.
+    """
+    if not telemetry_config.history_page_deployed(config):
+        return []
+    from osprey.deployment.telemetry_store.accounts import reader_scopes
+
+    root = as_dict(config)
+    web_terminals = as_dict(as_dict(root.get("modules")).get("web_terminals"))
+    lines = [f"{HISTORY_ORIGIN_VAR}={reader_origin(config).origin}"]
+
+    users = web_terminals.get("users")
+    for user in users if isinstance(users, list) else []:
+        name = user if isinstance(user, str) else as_dict(user).get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        stated = as_dict(user).get("history") if isinstance(user, dict) else None
+        value = HISTORY_ALL if stated == HISTORY_ALL else "own"
+        lines.append(f"{ROSTER_HISTORY_VAR_PREFIX}{env_var_suffix(name)}={value}")
+
+    roles = as_dict(as_dict(web_terminals.get("authorization")).get("roles"))
+    for role in sorted(roles):
+        if isinstance(role, str) and as_dict(roles[role]).get("history") == HISTORY_ALL:
+            lines.append(f"{ROLE_HISTORY_VAR_PREFIX}{env_var_suffix(role)}={HISTORY_ALL}")
+
+    scopes = reader_scopes(config)
+    lines.append(f"{READERS_VAR}={','.join(scope.name for scope in scopes)}")
+    for scope in scopes:
+        suffix = env_var_suffix(scope.name)
+        lines.append(f"{READER_TABLES_VAR_PREFIX}{suffix}={','.join(scope.tables)}")
+    for entry in telemetry_config.readers(config):
+        entry = as_dict(entry)
+        name, subject = entry.get("name"), entry.get("oidc_subject")
+        if isinstance(name, str) and isinstance(subject, str) and subject.strip():
+            lines.append(f"{READER_SUBJECT_VAR_PREFIX}{env_var_suffix(name)}={subject.strip()}")
+    return lines
 
 
 def origin_host(origin: str) -> str:
@@ -2065,6 +2166,153 @@ def deployment_origin(config: Any) -> DeploymentOrigin:
     )
 
 
+def reader_origin(config: Any) -> DeploymentOrigin:
+    """The origin a browser reaches the readers' pages on, in parts.
+
+    The readers' origin is a second server of the web tier's nginx, on its own
+    port. Every absolute URL that names it — the printed link, the documented
+    one and the redirect a bare bookmark is healed with — is built from this
+    one derivation, so none of them can land somewhere the others do not.
+
+    Args:
+        config: The rendered deployment config (``build/config.yml`` as loaded).
+
+    Returns:
+        The :class:`DeploymentOrigin` whose ``origin`` is
+        ``modules.web_terminals.reader_origin`` verbatim when it is set;
+        otherwise ``<scheme>://<deploy.fqdn>:<reader port>``, ``https`` with
+        ``tls.enabled`` and ``http`` without. The port is always spelled out:
+        the readers' origin never sits on a scheme's default port.
+
+    Raises:
+        ValueError: If ``modules.web_terminals.reader_origin`` is set to
+            something that is not an origin; if it is unset while
+            ``modules.web_terminals.external_origin`` is set, because whatever
+            stands in front of this nginx is then what browsers reach and
+            nothing here can name its address for the readers either; if it is
+            unset and ``deploy.fqdn`` is missing or is not a host; or if
+            ``modules.web_terminals.reader_port`` is not a port.
+    """
+    root = as_dict(config)
+    web_terminals = as_dict(as_dict(root.get("modules")).get("web_terminals"))
+    stated = web_terminals.get("reader_origin")
+    if stated is not None:
+        match = _EXTERNAL_ORIGIN_RE.fullmatch(stated.strip()) if isinstance(stated, str) else None
+        if match is None:
+            raise ValueError(
+                "modules.web_terminals.reader_origin must be scheme://host[:port] and "
+                f"nothing else (no path, no trailing slash), got {stated!r}"
+            )
+        return _origin_from_match(match)
+    if _configured_external_origin(root) is not None:
+        raise ValueError(
+            "modules.web_terminals.external_origin is set and "
+            "modules.web_terminals.reader_origin is not. With an external origin the "
+            "address browsers reach the readers' pages on cannot be derived either; "
+            "set reader_origin to it (scheme://host[:port])"
+        )
+    host = str(as_dict(root.get("deploy")).get("fqdn") or "").strip()
+    if not host:
+        raise ValueError(
+            "deploy.fqdn is required to name the readers' origin of the telemetry "
+            "store. Set it, or set modules.web_terminals.reader_origin to the address "
+            "browsers reach the readers' pages on"
+        )
+    scheme = "https" if _tls_enabled(web_terminals) else "http"
+    match = _EXTERNAL_ORIGIN_RE.fullmatch(f"{scheme}://{host}:{reader_port(root)}")
+    if match is None:
+        raise ValueError(
+            f"deploy.fqdn {host!r} is not a host. Set it to a DNS host name or IPv4 "
+            "address, or set modules.web_terminals.reader_origin to the address "
+            "browsers reach the readers' pages on"
+        )
+    return _origin_from_match(match)
+
+
+def serves_reader_origin(config: Any) -> bool:
+    """Whether this deployment's nginx carries the readers' server.
+
+    It does when there is a store to read and a web tier to serve it from.
+    """
+    root = as_dict(config)
+    web_terminals = as_dict(as_dict(root.get("modules")).get("web_terminals"))
+    return bool(web_terminals.get("enabled")) and store_deployed(root)
+
+
+#: How long past the store's own query limit nginx keeps waiting for an answer.
+#: The store sends nothing until a query has finished, and it is the store's
+#: limit that should end a slow one, in the store's words.
+_READER_READ_GRACE_SECONDS = 10
+
+
+def _reader_origin_context(root: dict[str, Any]) -> dict[str, Any]:
+    """What ``nginx.conf.j2`` renders the readers' server from.
+
+    Config only: no file, no clock and no running store is asked, so every
+    render of one config writes the same server — the script hash included,
+    which is a constant keyed by the store image's tag.
+
+    Returns:
+        ``reader_server`` false and nothing else when the deployment serves no
+        readers' origin. Otherwise the port the server listens on, the loopback
+        port the store answers on, the read timeout, the redirect a bare
+        ``/telemetry/play`` is healed with (relative, so it keeps the origin
+        the browser is on; the endpoint it names is the resolved origin's), and
+        the query page's script hash — empty for a store image this code has
+        not read, which serves no query page.
+
+    Raises:
+        ValueError: As :func:`reader_origin`, and for a store port or limit
+            that cannot be used.
+    """
+    if not serves_reader_origin(root):
+        return {"reader_server": False}
+    origin = reader_origin(root).origin
+    return {
+        "reader_server": True,
+        "reader_port": reader_port(root),
+        "reader_store_port": store_port(root),
+        "reader_read_timeout": store_limits(root)["seconds"] + _READER_READ_GRACE_SECONDS,
+        "reader_play_redirect": reader_play_url(origin)[len(origin) :],
+        "reader_play_script_sha256": play_script_sha256(root) or "",
+    }
+
+
+def _history_location_context(root: dict[str, Any], terminal_origin: str) -> dict[str, Any]:
+    """What ``nginx.conf.j2`` renders the readers' history locations from.
+
+    Args:
+        root: The rendered deployment config.
+        terminal_origin: The origin the terminals and their sign-in are served
+            on — ``external_origin`` when it is set, the derived one otherwise.
+            Never empty when the page is deployed, because the page implies the
+            sidecar and the sidecar implies an origin.
+
+    Returns:
+        ``history_location`` false and nothing else when the page is not
+        deployed. Otherwise the loopback port the history app is published on,
+        the name the gate snippet is included under, and the sign-in URL a
+        signed-out navigation is sent to, up to the ``next`` value's path: the
+        terminal origin's entry page, with the readers' origin percent-encoded
+        as the start of ``next``. Absolute, because the readers' origin has no
+        sign-in of its own; the template appends the allowlisted path.
+    """
+    if not telemetry_config.history_page_deployed(root):
+        return {"history_location": False}
+    # Imported function-locally: the route modules load the sidecar's web
+    # framework, which a render has no other use for.
+    from osprey.services.auth_sidecar.routes.entry import ENTRY_PATH
+    from osprey.services.auth_sidecar.routes.login import FIELD_NEXT
+
+    origin = reader_origin(root).origin
+    return {
+        "history_location": True,
+        "history_port": telemetry_config.history_port(root),
+        "history_gate_snippet": _HISTORY_GATE_SNIPPET,
+        "history_sign_in": (f"{terminal_origin}{ENTRY_PATH}?{FIELD_NEXT}={quote(origin, safe='')}"),
+    }
+
+
 def deployment_external_origin(config: Any) -> str:
     """The origin a browser reaches this deployment's web terminals on.
 
@@ -2152,12 +2400,8 @@ def _user_card(resolved_user: dict[str, Any], token_login_names: frozenset[str])
     every card has an answer to — an absent key would read as "no posture"
     rather than "signs in".
 
-    A ``sublabel`` key is added only when the entry resolved to a persona, so a
-    no-persona roster keeps producing exactly the same optional-key shape
-    landing.html.j2 rendered before.
-
-    One case drops the badge even though a persona is in effect: when the
-    persona name and the roster name are the same word. The badge exists to say
+    A ``sublabel`` key carries the persona name; the badge is present unless
+    the persona and roster names are the same word. The badge exists to say
     which tier a login belongs to, and a card reading ``ariel`` above a pill
     reading ``ARIEL`` says nothing the label did not — the common shape for a
     single-tenant service persona, where the roster entry and the persona are
@@ -2174,9 +2418,9 @@ def _user_card(resolved_user: dict[str, Any], token_login_names: frozenset[str])
             this deployment, membership in which is this card's ``token_login``.
 
     Returns:
-        ``{"label", "url", "token_login"}`` for a persona-less user, plus
-        ``"sublabel"`` (the persona name) when ``persona`` is a non-empty string
-        that differs from the user's own name.
+        ``{"label", "url", "token_login"}``, plus ``"sublabel"`` (the persona
+        name) when ``persona`` is a non-empty string that differs from the
+        user's own name.
     """
     from osprey.interfaces.common_middleware import url_mount_prefix
 
@@ -2209,10 +2453,8 @@ def _build_groups(
     no deploy-host needs baking into the landing cards themselves. When a user
     resolves to a persona (:func:`resolve_personas` returns a non-``None``
     ``persona``), that card also carries an optional ``sublabel`` holding the
-    persona name, shown as a secondary badge on the card; users with no persona
-    in effect (every bare-string roster) omit the key entirely, so
-    landing.html.j2's ``{% if item["sublabel"] %}`` guard renders them without
-    one. Every user card also carries ``token_login`` (see :func:`_user_card`),
+    persona name, shown as a secondary badge on the card (see :func:`_user_card`
+    for when it is omitted). Every user card also carries ``token_login`` (see :func:`_user_card`),
     the auth posture that user's terminal is entered under.
     ``{type: "links", label, links}`` passes ``links`` straight through as
     ``items`` (link cards carry neither a ``sublabel`` nor a posture). Unrecognized/malformed
@@ -2893,6 +3135,22 @@ def _scope_list(value: Any) -> str | None:
 #: not a cosmetic clash — the user's terminal would bind, read-write, the very
 #: host directory that service writes its own records into, so the user could
 #: read and rewrite the trail of the component that audits them.
+#:
+#: A module constant has no config in scope, so the set is every name the
+#: generator CAN produce rather than the ones this deployment does:
+#:
+#: * a lane queueserver's identity for every lane key (``queueserver``,
+#:   ``<lane>-queueserver``), and any other ``<name>-queueserver`` besides, so a
+#:   roster name can never claim the directory of a lane that does not exist
+#:   yet — the telemetry gateway trusts what a queueserver's directory says
+#:   about whose plan it ran;
+#: * the history page's;
+#: * every name the telemetry store's own accounts, roles, profiles and quotas
+#:   carry, and the ``view_`` prefix of its view users.
+_QUEUESERVER_AUDIT_IDENTITIES = tuple(
+    "queueserver" if lane == LANE_ONE else f"{lane.replace('_', '-')}-queueserver"
+    for lane in LANE_KEYS
+)
 _RESERVED_AUDIT_IDENTITY_RE = re.compile(
     "^(?:"
     + "|".join(
@@ -2900,6 +3158,10 @@ _RESERVED_AUDIT_IDENTITY_RE = re.compile(
             re.escape(AUTH_SIDECAR_AUDIT_IDENTITY),
             rf"{re.escape(DISPATCH_WORKER_SERVICE_PREFIX)}-\d+",
             *(re.escape(identity) for identity in sorted(FIXED_SERVICE_AUDIT_IDENTITIES.values())),
+            *(re.escape(identity) for identity in _QUEUESERVER_AUDIT_IDENTITIES),
+            r".+-queueserver",
+            *(re.escape(name) for name in sorted({HISTORY_SERVICE, *RESERVED_ACCOUNT_NAMES})),
+            rf"{re.escape(RESERVED_ACCOUNT_PREFIX)}.*",
         ]
     )
     + ")$"
@@ -2960,7 +3222,10 @@ def _check_roster_audit_identities(services: list[dict[str, Any]]) -> None:
             f"modules.web_terminals.users {', '.join(repr(name) for name in reserved)} "
             "collide with a service's own audit identity (the auth sidecar writes "
             f"var/audit/{AUTH_SIDECAR_AUDIT_IDENTITY}/, worker <n> writes "
-            f"var/audit/{DISPATCH_WORKER_SERVICE_PREFIX}-<n>/). Each user's container "
+            f"var/audit/{DISPATCH_WORKER_SERVICE_PREFIX}-<n>/, a queueserver writes "
+            "var/audit/[<lane>-]queueserver/) or with a name the telemetry store "
+            f"keeps for its own accounts ({RESERVED_ACCOUNT_PREFIX}*, "
+            f"{', '.join(sorted(RESERVED_ACCOUNT_NAMES))}). Each user's container "
             "binds var/audit/<user>/ read-write, so such a user could read and "
             "rewrite the audit trail of the component that records them. Rename the "
             "roster entry."

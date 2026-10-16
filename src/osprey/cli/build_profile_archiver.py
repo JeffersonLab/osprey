@@ -36,14 +36,11 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from osprey.connectors.honesty import VA_MOCK_ARCHIVER_WHY, pairing_in_profile
-from osprey.connectors.types import (
-    INVENTED_HISTORY_TYPES,
-    MONGODB_ARCHIVER,
-    resolve_control_system_type,
-)
+from osprey.connectors.types import MONGODB_ARCHIVER, resolve_control_system_type
 from osprey.errors import BuildProfileError
 from osprey.port_layout import default_port
 from osprey_connectors.connection import ENV_NAME_RE
+from osprey_connectors.honesty import _invents_history
 
 #: Block compressors ``mongod`` accepts for a WiredTiger collection. The value
 #: reaches the container as a command flag and the collection inherits it at
@@ -506,9 +503,13 @@ def _invented_history_type(config: Any) -> str:
         if _CONTROL_SYSTEM_TYPE_KEY in config:
             stated.append(config[_CONTROL_SYSTEM_TYPE_KEY])
 
+    # A spelling whose section serves the simulator in process is skipped: the
+    # predicate does not refuse that venue, so it is not what is being refused.
+    rendered = _expand_dotted(config).get(_CONTROL_SYSTEM_SECTION)
+    section = rendered if isinstance(rendered, dict) else {}
     for value in stated:
-        resolved: str = resolve_control_system_type({_TYPE_LEAF: value})
-        if resolved in INVENTED_HISTORY_TYPES:
+        if _invents_history({**section, _TYPE_LEAF: value}):
+            resolved: str = resolve_control_system_type({_TYPE_LEAF: value})
             return resolved
 
     # Unreachable behind the verdict this names, and still resolver-derived so
@@ -675,13 +676,18 @@ def _duplicate_derived_key_errors(config: Any) -> list[str]:
 def _expand_dotted(config: Any) -> dict[str, Any]:
     """The nested tree a ``config:`` block addresses, dotted keys folded in.
 
-    Built the way the renderer builds it — every dotted key is a path to a leaf,
-    and a nested mapping addresses the same leaves — so a lookup here answers
-    "does this config reach that key", whichever of the legal spellings was
-    used. Order-independent by construction: it records only *whether* a path is
-    addressed, never which spelling would win, because which one wins is
-    decided at render time by key order and is exactly what must not be relied
-    on.
+    Every dotted key is a path to a leaf, and a nested mapping addresses the
+    same leaves, so a lookup here answers "does this config reach that key",
+    whichever of the legal spellings was used.
+
+    A leaf stated in more than one spelling holds the value written last in key
+    order. That is the value
+    :func:`osprey.utils.config_writer.config_update_fields` applies last, and so
+    the one the render writes; value checks read it for that reason.
+
+    A mapping merges into what earlier keys addressed, so a path any spelling
+    addresses stays present, including one a later mapping replaces in the
+    render. Presence reads rely on that.
     """
     tree: dict[str, Any] = {}
     if not isinstance(config, dict):
@@ -703,7 +709,7 @@ def _expand_dotted(config: Any) -> dict[str, Any]:
             merged = existing if isinstance(existing, dict) else {}
             node[leaf] = {**merged, **_expand_dotted(value)}
         else:
-            node.setdefault(leaf, value)
+            node[leaf] = value
     return tree
 
 

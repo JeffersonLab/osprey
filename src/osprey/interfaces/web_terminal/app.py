@@ -60,7 +60,7 @@ from osprey.interfaces.web_terminal.operator_session import OperatorRegistry
 from osprey.interfaces.web_terminal.ownership import OwnershipStoreError
 from osprey.interfaces.web_terminal.pty_manager import PtyRegistry
 from osprey.interfaces.web_terminal.routes import router
-from osprey.interfaces.web_terminal.routes.agent_activity import ACTIVITY_RING_MAX
+from osprey.interfaces.web_terminal.routes.agent_activity import ACTIVITY_BUFFER_MAX
 from osprey.interfaces.web_terminal.sidecar_status import (
     PANEL_STATUS_DIRNAME,
     SidecarStatus,
@@ -2055,9 +2055,9 @@ def _create_lifespan(
         app.state.broadcaster = FileEventBroadcaster()
         app.state.active_panel = None
         # Bounded history of agent-activity events. The SSE stream only reaches
-        # browsers that are already connected, so the ring is what a browser
+        # browsers that are already connected, so the buffer is what a browser
         # opened (or reloaded) mid-session reads to catch up on recent actions.
-        app.state.agent_activity_ring = deque(maxlen=ACTIVITY_RING_MAX)
+        app.state.agent_activity_buffer = deque(maxlen=ACTIVITY_BUFFER_MAX)
         # Optional human-readable deployment name shown in the header so
         # otherwise-identical web terminals are distinguishable. The
         # ``OSPREY_WEB_APP_NAME`` environment variable takes precedence over
@@ -2330,10 +2330,6 @@ def _create_lifespan(
             inject_provider_env,
             load_provider_spec,
         )
-        from osprey.build.claude_code_telemetry import (
-            ObservabilityCredentialError,
-            telemetry_creds_are_store_issued,
-        )
 
         _spec = None
         if app.state.config_path:
@@ -2351,29 +2347,7 @@ def _create_lifespan(
             # (the project dir IS the render), which repo_root_for_config
             # answers with the same call.
             _env_dir = repo_root_for_config(app.state.config_path)
-            try:
-                _spec = load_provider_spec(_project_dir, env_dir=_env_dir)
-            except ObservabilityCredentialError as exc:
-                # Keep this arm ahead of any broader one added later: it
-                # subclasses ValueError.
-                #
-                # Resolving the provider resolves the telemetry block with it,
-                # so a store-issued credential no deploy has minted yet arrives
-                # here as a failure to read the provider — and the server exits
-                # at startup over it. A terminal nobody can open is the worse
-                # outcome: serve without telemetry and say so. Anything else —
-                # a credential an operator has to set, or one that is simply
-                # blank — keeps raising and still refuses the start.
-                if not telemetry_creds_are_store_issued(exc):
-                    raise
-                logger.warning(
-                    "Telemetry is off for this server — `osprey up` issues %s when it starts "
-                    "the telemetry store and passes them into each terminal container, so "
-                    "this server is either running outside a deployment or against a store "
-                    "that was never started",
-                    ", ".join(exc.unresolved_vars),
-                )
-                _spec = load_provider_spec(_project_dir, env_dir=_env_dir, include_telemetry=False)
+            _spec = load_provider_spec(_project_dir, env_dir=_env_dir)
             if _spec:
                 # The SPEC is read from the render; the ENV is read from the
                 # repo. inject_provider_env's bulk `.env` passthrough is given
