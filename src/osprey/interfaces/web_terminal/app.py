@@ -497,7 +497,7 @@ DEFAULT_RAIL_POSITION = "left"
 #: this again", or completing the tour). ``always``: the invite shows on
 #: every load and offers no permanent dismissal — the shared read-only
 #: screen case. ``never``: no automatic invite; the tour stays reachable
-#: from the rail's Tour control and the command palette.
+#: from the rail's More menu and the command palette.
 TOUR_POLICIES = ("once", "always", "never")
 DEFAULT_TOUR_POLICY = "once"
 
