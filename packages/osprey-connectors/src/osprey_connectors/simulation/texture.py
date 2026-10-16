@@ -443,7 +443,7 @@ class TextureModel(LUMEModel):
     def _pulse(self, address: str) -> Mapping[str, Any] | None:
         """The ``pulse`` record of a waveform channel, ``None`` when it has none."""
         channel = self._channels.get(address)
-        if channel is None or channel_value_type(channel) != "waveform":
+        if channel is None or not values.is_waveform(channel_value_type(channel)):
             return None
         return (self._seeds.get(address) or {}).get("pulse") or None
 
@@ -479,7 +479,7 @@ class TextureModel(LUMEModel):
                 outputs[name] = self.clamp(
                     name, float(held) + float(self.motion(name, t_s, base=float(held)))
                 )
-            elif channel_value_type(channel) == "waveform":
+            elif values.is_waveform(channel_value_type(channel)):
                 record = self._pulse(name)
                 array = held if record is None else self._pulse_trace(name, record, t_s)
                 outputs[name] = np.asarray(array, dtype=np.float64).reshape(

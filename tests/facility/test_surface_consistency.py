@@ -29,11 +29,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from osprey.facility.validate import vocabulary
-from osprey.services.archiver_recorder.config import (
-    WAVEFORM_VALUE_TYPE,
-    ChannelSet,
-    resolve_channel_addresses,
-)
+from osprey.services.archiver_recorder.config import ChannelSet, resolve_channel_addresses
+from osprey_connectors.simulation.values import is_waveform
 from tests.facility.test_cf_view_parity import addition_addresses, pre_line_queries
 
 if TYPE_CHECKING:
@@ -107,7 +104,7 @@ def recorder_gaps(
 ) -> dict[str, list[str]]:
     """Where the recorder's set disagrees with the section's facility channels."""
     channels = [c for c in facility["channels"] if address_section(c["id"]) == section]
-    waveforms = {c["id"] for c in channels if c.get("value_type") == WAVEFORM_VALUE_TYPE}
+    waveforms = {c["id"] for c in channels if is_waveform(c.get("value_type"))}
     scalars = {c["id"] for c in channels} - waveforms
     recorded_scalars = {a for a in channel_set.scalars if address_section(a) == section}
     recorded_waveforms = {a for a in channel_set.waveforms if address_section(a) == section}

@@ -54,6 +54,7 @@ from osprey.mcp_server.control_system.target_eligibility import endpoint_is_live
 # library and nothing else, no Channel Access stack, no PVA, no Mongo driver.
 from osprey_connectors.connection import read_connection_settings
 from osprey_connectors.ipc.verification import derive_endpoints
+from osprey_connectors.simulation.values import is_waveform
 from osprey_connectors.simulation.view import (
     ADDRESSES_FILE,
     VARIABLES_FILE,
@@ -251,10 +252,6 @@ def read_control_system_type(config_path: Path) -> str:
     return _control_system_type(_load_mapping(config_path), config_path)
 
 
-#: The value type whose readings are traces rather than one number.
-WAVEFORM_VALUE_TYPE = "waveform"
-
-
 class ChannelSet(Sequence[str]):
     """The addresses to record, in view order, partitioned by value type.
 
@@ -372,7 +369,7 @@ def _waveform_addresses(view: SimulatorView, addresses: Sequence[str], root: Pat
                 channel = view.channel(address)
             except KeyError:
                 continue
-            if channel.value_type == WAVEFORM_VALUE_TYPE:
+            if is_waveform(channel.value_type):
                 waveforms.append(address)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise RecorderConfigError(

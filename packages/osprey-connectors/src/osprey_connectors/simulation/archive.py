@@ -489,7 +489,7 @@ class ArchiveComposite:
         return (channel.get("value_type") or channel_values.DEFAULT_VALUE_TYPE) == "float"
 
     def _is_waveform(self, address: str) -> bool:
-        return self._channels[address].get("value_type") == "waveform"
+        return channel_values.is_waveform(self._channels[address].get("value_type"))
 
     def _drive(self, address: str, times: np.ndarray) -> np.ndarray:
         """A pulse source's level: held, moved by its archiver events, as a number.
@@ -630,7 +630,7 @@ def build(
     pulses = {
         address: seed["pulse"]
         for address in archived
-        if records[address].get("value_type") == "waveform"
+        if channel_values.is_waveform(records[address].get("value_type"))
         and (seed := view.seed(address)) is not None
         and seed.get("pulse") is not None
     }

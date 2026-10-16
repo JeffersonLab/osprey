@@ -23,6 +23,8 @@ from typing import Any
 VALUE_TYPES = ("float", "int", "bool", "enum", "string", "waveform")
 DEFAULT_VALUE_TYPE = "float"
 DEFAULT_BOOL_OPTIONS = ("FALSE", "TRUE")
+#: The value type of a channel that carries a flat ``list[float]`` trace.
+WAVEFORM = "waveform"
 
 __all__ = [
     "DEFAULT_BOOL_OPTIONS",
@@ -30,8 +32,14 @@ __all__ = [
     "VALUE_TYPES",
     "channel_labels",
     "coerce",
+    "is_waveform",
     "zero",
 ]
+
+
+def is_waveform(value_type: str | None) -> bool:
+    """Whether a channel of ``value_type`` carries a trace rather than a scalar."""
+    return value_type == WAVEFORM
 
 
 def _refuse(value: Any, value_type: str, reason: str) -> ValueError:
