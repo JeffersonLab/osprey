@@ -60,6 +60,24 @@ menu (or the command palette) at any time. The choice is remembered per
 browser, and each user's own pick wins over the configured default. (Pair it
 with the retro theme for a navy-and-teal terminal — see :doc:`theming`.)
 
+Taking panels off the rail
+--------------------------
+
+**Remove from rail** on a rail entry's or a tile's right-click menu, the
+entry's **×** corner, or :kbd:`Delete` on a focused entry takes the panel off
+the rail and closes its tile. A notice at the foot of the page says so for
+three seconds and offers **Undo**, which puts the entry back where it was and
+reopens the tile if it was open. **Close terminal tile** offers the same Undo.
+A panel the agent takes off the rail, or that another tab removes, goes without
+a notice.
+
+A panel can also be on screen without a rail entry. SYSTEM is one in the
+``control-assistant`` preset (``web.panels.system-health.hidden: true``): it
+opens from the status bar's health dot and from **⋯ More** at the foot of the
+rail, and its tile's right-click menu offers **Pin to rail** in place of
+Remove. Closing such a tile, or reloading the page, puts it away until it is
+opened again. Every panel stays in the **+** menu and the command palette.
+
 When a panel stops answering
 ----------------------------
 

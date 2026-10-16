@@ -643,9 +643,9 @@ screen. ``web.tour`` decides who is offered it, and how often:
        This is the shared-screen posture: a wall display nobody owns should
        still greet the next person who walks up to it.
    * - ``never``
-     - No invite. The tour itself stays reachable from the rail's **Tour**
-       control and the command palette, so turning the invite off does not
-       take the tour away.
+     - No invite. The tour itself stays reachable from **Take tour** in the
+       rail's **⋯ More** menu and from the command palette, so turning the
+       invite off does not take the tour away.
 
 An unrecognised value is reported in the log and treated as ``once``: a typo
 costs you the setting, never the terminal's startup.
