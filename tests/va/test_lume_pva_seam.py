@@ -62,7 +62,13 @@ pytest.importorskip(
     reason="lume-pva-apg installs on linux/x86_64 only; run this module through the live-CA gate",
 )
 pytest.importorskip("p4p", reason="the PVAccess client ships with lume-pva-apg's pva extra")
-pytest.importorskip("aioca", reason="the Channel Access client is aioca")
+
+# Found, never imported at module level: importing aioca loads its libca at
+# once, and every spawned server process imports this module again, where that
+# libca beside pcaspy's own drops the client on every write. The client
+# helpers import aioca where they use it, in the pytest process alone.
+if importlib.util.find_spec("aioca") is None:
+    pytest.skip("the Channel Access client is aioca", allow_module_level=True)
 
 
 def _free_port() -> str:
