@@ -94,6 +94,7 @@ from pathlib import Path
 from typing import Any
 
 import _elements
+import _line
 import _mml
 import _standin
 
@@ -733,8 +734,6 @@ def write_sources(tree: Path) -> None:
     whole, places LTB and BTS gain their span, and the wired channels' seed
     nominals are removed. Every other record keeps its text.
     """
-    import _line
-
     decks = {section: read_deck(tree, section) for section in SECTIONS}
     _line._merge(
         tree / "models.yaml",
