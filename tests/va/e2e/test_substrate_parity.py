@@ -209,6 +209,17 @@ MIN_COLLECTED_TESTS = 8
 #: The captured nominal reads of the demo, taken with every reading's noise
 #: zeroed.
 NOMINAL_GOLDEN = REPO_ROOT / "tests" / "facility" / "golden" / "nominal_va.json"
+#: The injector element table: one demo channel per row, in its third column.
+INJECTOR_TABLE = REPO_ROOT / "scripts" / "facility_demo" / "injector_elements.tsv"
+
+
+def _golden_predates(table: Path, golden: Path) -> frozenset[str]:
+    """The demo channels ``table`` names that ``golden`` holds no capture of."""
+    captured = json.loads(golden.read_text(encoding="utf-8"))["channels"]
+    rows = table.read_text(encoding="utf-8").splitlines()[1:]
+    named = {row.split("\t")[2] for row in rows if row and not row.startswith("#")}
+    return frozenset(named - set(captured))
+
 
 #: Agreement between the wire and the in-process composite on a channel
 #: without motion, relative to the value's magnitude and never below this.
@@ -222,7 +233,7 @@ CHROMATICITY = frozenset({"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y"})
 
 #: The noisy served channels of the demo: every served address whose seed
 #: declares noise or drift. The transfer line adds none: it carries no seeds.
-EXPECTED_NOISY_CHANNELS = 628
+EXPECTED_NOISY_CHANNELS = 751
 #: The example facility's seeds, keyed by address.
 DEMO_SEEDS = REPO_ROOT / "src" / "osprey" / "templates" / "facilities" / "example" / "seeds.yaml"
 #: The address prefix of the demo's transfer line, the physics model solved single-pass.
@@ -293,6 +304,14 @@ NOMINAL_ADDITIONS: dict[str, frozenset[str]] = {
         }
     ),
     "the suite's synthetic string channel": frozenset({e2e_conftest.STRING_CHANNEL}),
+    # The golden captures the demo before it carried the whole injector.
+    "the injector: its element table's channels and the LTB and BTS models' status": frozenset(
+        {
+            "ca:SIM:BTS:STATUS",
+            "ca:SIM:LTB:STATUS",
+            *_golden_predates(INJECTOR_TABLE, NOMINAL_GOLDEN),
+        }
+    ),
     # The golden captures the demo before it carried the storage ring's injection septa.
     "the injection septa: their supplies and the pulse trace": frozenset(
         {
@@ -655,11 +674,14 @@ def test_a_scenario_switch_returns_every_paired_texture_setpoint_to_its_seed(
     session_view: View,
 ) -> None:
     view = session_view
+    # The write moves each setpoint off its seed by a step, which only a float
+    # setpoint takes; a bool or enum setpoint has labels, not a magnitude.
     pairs = {
         address: str(channel.pair)
         for address in view.served
         if (channel := view.channel(address)).owner == TEXTURE
         and channel.role == "setpoint"
+        and channel.value_type == "float"
         and channel.pair not in (None, address)
     }
     seeds = {address: float(view.seed(address)["nominal"]) for address in pairs}

@@ -225,7 +225,7 @@ def _templates() -> dict[str, RoleTemplate]:
         ("hcm", "HCorrector", 0.02),
         ("vcm", "VCorrector", 0.02),
         ("quad", "Quadrupole", 0.05),
-        ("dipole", "Dipole", 0.1),
+        ("dipole", "Dipole", 0.05),
         ("solenoid", "Solenoid", 0.05),
         ("bucking", "BuckingCoil", 0.02),
         ("septum", "Septum", 1.0),

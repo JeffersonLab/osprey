@@ -30,6 +30,16 @@ A waveform channel whose seed states ``pulse: {driver, enable}`` reads
 :func:`~osprey_connectors.simulation.pulse.trace` at the read time, scaled by
 the driver's held value and switched by the enable channel's held label, so
 it moves on every read. Every other waveform channel reads its held array.
+
+A channel whose seed states ``gate: {inputs, gated}`` holds its gated value
+while any input holds its blocking label, and its value by the rules above
+otherwise. ``gated`` is typed by the channel: a float holds its value times
+the factor ``gated``, so a gated reading keeps a small residual and its
+motion; a bool or enum holds the label ``gated``; an int holds the integer
+``gated``. An input is read as its own held value, gate included, and an
+input the model does not hold never blocks. The gate is part of the held
+value, so a read, :meth:`TextureModel.held` and every reader built on it --
+the archive seed, a subscription comparing held values -- see it alike.
 """
 
 from __future__ import annotations
@@ -113,6 +123,21 @@ def _linear_terms(linear: Mapping[str, Any]) -> list[tuple[str, float]]:
     return terms
 
 
+def _gate_inputs(inputs: Any) -> list[tuple[str, Any]]:
+    """``(input address, blocking label)`` pairs of a seed's ``gate.inputs``, sorted.
+
+    ``inputs`` is ``{<address>: <blocking_label>}``; a value may also be the
+    record ``{blocking_label: <label>}``.
+    """
+    pairs: list[tuple[str, Any]] = []
+    for address in sorted(inputs or {}, key=str):
+        label = inputs[address]
+        if isinstance(label, Mapping):
+            label = label["blocking_label"]
+        pairs.append((str(address), label))
+    return pairs
+
+
 def channel_variable(channel: Mapping[str, Any], nominal: Any) -> Variable:
     """The LUME variable of one channel of the view's ``variables.json``.
 
@@ -134,7 +159,7 @@ def channel_variable(channel: Mapping[str, Any], nominal: Any) -> Variable:
     read_only = not (channel.get("role") == _SETPOINT and channel.get("writable") is True)
     value_type = channel_value_type(channel)
     unit = channel.get("unit")
-    if value_type in ("bool", "enum"):
+    if value_type in values.LABELLED_TYPES:
         options = values.channel_labels(channel)
         return EnumVariable(
             name=address, options=options, default_value=nominal, read_only=read_only
@@ -207,7 +232,7 @@ class TextureModel(LUMEModel):
         }
         for setpoint, readback in self._echo.items():
             self._nominals[readback] = self._coerce(readback, self._nominals[setpoint])
-        start = {address: self._weighted_sum(address, self._nominals) for address in owned}
+        start = {address: self._derived(address, self._nominals) for address in owned}
         self._variables: dict[str, Variable] = {
             address: channel_variable(self._channels[address], start[address]) for address in owned
         }
@@ -282,7 +307,8 @@ class TextureModel(LUMEModel):
         """Each channel's held value, without motion or clamp.
 
         A ``linear`` channel holds the weighted sum of its inputs' held values;
-        an input the model does not hold counts as zero.
+        an input the model does not hold counts as zero. A ``gate`` channel
+        holds its gated value while any input holds its blocking label.
 
         Args:
             names: Texture-owned addresses.
@@ -293,7 +319,11 @@ class TextureModel(LUMEModel):
         return {name: self._held_value(name) for name in names}
 
     def _held_value(self, address: str) -> Any:
-        return self._weighted_sum(address, self._held)
+        return self._derived(address, self._held)
+
+    def _derived(self, address: str, held: Mapping[str, Any]) -> Any:
+        """A channel's value from ``held``: its weighted sum, then its gate."""
+        return self._gated(address, self._weighted_sum(address, held), held)
 
     def _weighted_sum(self, address: str, held: Mapping[str, Any]) -> Any:
         """``held[address]``, or for a ``linear`` channel the weighted sum of its inputs."""
@@ -301,8 +331,32 @@ class TextureModel(LUMEModel):
         if not linear:
             return held[address]
         return sum(
-            coefficient * float(self._weighted_sum(source, held)) if source in held else 0.0
+            coefficient * float(self._derived(source, held)) if source in held else 0.0
             for source, coefficient in _linear_terms(linear)
+        )
+
+    def _gated(self, address: str, value: Any, held: Mapping[str, Any]) -> Any:
+        """``value``, or the seed's gated value while any ``gate`` input blocks."""
+        gate = self._seeds.get(address, {}).get("gate")
+        if not gate or not self._blocked(gate, held):
+            return value
+        gated = gate["gated"]
+        value_type = channel_value_type(self._channels[address])
+        if value_type == "float":
+            return float(value) * float(gated)
+        if value_type == "int":
+            return int(gated)
+        if value_type in values.LABELLED_TYPES:
+            return self._coerce(address, gated)
+        return value
+
+    def _blocked(self, gate: Mapping[str, Any], held: Mapping[str, Any]) -> bool:
+        """Whether any input of ``gate`` holds its blocking label."""
+        return any(
+            source in held
+            and source in self._channels
+            and self._derived(source, held) == self._coerce(source, label)
+            for source, label in _gate_inputs(gate.get("inputs"))
         )
 
     def set_motion(

@@ -65,6 +65,7 @@ from osprey_connectors.control_system.base import (
 )
 from osprey_connectors.errors import NOT_A_CHANNEL, ChannelNotFoundError
 from osprey_connectors.logger import get_logger
+from osprey_connectors.simulation import LABELLED_TYPES
 from osprey_connectors.simulation.view import (
     VARIABLES_FILE,
     VIEW_RELPATH,
@@ -106,7 +107,6 @@ UDF_SEVERITY = 3
 UDF_STATUS = "UDF"
 
 _RENDERED_CONFIG = "config.yml"
-_LABELLED = ("bool", "enum")
 _REFUSED_BY_SIMULATOR = "CONTROL_SYSTEM_REFUSED"
 
 #: The session-writes journal, under the simulation state directory.
@@ -562,7 +562,7 @@ class VAInProcessConnector(ControlSystemConnector):
         if record is None:
             return value
         value_type = record.get("value_type")
-        if value_type in _LABELLED:
+        if value_type in LABELLED_TYPES:
             from osprey_connectors.simulation import values
 
             options = values.channel_labels(record)
@@ -581,7 +581,7 @@ class VAInProcessConnector(ControlSystemConnector):
         unit = getattr(variable, "unit", None) or record.get("unit") or ""
         severity = composite.output_severity([address])
         labels: list[str] | None = None
-        if record.get("value_type") in _LABELLED:
+        if record.get("value_type") in LABELLED_TYPES:
             from osprey_connectors.simulation import values
 
             labels = values.channel_labels(record)

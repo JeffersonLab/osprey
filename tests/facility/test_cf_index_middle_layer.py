@@ -877,9 +877,21 @@ def _families(document: dict[str, Any]) -> dict[str, list[str]]:
 
 #: The demo's groups by System, each a Family named by its short id.
 DEMO_GROUPS = {
-    "BR": ["BPM", "DIAG", "DIPOLE", "MAG", "QD", "QF"],
-    "BTS": ["BPM", "DIAG", "HCM", "MAG", "VCM"],
-    "LINE": ["BPM", "HCM", "VCM"],
+    "BR": [
+        *("BPM", "DIAG", "DIPOLE", "DIPOLE-RAMP", "KICKER", "MAG"),
+        *("QD", "QD-RAMP", "QF", "QF-RAMP", "SEPTUM", "TV"),
+    ],
+    "BTS": [
+        *("BPM", "DIAG", "DIPOLE", "HCM", "ICT", "MAG"),
+        *("PADDLES", "QD", "QF", "TV", "VCM"),
+    ],
+    "GTL": ["BC", "BPM", "EGUN", "HCM", "ICT", "SHB", "SOL", "TV", "VCM"],
+    "LINE": ["BPM", "HCM", "QD", "QF", "VCM"],
+    "LN": [
+        *("ACC", "BPM", "BUNCHER", "HCM", "ICT", "MASTER"),
+        *("QD", "QF", "SOL", "TV", "VCM", "WATER"),
+    ],
+    "LTB": ["BPM", "DIPOLE", "HCM", "ICT", "QD", "QF", "TV", "VCM"],
     "SR": [
         *("BPM", "DIAG", "DIPOLE", "HCM", "MAG", "QD", "QF", "QFA"),
         *("RF", "SD", "SEPTUM", "SF", "SHD", "SHF", "VAC", "VCM"),
@@ -889,8 +901,11 @@ DEMO_GROUPS = {
 #: The demo's classes no single-class group holds, by System.
 DEMO_DERIVED = {
     "BR": ["BeamCurrentMonitor"],
-    "BTS": ["Quadrupole"],
-    "LINE": ["Quadrupole"],
+    "BTS": [],
+    "GTL": [],
+    "LINE": [],
+    "LN": [],
+    "LTB": [],
     "SR": [
         *("AcceleratingCavity", "BeamCurrentMonitor", "BeamLossMonitor", "Gauge"),
         *("Modulator", "Pump", "Valve"),
@@ -909,7 +924,7 @@ def test_every_demo_group_and_ungrouped_class_is_a_family(
     assert _families(document) == {
         system: sorted([*DEMO_GROUPS[system], *DEMO_DERIVED[system]]) for system in DEMO_GROUPS
     }
-    assert sum(len(families) for families in _families(document).values()) == 40
+    assert sum(len(families) for families in _families(document).values()) == 81
     fields = [
         field
         for system, families in document.items()
@@ -918,8 +933,8 @@ def test_every_demo_group_and_ungrouped_class_is_a_family(
         if not key.startswith("_")
         for field in _fields(family)
     ]
-    assert len(fields) == 1542
-    assert by_address == 1388
+    assert len(fields) == 1699
+    assert by_address == 1417
     assert left_out == 4
     assert document["count"] == len(built_control_assistant.facility["channels"]) - left_out
     assert left_out == sum(
@@ -1067,7 +1082,7 @@ def test_the_demo_database_holds_a_row_per_channel_and_family(
     finally:
         con.close()
 
-    assert counts == (5863, 2955)
+    assert counts == (6266, 3334)
     assert bpm and bpm < diag
     assert quads and quads < magnets
 

@@ -549,11 +549,11 @@ class TestDroppedReferences:
 
 class TestClasses:
     def test_known_classes_join_vocabulary_and_classes_yaml(self) -> None:
-        known = known_classes([{"class": "Kicker", "parent": "Magnet"}])
-        assert {"Quadrupole", "Magnet", "Kicker"} <= known
+        known = known_classes([{"class": "Undulator", "parent": "Magnet"}])
+        assert {"Quadrupole", "Magnet", "Undulator"} <= known
 
     def test_unknown_device_class(self, tmp_path: Path) -> None:
-        files = _tree(**{"records/devices.yaml": [QUAD, {**BPM, "class": "Kicker"}]})
+        files = _tree(**{"records/devices.yaml": [QUAD, {**BPM, "class": "Undulator"}]})
         error = _one(tmp_path, files, "references")
         assert (error.kind, error.record_kind, error.record_id) == (
             "class-unknown",
@@ -565,10 +565,10 @@ class TestClasses:
         files = _tree(
             **{
                 "classes.yaml": [
-                    {"class": "Kicker", "parent": "Magnet"},
-                    {"class": "FastKicker", "parent": "Kicker"},
+                    {"class": "Undulator", "parent": "Magnet"},
+                    {"class": "PlanarUndulator", "parent": "Undulator"},
                 ],
-                "records/devices.yaml": [QUAD, {**BPM, "class": "FastKicker"}],
+                "records/devices.yaml": [QUAD, {**BPM, "class": "PlanarUndulator"}],
             }
         )
         assert _run(tmp_path, files).ok
@@ -577,8 +577,8 @@ class TestClasses:
         files = _tree(
             **{
                 "classes.yaml": [
-                    {"class": "FastKicker", "parent": "Kicker"},
-                    {"class": "Kicker", "parent": "Magnet"},
+                    {"class": "PlanarUndulator", "parent": "Undulator"},
+                    {"class": "Undulator", "parent": "Magnet"},
                 ]
             }
         )
@@ -586,7 +586,7 @@ class TestClasses:
         assert (error.kind, error.record_kind, error.record_id) == (
             "class-unknown",
             "class",
-            "FastKicker",
+            "PlanarUndulator",
         )
 
     def test_an_unknown_parent(self, tmp_path: Path) -> None:
