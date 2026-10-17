@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import ipaddress
 import logging
@@ -1510,10 +1511,9 @@ async def restart_terminal(request: Request):
     logger.info("All PTY sessions terminated for restart")
 
     # Terminate all operator sessions if active
-    try:
+    # May not have active operator sessions
+    with contextlib.suppress(Exception):
         await operator_registry.cleanup_all()
-    except Exception:
-        pass  # May not have active operator sessions
 
     return {"status": "ok", "message": "Terminal session terminated — reconnecting"}
 

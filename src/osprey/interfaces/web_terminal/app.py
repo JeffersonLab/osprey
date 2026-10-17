@@ -291,10 +291,9 @@ async def _launch_sidecar(app: FastAPI, panel_id: str) -> None:
 
     def on_exit() -> None:
         # Runs on the sidecar's watcher thread; ``app.state`` belongs to the loop.
-        try:
+        # the loop is closed: shutdown has already torn the state down
+        with suppress(RuntimeError):
             loop.call_soon_threadsafe(retract)
-        except RuntimeError:
-            pass  # the loop is closed: shutdown has already torn the state down
 
     # Registered last: a setter that fires when the exit already happened
     # closes the gap between readiness and this line.
