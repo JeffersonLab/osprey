@@ -247,21 +247,32 @@ def read_tool(connector, tmp_path, monkeypatch):
     """``archiver_read`` serving from the real connector on the store.
 
     The project is the test's working directory, so the saved artifact's path is
-    relative to ``tmp_path``.
+    relative to ``tmp_path``. The artifact store and the server context are
+    process-wide singletons: both are reset on the way in, so a store an earlier
+    test in this worker rooted elsewhere is never reused, and on the way out.
     """
-    from osprey.mcp_server.control_system.server_context import initialize_server_context
+    from osprey.mcp_server.control_system.server_context import (
+        initialize_server_context,
+        reset_server_context,
+    )
     from osprey.mcp_server.control_system.tools.archiver_read import archiver_read
+    from osprey.stores.artifact_store import reset_artifact_store
     from tests.mcp_server.conftest import get_tool_fn
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yml").write_text("archiver:\n  type: mongodb_archiver\n")
+    reset_artifact_store()
     initialize_server_context()
-    with patch(
-        "osprey_connectors.factory.ConnectorFactory.create_archiver_connector",
-        new_callable=AsyncMock,
-        return_value=connector,
-    ):
-        yield get_tool_fn(archiver_read)
+    try:
+        with patch(
+            "osprey_connectors.factory.ConnectorFactory.create_archiver_connector",
+            new_callable=AsyncMock,
+            return_value=connector,
+        ):
+            yield get_tool_fn(archiver_read)
+    finally:
+        reset_server_context()
+        reset_artifact_store()
 
 
 async def _read_traces(read_tool, tmp_path: Path, start: datetime, end: datetime):
