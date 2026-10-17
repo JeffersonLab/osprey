@@ -28,8 +28,8 @@ from lume.variables import ScalarVariable, StrVariable, Variable
 from lume_pyat.exceptions import OrbitSolveError
 
 from osprey.cli.sim import sim_group
-from osprey.connectors.control_system.base import WriteOutcome
-from osprey.connectors.control_system.va_in_process_connector import (
+from osprey_connectors.control_system.base import WriteOutcome
+from osprey_connectors.control_system.va_in_process_connector import (
     VAInProcessConnector,
     simulation_state_dir,
 )
@@ -63,7 +63,7 @@ def _writes_enabled(key: str, default: Any = None) -> Any:
 @pytest.fixture(autouse=True)
 def _no_model_log_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(composite_module, "default_config_path", lambda: None)
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _writes_enabled)
 
 
 async def _connected(view: Path) -> VAInProcessConnector:

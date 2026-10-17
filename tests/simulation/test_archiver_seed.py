@@ -216,7 +216,7 @@ def read_back(mongo_store, monkeypatch):
     monkeypatch.setenv(password_env, mongo_store["password"])
 
     async def query(channels, start, end):
-        from osprey.connectors.archiver.mongodb_archiver_connector import (
+        from osprey_connectors.archiver.mongodb_archiver_connector import (
             MongoDBArchiverConnector,
         )
 

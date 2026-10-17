@@ -211,10 +211,11 @@ def _caget_many(port: int, addresses: list[str], *, timeout: float) -> dict[str,
     An address that does not answer reads ``None``.
     """
     code = (
-        "import json, os, sys, epics\n"
+        "import asyncio, json, os, sys, aioca\n"
         f"names = {addresses!r}\n"
-        f"values = epics.caget_many(names, connection_timeout={timeout}, timeout={timeout})\n"
-        "out = {n: (None if v is None else float(v)) for n, v in zip(names, values)}\n"
+        f"values = asyncio.run(aioca.caget(names, timeout={timeout}, throw=False))\n"
+        "out = {n: (None if isinstance(v, aioca.CANothing) else float(v))\n"
+        "       for n, v in zip(names, values)}\n"
         f"sys.stdout.write('\\n' + {REPORT_MARK!r} + json.dumps(out) + '\\n')\n"
         "sys.stdout.flush()\n"
         "os._exit(0)\n"
@@ -322,7 +323,7 @@ def test_every_setpoint_holds_its_wiring_default_after_three_ticks(
 async def test_the_in_process_connector_replays_the_planted_journal(
     project: e2e_conftest.VaProject, ports: dict[str, int]
 ) -> None:
-    from osprey.connectors.control_system.va_in_process_connector import VAInProcessConnector
+    from osprey_connectors.control_system.va_in_process_connector import VAInProcessConnector
 
     del ports  # the containers read the journal first, and the mock may rewrite it
     connector = VAInProcessConnector()

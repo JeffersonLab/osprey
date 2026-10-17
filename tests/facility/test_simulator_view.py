@@ -27,8 +27,8 @@ from click.testing import CliRunner
 from osprey.facility import TEXTURE
 from osprey.facility.errors import FacilityBuildError
 from osprey.facility.render import FACILITY_FILE, render_facility_outputs
-from osprey.utils.workspace import BUILD_DIR_NAME
 from osprey_connectors.simulation.view import SCENARIOS_SCHEMA, SEEDS_SCHEMA
+from osprey_connectors.workspace import BUILD_DIR_NAME
 
 if TYPE_CHECKING:
     from tests.facility.conftest import BuiltProject

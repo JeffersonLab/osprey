@@ -13,16 +13,16 @@ from contextlib import asynccontextmanager
 
 from fastmcp.exceptions import ToolError
 
-from osprey.errors import (
-    ChannelLimitsViolationError,
-    ChannelNotFoundError,
-    ChannelWriteBlockedError,
-)
 from osprey.mcp_server.errors import (
     MISSING_KEY,
     NothingAnsweredError,
     make_error,
     refuse_nothing_answered,
+)
+from osprey_connectors.errors import (
+    ChannelLimitsViolationError,
+    ChannelNotFoundError,
+    ChannelWriteBlockedError,
 )
 from osprey_connectors.ipc.pool import DEFAULT_PING_TIMEOUT_S
 from osprey_connectors.ipc.proxy import ChildUnresponsiveError

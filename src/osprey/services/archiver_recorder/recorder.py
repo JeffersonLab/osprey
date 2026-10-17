@@ -31,7 +31,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -40,6 +40,9 @@ from osprey_connectors.types import TRANSPORT_IN_PROCESS, VIRTUAL_ACCELERATOR
 
 from .config import ChannelSet, RecorderConfigError, RecorderSettings, read_recording_facts
 from .store import ArchiveWriter
+
+if TYPE_CHECKING:
+    from osprey_connectors.control_system.base import ControlSystemConnector
 
 logger = logging.getLogger(__name__)
 
@@ -340,31 +343,84 @@ class Recorder:
         return traces
 
 
-def channel_access_reader(settings: RecorderSettings) -> ChannelReader:
-    """The production reader: one long-lived Channel Access client.
+async def _connect() -> ControlSystemConnector:
+    """Build and connect the Channel Access connector the recorder samples through.
 
-    ``aioca`` caches its channels across calls, so the connection cost is paid
-    once and every later sample reuses it — and its reconnection is what makes
-    this service survive an IOC restart without any logic here: the channels go
-    disconnected, those reads fail (contributing nothing), and they resume
-    answering once the IOC is back.
-
-    Failed reads come back as falsy ``CANothing`` sentinels rather than
-    exceptions, which is why ``throw=False`` is safe: one unreachable channel
-    must not cost the whole sample.
+    Built by the connector factory as type ``epics`` with an empty settings
+    block, rather than from the deployment's ``control_system`` section, the
+    way the dispatch trigger source builds its own. The recorder's gateway is
+    the one its compose entry hands it in ``EPICS_CA_*``: an in-network address
+    for a co-deployed virtual accelerator, the operator's for an external IOC.
+    A gateway block from the section is written for the agent's side of the
+    network and would rewrite that environment with an address this container
+    may not reach. With no gateway configured, ``connect()`` leaves the
+    environment as it stands.
     """
+    from osprey_connectors.factory import ConnectorFactory, register_builtin_connectors
 
-    async def read(addresses: Sequence[str]) -> Mapping[str, float]:
-        from aioca import caget
+    register_builtin_connectors()  # idempotent; the factory resolves "epics" through it
+    return await ConnectorFactory.create_control_system_connector({"type": "epics"})
 
+
+def channel_access_reader(settings: RecorderSettings) -> ChannelReader:
+    """The production reader: one long-lived control-system connector.
+
+    The connector runs every Channel Access call on the process's one CA loop,
+    and aioca caches its channels there across calls, so the connection cost is
+    paid once and every later sample reuses it. aioca's reconnection is also
+    what makes this service survive an IOC restart without any logic here: the
+    channels go disconnected, those reads fail (contributing nothing), and they
+    resume answering once the IOC is back. Each sample costs one round trip per
+    channel; the connector fetches a channel's units and labels on its first
+    read only.
+
+    The connector is built on the first sample rather than at startup, so a
+    recorder idling on a deployment it does not record never touches Channel
+    Access at all.
+
+    Every channel is read on its own and all of them under one deadline, the
+    sample cadence, so one unreachable channel cannot cost the whole sample:
+    what answered by then is kept, and the rest is dropped.
+    """
+    cadence = float(settings.cadence_sec)
+    connector: ControlSystemConnector | None = None
+
+    async def read(addresses: Sequence[str]) -> Mapping[str, Any]:
+        nonlocal connector
         # Bounded by the sample cadence: a read still outstanding when the next
         # sample is due has already missed its slot, and waiting longer would
         # only push every later sample off the grid.
-        results = await caget(list(addresses), timeout=settings.cadence_sec, throw=False)
-        return {
-            address: value
-            for address, value in zip(addresses, results, strict=True)
-            if getattr(value, "ok", True)
+        deadline = asyncio.get_running_loop().time() + cadence
+        if connector is None:
+            try:
+                connector = await asyncio.wait_for(_connect(), cadence)
+            except TimeoutError:
+                logger.warning(
+                    "The Channel Access loop did not connect within %ss; trying again "
+                    "at the next sample.",
+                    cadence,
+                )
+                return {}
+        reads = {
+            address: asyncio.create_task(connector.read_channel(address, timeout=cadence))
+            for address in addresses
         }
+        if not reads:
+            return {}
+        try:
+            remaining = max(deadline - asyncio.get_running_loop().time(), 0.0)
+            await asyncio.wait(reads.values(), timeout=remaining)
+        finally:
+            # Cancelling a read cancels its call on the CA loop too. The channel
+            # stays in aioca's cache, so it is still connecting for next time.
+            for pending in reads.values():
+                pending.cancel()
+        values: dict[str, Any] = {}
+        for address, done in reads.items():
+            # Never answered, or answered with a failure: either way the
+            # channel contributes nothing to this sample.
+            if done.done() and not done.cancelled() and done.exception() is None:
+                values[address] = done.result().value
+        return values
 
     return read

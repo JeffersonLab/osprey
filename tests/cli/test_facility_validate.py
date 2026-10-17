@@ -23,7 +23,7 @@ from click.testing import CliRunner, Result
 
 from osprey.cli.main import cli
 from osprey.facility.render import FACILITY_FILE
-from osprey.utils.workspace import BUILD_DIR_NAME
+from osprey_connectors.workspace import BUILD_DIR_NAME
 from tests._builds import init_project, run_build
 
 pytestmark = pytest.mark.slow
