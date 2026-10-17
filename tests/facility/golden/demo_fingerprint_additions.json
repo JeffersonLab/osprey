@@ -317,6 +317,55 @@
         "StorageRing_Tune_Y"
       ],
       "description": "Storage ring betatron tune vertical"
+    },
+    {
+      "address": "SR:MAG:SEPTUM:01:CURRENT:RB",
+      "role": "readback",
+      "value_type": "float",
+      "names": [],
+      "description": "Storage ring injection septum SEK current readback (read-only): the measured peak current of the septum pulse."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:01:CURRENT:SP",
+      "role": "setpoint",
+      "value_type": "float",
+      "names": [],
+      "description": "Storage ring injection septum SEK current setpoint (read-write): the commanded peak current of the septum pulse. Scales the sampled current pulse."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:01:CURRENT:WAVEFORM",
+      "role": "readback",
+      "value_type": "waveform",
+      "names": [],
+      "description": "Storage ring injection septum SEK current pulse waveform (read-only): the sampled time trace of one current pulse, 500 samples in A, refreshed about once a second. Its peak follows the current setpoint; it is flat zero while the septum is off."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:01:STATUS:ON",
+      "role": "readback",
+      "value_type": "bool",
+      "names": [],
+      "description": "Storage ring injection septum SEK on status (read-only): the septum supply is energized and pulsing. When false the sampled current pulse is a flat zero trace."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:02:CURRENT:RB",
+      "role": "readback",
+      "value_type": "float",
+      "names": [],
+      "description": "Storage ring injection septum SEN current readback (read-only): the measured peak current of the septum pulse."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:02:CURRENT:SP",
+      "role": "setpoint",
+      "value_type": "float",
+      "names": [],
+      "description": "Storage ring injection septum SEN current setpoint (read-write): the commanded peak current of the septum pulse."
+    },
+    {
+      "address": "SR:MAG:SEPTUM:02:STATUS:ON",
+      "role": "readback",
+      "value_type": "bool",
+      "names": [],
+      "description": "Storage ring injection septum SEN on status (read-only): the septum supply is energized and pulsing."
     }
   ]
 }

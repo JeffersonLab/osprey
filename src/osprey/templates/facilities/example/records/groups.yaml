@@ -910,6 +910,13 @@
   - SR/SD22
   - SR/SD23
   - SR/SD24
+- id: SR/SEPTUM
+  description: 'Injection Septa: the storage ring''s two injection septum magnets, SEK and SEN, which bend the beam arriving from the booster-to-storage-ring line onto the ring''s injection orbit while shielding the stored beam. SEK is pulsed, and its current pulse is sampled as a waveform.'
+  names:
+  - injection septum
+  members:
+  - SR/SEPTUM01
+  - SR/SEPTUM02
 - id: SR/SF
   description: 'Focusing Sextupoles (SF): Sextupole magnets with positive polarity for chromatic correction. Compensate for energy-dependent focusing from quadrupoles (chromaticity). Essential for maintaining beam stability across energy spread.'
   names:

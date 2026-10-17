@@ -1,9 +1,9 @@
 """The graph view the control-assistant build writes.
 
 A corpus that nobody counts can drift silently: a change to the facility or to
-the view's writer would quietly seed a different graph. The census below (532
-devices, 2952 bindings, 412 written and 2536 read signals) is the demo facility
-as the build renders it, and the 412 writes are exactly its `:SP` addresses.
+the view's writer would quietly seed a different graph. The census below (534
+devices, 2959 bindings, 414 written and 2541 read signals) is the demo facility
+as the build renders it, and the 414 writes are exactly its `:SP` addresses.
 The prose census sits beside it: a description on every binding, a system
 description plus the SYSTEM token on every device, a family description on
 every device a described group names, and none of the three descriptions on a
@@ -34,15 +34,16 @@ NON_DEVICE_CLASSES = {"ChannelBinding", "SemanticSignal"}
 
 #: The demo facility's census, as the build renders it: the tier-3 channel
 #: database's 2908 device channels, the four tune and chromaticity channels
-#: the top place carries itself, and the transfer line's 40 channels.
-EXPECTED_DEVICES = 532
-EXPECTED_BINDINGS = 2952
-EXPECTED_WRITES = 412
-EXPECTED_READS = 2536
+#: the top place carries itself, the transfer line's 40 channels, and the
+#: storage ring injection septa's 7 channels.
+EXPECTED_DEVICES = 534
+EXPECTED_BINDINGS = 2959
+EXPECTED_WRITES = 414
+EXPECTED_READS = 2541
 
 #: Devices a described group names, each carrying its family's description;
 #: the transfer line's eight quadrupoles are in no group.
-EXPECTED_FAMILY_DESCRIBED = 524
+EXPECTED_FAMILY_DESCRIBED = 526
 
 #: Prose predicates carried once by every ``narad_sem:ChannelBinding``: the
 #: channel's own sentence.
@@ -98,7 +99,7 @@ def test_prose_census(graph) -> None:
     """Every binding and every device carries its prose, exactly once.
 
     The subject counts are what make this a census rather than a spot check: a
-    predicate appearing 2,952 times spread over 40 bindings would satisfy a
+    predicate appearing 2959 times spread over 40 bindings would satisfy a
     triple count and import into a graph where most channels have no text at
     all. neosemantics keeps one value per property unless told otherwise, so a
     doubled predicate is also silent data loss at seed time.

@@ -1,8 +1,8 @@
 """The in-process simulator's served nominals against the per-address nominal golden, and its served noise against the seeds.
 
 ``tests/facility/golden/nominal_in_process.json`` holds, for every demo
-address but the deck's tune and chromaticity instruments and the transfer
-line's channels, the nominal the simulator served in process serves with no
+address but the deck's tune and chromaticity instruments, the transfer
+line's channels and the waveforms, the nominal the simulator served in process serves with no
 scenario active. It serves the control-assistant build's simulator view through a composite, so these tests
 build that composite from the shared build and hold it to the golden to 1e-12
 on every address, except the declared re-baselines:
@@ -50,6 +50,9 @@ ADDITIONS = frozenset({"SR:DIAG:CHROM:X", "SR:DIAG:CHROM:Y", "SR:DIAG:TUNE:X", "
 
 #: How many transfer line channels the golden's capture predates.
 LINE_CHANNELS = 40
+
+#: The served waveforms: a trace has no scalar nominal, so the golden holds none.
+WAVEFORMS = frozenset({"SR:MAG:SEPTUM:01:CURRENT:WAVEFORM"})
 
 #: An ``SR`` beam position monitor's horizontal position.
 SR_BPM_X = re.compile(r"SR:DIAG:BPM:\d+:POSITION:X")
@@ -123,14 +126,15 @@ def test_the_golden_holds_every_served_channel_but_the_added_ones(served: Served
     unheld = set(served.channels) - set(golden())
     line = {address for address in unheld if address.startswith("LINE:")}
     assert len(line) == LINE_CHANNELS
-    assert unheld - line == ADDITIONS
+    assert unheld - line == ADDITIONS | WAVEFORMS
+    assert {a for a in served.channels if served.value_type(a) == "waveform"} == WAVEFORMS
     assert set(golden()) <= set(served.channels)
 
 
 def test_float_nominals_equal_the_golden_but_the_declared_rebaselines(served: Served) -> None:
     floats = [a for a in golden() if served.value_type(a) == "float"]
     moved = {a for a in floats if not close(float(served.held[a]), golden()[a]["nominal"])}
-    assert len(floats) == 1662
+    assert len(floats) == 1666
     assert sorted(moved) == sorted(rebaselined())
 
 
@@ -147,7 +151,7 @@ def test_the_rebaselined_channels_read_the_physics_model(served: Served) -> None
 
 def test_bool_labels_follow_the_golden(served: Served) -> None:
     bools = [a for a in golden() if served.value_type(a) == "bool"]
-    assert len(bools) == 1246
+    assert len(bools) == 1248
     read = served.composite.get(bools)
     for address in bools:
         label = served.held[address]
@@ -180,4 +184,4 @@ def test_a_read_adds_the_seed_noise_times_the_channel_s_keyed_draw(served: Serve
         expected = sigma * series.keyed_normals(key, counters_ms)
         np.testing.assert_allclose(reading, expected, rtol=1e-9, atol=TOLERANCE, err_msg=address)
         checked += 1
-    assert checked == 225
+    assert checked == 227

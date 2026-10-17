@@ -16,7 +16,7 @@ from lume.variables import (
     StrVariable,
 )
 
-from osprey_connectors.simulation import series
+from osprey_connectors.simulation import pulse, series
 from osprey_connectors.simulation.texture import TextureModel
 
 T0 = 1_760_000_000.0
@@ -574,3 +574,86 @@ def test_active_writes_are_the_start_state_a_reset_returns_to():
     assert model.get("T:HEAT:SP") == 33.0
     model.set_active({})
     assert model.get("T:HEAT:SP") == 20.0
+
+
+_SEK_SP = "T:SEK:SP"
+_SEK_ON = "T:SEK:STATUS:ON"
+_SEK_WAVE = "T:SEK:WAVEFORM"
+
+
+def _pulse_view() -> tuple[dict[str, Any], dict[str, Any]]:
+    variables, seeds = _view()
+    variables["channels"] += [
+        _channel(_SEK_SP, role="setpoint", writable=True, value_range=[0, 100]),
+        _channel(_SEK_ON, role="setpoint", value_type="bool", writable=True),
+        _channel(_SEK_WAVE, value_type="waveform", shape=[pulse.TRACE_POINTS]),
+    ]
+    seeds["seeds"].update(
+        {
+            _SEK_SP: {"nominal": 40.0},
+            _SEK_ON: {"nominal": "TRUE"},
+            _SEK_WAVE: {"pulse": {"driver": _SEK_SP, "enable": _SEK_ON}},
+        }
+    )
+    return variables, seeds
+
+
+def _pulse_model() -> tuple[TextureModel, list[float]]:
+    variables, seeds = _pulse_view()
+    clock = [T0]
+    return TextureModel(variables, seeds, clock=lambda: clock[0]), clock
+
+
+def test_a_pulse_channel_reads_the_trace_at_the_read_time():
+    model, clock = _pulse_model()
+
+    first = model.get(_SEK_WAVE)
+    clock[0] = T0 + 1.0
+    second = model.get(_SEK_WAVE)
+
+    assert first.shape == (pulse.TRACE_POINTS,)
+    np.testing.assert_array_equal(first, pulse.trace(_SEK_WAVE, T0, 40.0, True))
+    np.testing.assert_array_equal(second, pulse.trace(_SEK_WAVE, T0 + 1.0, 40.0, True))
+    assert not np.array_equal(first, second)
+
+
+def test_doubling_the_driver_setpoint_doubles_the_peak():
+    model, _ = _pulse_model()
+    before = model.get(_SEK_WAVE)
+
+    model.set({_SEK_SP: 80.0})
+    after = model.get(_SEK_WAVE)
+
+    assert after.max() == pytest.approx(2.0 * before.max(), rel=1e-12)
+    np.testing.assert_array_equal(after, pulse.trace(_SEK_WAVE, T0, 80.0, True))
+
+
+def test_a_disabled_supply_reads_a_flat_zero_trace():
+    model, _ = _pulse_model()
+
+    model.set({_SEK_ON: "FALSE"})
+    off = model.get(_SEK_WAVE)
+    model.set({_SEK_ON: "TRUE"})
+    on = model.get(_SEK_WAVE)
+
+    assert off.shape == (pulse.TRACE_POINTS,)
+    assert not np.any(off)
+    assert on.max() > 0.0
+
+
+def test_has_motion_is_true_for_a_pulse_channel_only():
+    model, _ = _pulse_model()
+
+    assert model.has_motion(_SEK_WAVE) is True
+    assert model.has_motion("T:TRACE") is False
+    assert model.has_motion(_SEK_SP) is False
+    assert model.has_motion("T:NOISY") is True
+
+
+def test_a_static_waveform_still_reads_its_nominal():
+    model, clock = _pulse_model()
+
+    first = model.get("T:TRACE")
+    clock[0] = T0 + 5.0
+    np.testing.assert_array_equal(first, [[1, 2, 3], [4, 5, 6]])
+    np.testing.assert_array_equal(model.get("T:TRACE"), first)

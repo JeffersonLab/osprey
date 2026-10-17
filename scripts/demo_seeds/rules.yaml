@@ -29,6 +29,11 @@
   noise: {value: 2, unit: mA}
   source: sextupole supply, ~25 ppm of ~85 A
 
+- class: Septum
+  signal: current_readback
+  noise: {value: 100, unit: mA}
+  source: pulsed septum supply, peak readback repeatable to ~30-120 ppm of 0.8-3 kA
+
 - class: HCorrector
   signal: current_readback
   noise: {value: 1, unit: mA}
@@ -255,6 +260,11 @@
   signal: current_setpoint
   tolerance: {value: 0.05, unit: A}
   source: sextupole supply settle band, as a middle-layer export states it
+
+- class: Septum
+  signal: current_setpoint
+  tolerance: {value: 1.0, unit: A}
+  source: septum supply settle band, above six sigma of its pulse-to-pulse readback
 
 - class: HCorrector
   signal: current_setpoint

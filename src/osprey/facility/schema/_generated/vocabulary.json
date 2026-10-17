@@ -307,6 +307,19 @@
     {
       "abstract": false,
       "aliases": [
+        "septum",
+        "septum magnet",
+        "injection septum",
+        "extraction septum"
+      ],
+      "description": "Pulsed or DC septum magnet that deflects the injected or extracted beam into or out of the machine while shielding the circulating beam.",
+      "iri": "https://narad.example.org/schema/shared_semantics/Septum",
+      "name": "Septum",
+      "parent": "Magnet"
+    },
+    {
+      "abstract": false,
+      "aliases": [
         "sextupole",
         "sext"
       ],
@@ -1094,6 +1107,17 @@
       "aliases": [],
       "description": "Pulsing-permit interlock readback.",
       "name": "pulse_permit_status"
+    },
+    {
+      "aliases": [
+        "pulse waveform",
+        "pulse trace",
+        "pulse shape",
+        "current pulse waveform",
+        "waveform"
+      ],
+      "description": "Sampled time trace of one output pulse of a pulsed device (e.g. a septum or kicker current pulse), read as an array of samples rather than a scalar.",
+      "name": "pulse_waveform"
     },
     {
       "aliases": [],

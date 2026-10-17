@@ -9,7 +9,9 @@ by class. A class that is declared nowhere stops the build with one
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from click.testing import Result
@@ -20,6 +22,10 @@ if TYPE_CHECKING:
     from tests.facility.conftest import BuiltProject
 
 Build = Callable[..., tuple["BuiltProject", Result]]
+
+VOCABULARY_JSON = (
+    Path(__file__).resolve().parents[2] / "src/osprey/facility/schema/_generated/vocabulary.json"
+)
 
 KICKER = {
     "class": "Kicker",
@@ -73,3 +79,33 @@ def test_an_undeclared_parent_stops_the_build(build_project: Build) -> None:
         "a vocabulary class nor an earlier facility-added class; fix: name a vocabulary class "
         "or a class listed earlier in classes.yaml\n"
     )
+
+
+def test_septum_is_a_vocabulary_class_and_builds_without_classes_yaml(
+    build_project: Build,
+) -> None:
+    project, result = build_project(_tree(None, "Septum"))
+
+    assert result.exit_code == 0, result.output
+    assert project.facility["classes"] == []
+    [septum] = [d for d in project.facility["devices"] if d["id"] == "SR/K1"]
+    assert septum["class"] == "Septum"
+
+
+def test_a_facility_class_may_extend_the_septum(build_project: Build) -> None:
+    lambertson = {"class": "LambertsonSeptum", "parent": "Septum"}
+    project, result = build_project(_tree([lambertson], "LambertsonSeptum"))
+
+    assert result.exit_code == 0, result.output
+    assert project.facility["classes"] == [lambertson]
+
+
+def test_the_vocabulary_declares_septum_and_the_pulse_waveform_role() -> None:
+    vocabulary = json.loads(VOCABULARY_JSON.read_text(encoding="utf-8"))
+    classes = {record["name"]: record for record in vocabulary["classes"]}
+    roles = {record["name"]: record for record in vocabulary["signal_roles"]}
+
+    assert classes["Septum"]["parent"] == "Magnet"
+    assert classes["Septum"]["abstract"] is False
+    assert classes["Septum"]["description"]
+    assert roles["pulse_waveform"]["description"]

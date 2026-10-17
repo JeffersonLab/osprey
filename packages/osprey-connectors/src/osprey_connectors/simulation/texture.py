@@ -25,6 +25,11 @@ coupled to one driver sees the same ``driver(t)``, and a scenario's noise
 record stands in for the seed's while it is held, drawing from its own
 stream. A reading the active scenarios still serves its held value: no drift,
 couplings or noise.
+
+A waveform channel whose seed states ``pulse: {driver, enable}`` reads
+:func:`~osprey_connectors.simulation.pulse.trace` at the read time, scaled by
+the driver's held value and switched by the enable channel's held label, so
+it moves on every read. Every other waveform channel reads its held array.
 """
 
 from __future__ import annotations
@@ -45,7 +50,7 @@ from lume.variables import (
     Variable,
 )
 
-from osprey_connectors.simulation import series, values
+from osprey_connectors.simulation import pulse, series, values
 from osprey_connectors.simulation.envelope import declares_motion
 
 __all__ = [
@@ -376,10 +381,13 @@ class TextureModel(LUMEModel):
     def has_motion(self, address: str) -> bool:
         """Whether :meth:`motion` can be non-zero for *address*.
 
-        True exactly for a float channel the held motion does not still, with
-        seed drift, a held coupling, or a non-zero noise term under the held
-        motion.
+        True for a ``pulse`` waveform channel, whose trace changes with
+        time. Otherwise true exactly for a float channel the held motion does
+        not still, with seed drift, a held coupling, or a non-zero noise term
+        under the held motion.
         """
+        if self._pulse(address) is not None:
+            return True
         channel = self._channels.get(address)
         if channel is None or not is_float_channel(channel) or self._stilled(address):
             return False
@@ -432,6 +440,28 @@ class TextureModel(LUMEModel):
             )
         return np.asarray(gain * signal, dtype=np.float64)
 
+    def _pulse(self, address: str) -> Mapping[str, Any] | None:
+        """The ``pulse`` record of a waveform channel, ``None`` when it has none."""
+        channel = self._channels.get(address)
+        if channel is None or not values.is_waveform(channel_value_type(channel)):
+            return None
+        return (self._seeds.get(address) or {}).get("pulse") or None
+
+    def _pulse_trace(self, address: str, record: Mapping[str, Any], t_s: float) -> np.ndarray:
+        """The trace of a ``pulse`` channel at *t_s* from its driver and enable held values.
+
+        A driver or enable channel the model does not hold counts as zero or
+        off, so the trace reads flat zero.
+        """
+        driver_address = str(record["driver"])
+        enable_address = str(record["enable"])
+        driver = float(self._held_value(driver_address)) if driver_address in self._held else 0.0
+        enable = False
+        if enable_address in self._held:
+            labels = values.channel_labels(self._channels[enable_address])
+            enable = self._held_value(enable_address) == labels[-1]
+        return pulse.trace(address, t_s, driver, enable)
+
     def clamp(self, address: str, value: float) -> float:
         """Clamp a float into the seed's ``clamp`` band; a null side is unbounded."""
         band = self._seeds.get(address, {}).get("clamp")
@@ -449,8 +479,10 @@ class TextureModel(LUMEModel):
                 outputs[name] = self.clamp(
                     name, float(held) + float(self.motion(name, t_s, base=float(held)))
                 )
-            elif channel_value_type(channel) == "waveform":
-                outputs[name] = np.asarray(held, dtype=np.float64).reshape(
+            elif values.is_waveform(channel_value_type(channel)):
+                record = self._pulse(name)
+                array = held if record is None else self._pulse_trace(name, record, t_s)
+                outputs[name] = np.asarray(array, dtype=np.float64).reshape(
                     tuple(int(size) for size in channel["shape"])
                 )
             else:

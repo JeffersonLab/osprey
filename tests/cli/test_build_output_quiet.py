@@ -333,6 +333,8 @@ class _EmptyArchive:
     """An archive composite with no channels: every document carries only its date."""
 
     addresses: list[str] = []
+    scalar_addresses: list[str] = []
+    waveform_addresses: list[str] = []
 
     def samples(self, addresses: list[str], t_s: Any) -> dict[str, list[Any]]:
         del t_s

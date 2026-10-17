@@ -6,17 +6,18 @@ no ``linear`` key gets its ``noise`` and ``drift`` from the one row of
 ``rules.yaml`` that matches its device's class and its signal, converted into the
 channel's unit; ``noise`` is written as ``{absolute: <sigma>}``. A channel no
 row matches stays still, unless its committed seed moves, which is an error.
-Every other seed key (``nominal``, ``clamp``, ``linear``) is carried through as
-data.
+Every other seed key (``nominal``, ``pulse``, ``gate``, ``clamp``, ``linear``) is
+carried through as data.
 
 Every setpoint gets its ``tolerance`` from the one ``tolerance`` row that
 matches it, converted into its unit and written ``{absolute: <x>}`` directly
 after its ``pair:`` line in ``records/channels.yaml``; every other byte of that
 file stays as it is. A setpoint no row matches, or whose tolerance is below the
-motion envelope of the readback it pairs with, is an error.
+motion envelope of the readback it pairs with, is an error. A bool setpoint
+takes no tolerance: it settles on its label, and its seed keeps its ``nominal``.
 
 The outputs are the committed ``seeds.yaml``, addresses sorted, each entry's
-keys in the order nominal, noise, drift, clamp, linear, written with one
+keys in the order nominal, pulse, gate, noise, drift, clamp, linear, written with one
 canonical ``yaml.safe_dump``; and the committed ``records/channels.yaml`` with
 its tolerance lines stamped.
 
@@ -62,7 +63,7 @@ UNITS: dict[str, tuple[str, int]] = {
 }
 
 #: The seed keys, in the order an entry is written.
-KEY_ORDER = ("nominal", "noise", "drift", "clamp", "linear")
+KEY_ORDER = ("nominal", "pulse", "gate", "noise", "drift", "clamp", "linear")
 
 #: The seed keys this generator owns.
 MOTION_KEYS = ("noise", "drift")
@@ -241,9 +242,11 @@ def render(tree: Path = TREE, rules_path: Path = RULES) -> str:
 def tolerances(tree: Path = TREE, rules: list[dict[str, Any]] | None = None) -> dict[str, float]:
     """Each setpoint's tolerance in its unit, by address.
 
+    A bool setpoint has none: it settles on a label, so no row is looked up.
+
     Raises:
-        ReseedError: A setpoint no row matches, or one whose tolerance is below
-            the motion envelope of the readback it pairs with.
+        ReseedError: A non-bool setpoint no row matches, or one whose tolerance
+            is below the motion envelope of the readback it pairs with.
     """
     from osprey_connectors.simulation.envelope import motion_envelope
 
@@ -252,7 +255,7 @@ def tolerances(tree: Path = TREE, rules: list[dict[str, Any]] | None = None) -> 
     devices = {record["id"]: record for record in load(tree / "records/devices.yaml")}
     stamped: dict[str, float] = {}
     for channel in load(tree / CHANNELS):
-        if channel.get("role") != "setpoint":
+        if channel.get("role") != "setpoint" or channel.get("value_type") == "bool":
             continue
         address, device = channel["id"], channel.get("on", {}).get("device")
         row = None

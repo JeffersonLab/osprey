@@ -4860,6 +4860,7 @@ def _stage_archiver_store(
         compare_fingerprint,
         seed_base,
         seed_fingerprint,
+        waveform_collection,
     )
 
     store = _archiver_store_connection(config, project_dir)
@@ -4965,7 +4966,13 @@ def _stage_archiver_store(
                     "`osprey status` if the reseeded archive looks wrong."
                 )
 
+        # Both collections, still inside the quiesce: the recorder writes traces
+        # into the waveform sibling as well, and a base rebuilt beside a stale
+        # waveform history would serve two worlds.
         collection.drop()
+        waveform_store = {**store, "collection": waveform_collection(store["collection"])}
+        with archiver_collection(waveform_store) as waveforms:
+            waveforms.drop()
         # Before the work, not after it: this is the only warning an operator
         # gets that the next thing to happen is measured in minutes.
         _report_step(

@@ -294,6 +294,37 @@ def test_variables_carries_its_schema_and_key_sets(built_control_assistant: Buil
         assert isinstance(channel["writable"], bool), channel["address"]
 
 
+#: The demo's served waveform channel: the SEK injection septum's current pulse.
+SEK_WAVEFORM = "SR:MAG:SEPTUM:01:CURRENT:WAVEFORM"
+
+
+def test_the_septum_waveform_is_a_texture_waveform_of_500_samples(
+    built_control_assistant: BuiltProject,
+) -> None:
+    variables = _view(built_control_assistant.build_dir, VARIABLES)
+    sek = _channel(variables, SEK_WAVEFORM)
+
+    assert sek["value_type"] == "waveform"
+    assert sek["shape"] == [500]
+    assert sek["unit"] == "A"
+    assert sek["role"] == "readback"
+    assert sek["writable"] is False
+    assert sek["owner"] == TEXTURE
+    assert "500 samples" in sek["description"]
+
+
+def test_the_septum_waveform_seed_is_its_pulse(built_control_assistant: BuiltProject) -> None:
+    seeds = _view(built_control_assistant.build_dir, SEEDS)["seeds"]
+
+    assert seeds[SEK_WAVEFORM] == {
+        "pulse": {
+            "driver": "SR:MAG:SEPTUM:01:CURRENT:SP",
+            "enable": "SR:MAG:SEPTUM:01:STATUS:ON",
+        }
+    }
+    assert seeds["SR:MAG:SEPTUM:01:CURRENT:SP"]["nominal"] == 3000.0
+
+
 def test_the_demo_wiring_is_simulator_wiring_serialised(
     built_control_assistant: BuiltProject,
 ) -> None:
