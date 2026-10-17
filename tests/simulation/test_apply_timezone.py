@@ -22,19 +22,23 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from osprey.simulation.apply import apply_scenarios
-from tests.simulation.conftest import stage_sim_project
+from tests._simulator_view import facility_scenarios, write_scenarios_view
 
+TEMPLATE_FACILITY = Path(__file__).resolve().parents[2] / "src/osprey/templates/facilities/example"
 LA = ZoneInfo("America/Los_Angeles")  # non-UTC facility; -7h (PDT) / -8h (PST)
 
 
 def _make_project(tmp_path: Path) -> Path:
-    """Stage a minimal sim-backed project with a non-UTC facility timezone."""
-    return stage_sim_project(
-        tmp_path,
+    """Stage a project whose render holds a simulator view, with a non-UTC facility timezone."""
+    scenarios = TEMPLATE_FACILITY / "scenarios"
+    write_scenarios_view(tmp_path, facility_scenarios(scenarios), scenarios)
+    config = {
         # URI is never dialed: _seed_logbook is stubbed below.
-        ariel={"database": {"uri": "postgresql://unused-mocked/none"}},
-        system={"timezone": "America/Los_Angeles"},
-    )
+        "ariel": {"database": {"uri": "postgresql://unused-mocked/none"}},
+        "system": {"timezone": "America/Los_Angeles"},
+    }
+    (tmp_path / "config.yml").write_text(yaml.safe_dump(config))
+    return tmp_path
 
 
 def test_default_anchor_seeds_logbook_in_facility_zone(tmp_path, monkeypatch):

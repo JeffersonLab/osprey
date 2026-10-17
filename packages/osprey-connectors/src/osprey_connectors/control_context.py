@@ -96,6 +96,7 @@ is one-way — the posture store below it, never the reverse at module scope.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -285,6 +286,26 @@ class ControlContext:
             "posture": dict(self.posture),
             "last_switch": None if self.last_switch is None else dict(self.last_switch),
         }
+
+
+def claimed(record: ControlContext, baseline: str) -> ControlContext:
+    """*record* as a process claiming it holds it, given the deployment's *baseline*.
+
+    A record nobody has switched follows the deployment's baseline; every
+    applied switch mints ``generation + 1``, so generation 0 is a claim and
+    never a switch. An unswitched record on another target moves to
+    *baseline* and keeps its generation, owner, posture narrowings (they only
+    ever refuse) and last switch terminus. A switched record, or one already
+    on *baseline*, is returned as it is.
+    """
+    if record.generation != 0 or record.target == baseline:
+        return record
+    logger.warning(
+        "control context: unswitched record on %r follows the deployment's baseline %r",
+        record.target,
+        baseline,
+    )
+    return replace(record, target=baseline)
 
 
 # -- path resolution --------------------------------------------------------
@@ -553,10 +574,8 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             json.dump(payload, handle, indent=2)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -1060,7 +1079,6 @@ def sweep_dead(
     prefix: str,
     suffix: str,
     keep: str | None = None,
-    salvage: Callable[[Path], None] | None = None,
     is_alive: Callable[[object], bool] = is_process_alive,
 ) -> list[Path]:
     """Unlink every ``prefix<pid>suffix`` file in *directory* whose PID is gone.
@@ -1077,9 +1095,6 @@ def sweep_dead(
         keep: A filename to leave alone without probing it. This is how a
             process spares its own file: asking whether oneself is alive is a
             way to get it wrong.
-        salvage: Called with each doomed file before it is unlinked, for a
-            caller that needs what it said — the child PIDs a dead server left
-            running are read here and nowhere else.
         is_alive: The liveness predicate.
 
     Returns:
@@ -1097,8 +1112,6 @@ def sweep_dead(
         pid = _pid_from_filename(entry.name, prefix, suffix)
         if pid is not None and is_alive(pid):
             continue
-        if salvage is not None:
-            salvage(entry)
         try:
             entry.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover - unwritable state dir

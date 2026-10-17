@@ -47,9 +47,9 @@ import yaml
 from osprey.cli.build_cmd import _attached_service_overrides
 from osprey.cli.build_profile_merge import merge_persona_delta
 from osprey.cli.build_profile_ports import layout_port_fill
+from osprey.deployment.graphdb_service import DEFAULT_TTL_PATH
 from osprey.deployment.reach import REACH_CONTRACTS, render_local_keys
 from osprey.port_layout import DEFAULT_PORT_BASE
-from tests.cli.test_explicit_config_equivalence import CELL_DELTAS
 from tests.fixtures.explicit_config.freeze import (
     FIXTURE_ROOT,
     PROJECT_NAME,
@@ -95,26 +95,12 @@ def _baseline_root() -> dict[str, Any]:
 
 
 def _expected_deployed_services() -> list[str]:
-    """The baseline ``deployed_services``, moved by the equivalence module's declared delta.
-
-    The frozen list, replaced by the ``live`` value of the one delta
-    :data:`~tests.cli.test_explicit_config_equivalence.CELL_DELTAS` declares for
-    this cell's root ``deployed_services``, so the two modules cannot disagree
-    about the order. The delta must be exact: a list-gains spelling says nothing
-    about order and would be misread here.
+    """The frozen baseline ``deployed_services`` of this cell, in order.
 
     Returns:
         The ordered list the deploying render must carry.
     """
-    deltas = [
-        delta
-        for delta in CELL_DELTAS.get(f"{PRESET}/{MODE}", ())
-        if delta.key == ("root", "deployed_services")
-    ]
-    assert len(deltas) == 1, f"expected one root deployed_services delta, found {deltas}"
-    (delta,) = deltas
-    assert delta.added is None, "the deployed_services delta must be exact to pin an order"
-    return list(delta.live)
+    return list(_baseline_root().get("deployed_services") or [])
 
 
 def _preset_config() -> dict[str, Any]:
@@ -158,7 +144,9 @@ def _service_leaves(document: dict[str, Any]) -> list[str]:
 
 
 @pytest.fixture(scope="session")
-def built_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def built_project(
+    tmp_path_factory: pytest.TempPathFactory, offline_build_env: dict[str, str]
+) -> Path:
     """One real ``osprey init`` + ``osprey build`` of the cell, shared by the session.
 
     Invoked exactly as the fixture freeze invoked it — same verbs, same fixed
@@ -191,7 +179,7 @@ def built_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     assert result.returncode == 0, f"osprey init refused the cell:\n{_failure_reason(result)}"
 
     project: Path = scratch / PROJECT_NAME
-    result = _run_cli(["build"], cwd=project, env=env)
+    result = _run_cli(["build"], cwd=project, env={**env, **offline_build_env})
     # Every reader of this project reads its rendered files, never the venv.
     shutil.rmtree(project / "build" / ".venv", ignore_errors=True)
     assert result.returncode == 0, f"osprey build refused the cell:\n{_failure_reason(result)}"
@@ -216,7 +204,9 @@ def _persona_render_dir(built_project: Path, persona: str) -> Path:
 
 
 @pytest.fixture(scope="session")
-def external_store_render(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+def external_store_render(
+    tmp_path_factory: pytest.TempPathFactory, offline_build_env: dict[str, str]
+) -> dict[str, Any]:
     """An attached project naming an external graph store nothing here deploys.
 
     ``channel-finder-standalone`` deploys no store of its own
@@ -252,7 +242,7 @@ def external_store_render(tmp_path_factory: pytest.TempPathFactory) -> dict[str,
     assert result.returncode == 0, f"osprey init refused the profile:\n{_failure_reason(result)}"
 
     project: Path = scratch / PROJECT_NAME
-    result = _run_cli(["build"], cwd=project, env=env)
+    result = _run_cli(["build"], cwd=project, env={**env, **offline_build_env})
     # Only the rendered config is read, never the venv.
     shutil.rmtree(project / "build" / ".venv", ignore_errors=True)
     assert result.returncode == 0, (
@@ -274,8 +264,8 @@ def test_deploying_render_lists_the_baseline_services_in_order(
 ) -> None:
     """The deployment's ``deployed_services`` equals the baseline's, in order.
 
-    The baseline is the frozen list as the equivalence module's declared deltas
-    move it (:func:`_expected_deployed_services`). Order and all: it is the order the injectors ran in, and two of them read it
+    The baseline is the frozen list (:func:`_expected_deployed_services`). Order
+    and all: it is the order the injectors ran in, and two of them read it
     back — the chat bridges gate their dispatcher URLs on the dispatch pair
     already being listed, the recorder gates its image and addressing on the
     virtual accelerator being listed — so a reordering is a behaviour change,
@@ -419,7 +409,8 @@ def test_an_attached_render_keeps_the_external_store_it_names(
 
     Requirement 5's external-store clause: ``services.graphdb`` keeps
     ``port_host`` and ``http_port_host`` beside its ``uri``, exactly as a
-    deploying render would. ``uri`` is the profile's own; the two ports are the
+    deploying render would, and the corpus the build fills into every graphdb
+    block. ``uri`` is the profile's own; the two ports are the
     layout fill's, and a drop scoped to the whole ``services.*`` surface took
     all three — leaving the graph consumer with the address the Reach Contract
     happens to project back for a host of its own, and nothing at all beside a
@@ -429,11 +420,11 @@ def test_an_attached_render_keeps_the_external_store_it_names(
     where a store is and claiming to run one are different statements.
     """
     fill = layout_port_fill({"services.graphdb.uri": EXTERNAL_GRAPH_URI}, DEFAULT_PORT_BASE)
-    expected = {"uri": EXTERNAL_GRAPH_URI} | {
+    expected = {"uri": EXTERNAL_GRAPH_URI, "ttl_path": DEFAULT_TTL_PATH} | {
         key.rpartition(".")[2]: value for key, value in fill.items()
     }
 
-    assert set(expected) == {"uri", "port_host", "http_port_host"}, (
+    assert set(expected) == {"uri", "ttl_path", "port_host", "http_port_host"}, (
         f"the layout fill no longer supplies the external store's two ports: {fill}"
     )
     assert external_store_render["deployed_services"] == []
@@ -523,7 +514,7 @@ def test_a_persona_override_of_deployed_services_reaches_nothing_else() -> None:
     """
     root = {
         "config": {
-            "deployed_services": ["postgresql", "openobserve", "qmd", "graphdb"],
+            "deployed_services": ["postgresql", "telemetry_store", "qmd", "graphdb"],
             "services.graphdb.image": "graphdb:11",
             "services.postgresql.username": "osprey",
             "approval.enabled": True,
@@ -532,12 +523,12 @@ def test_a_persona_override_of_deployed_services_reaches_nothing_else() -> None:
     before = copy.deepcopy(root)
 
     merged = merge_persona_delta(
-        root, {"config": {"deployed_services": ["postgresql", "openobserve", "qmd"]}}
+        root, {"config": {"deployed_services": ["postgresql", "telemetry_store", "qmd"]}}
     )
 
     assert merged["config"]["deployed_services"] == [
         "postgresql",
-        "openobserve",
+        "telemetry_store",
         "qmd",
         "graphdb",
     ]
@@ -550,31 +541,25 @@ def test_a_persona_override_of_deployed_services_reaches_nothing_else() -> None:
 def test_attached_overrides_keep_the_render_local_keys_of_a_claimed_service() -> None:
     """A key that names a file in the render's own data tree is not a stack claim.
 
-    ``services.graphdb.ttl_path`` and ``index_path`` say where THIS render's
-    corpus and search index are, and every persona stages that same ``data/``
-    tree. Dropped with the claimed stack, the persona's build could not derive
-    its index and its containers could not say where the corpus is. The Reach
-    Contract declares them render-local, so they survive the drop; the store's
-    address, image and JVM keys go as before.
+    ``services.graphdb.ttl_path`` says where THIS render's corpus is, and every
+    persona stages that same ``data/`` tree. Dropped with the claimed stack, the
+    persona's build could not derive its index and its containers could not say
+    where the corpus is. The Reach Contract declares it render-local, so it
+    survives the drop; the store's address, image and JVM keys go as before.
     """
-    assert RENDER_LOCAL_SERVICE_KEYS >= {
-        "services.graphdb.ttl_path",
-        "services.graphdb.index_path",
-    }
+    assert RENDER_LOCAL_SERVICE_KEYS >= {"services.graphdb.ttl_path"}
 
     overrides = _attached_service_overrides(
         {
             "services.graphdb.image": "neo4j:5.26-community",
             "services.graphdb.port_host": 10802,
             "services.graphdb.heap_max_size": "1G",
-            "services.graphdb.ttl_path": "./data/demo_machine.ttl",
-            "services.graphdb.index_path": "./data/channel_databases/graph.duckdb",
+            "services.graphdb.ttl_path": "./data/graph/facility.ttl",
             "deployed_services": ["graphdb"],
         }
     )
 
     assert overrides == {
         "deployed_services": [],
-        "services.graphdb.ttl_path": "./data/demo_machine.ttl",
-        "services.graphdb.index_path": "./data/channel_databases/graph.duckdb",
+        "services.graphdb.ttl_path": "./data/graph/facility.ttl",
     }

@@ -158,7 +158,7 @@ from osprey import bluesky_tool_names
 from osprey.agent_runner import SDKWorkflowResult, ToolTrace
 from osprey.deployment.compose_generator import resolve_project_name
 from osprey.services.bluesky_bridge.queue_backend import is_queue_active
-from tests.e2e import _orm_stack, _queue_drive
+from tests.e2e import _facility_select, _orm_stack, _queue_drive
 from tests.e2e._deploy_diagnostics import dead_container_logs, queue_stack_logs
 from tests.e2e._volumes import remove_project_volumes
 from tests.e2e.judge import LLMJudge, WorkflowResult
@@ -213,8 +213,8 @@ QUEUE_CONTROL = frozenset(
 # Ports + names for the live stack (the deploy scaffold at the end of this
 # module). Every published port is deliberately outside BOTH the thousand-port
 # block a deployment claims from ``deployment.port_base`` (10000-10999 at the
-# default base — bridge, tiled, panels and openobserve in the services band,
-# postgres and mongodb in the stores band; the VA's Channel Access 5064 is the
+# default base — bridge, tiled, panels and the telemetry gateway in the
+# services band, postgres, mongodb and the telemetry store in the stores band; the VA's Channel Access 5064 is the
 # one port the base does not move) and every sibling e2e module's pinned port,
 # so this module can run on a shared dev machine beside an already-deployed
 # tutorial stack —
@@ -235,8 +235,9 @@ QUEUE_CONTROL = frozenset(
 #               (5064 is _orm_stack's default, which the tutorial holds)
 #   postgres    25432 test_bluesky_queue_e2e · 25433 test_tiled_roundtrip
 #               25434 test_bluesky_web_deploy
-#   openobserve 25080 test_bluesky_queue_e2e · 25081 test_bluesky_deploy
-#               25082 test_tiled_roundtrip · 25083 test_bluesky_web_deploy
+#   telemetry   gateway 24318 / store 28123 test_bluesky_queue_e2e
+#               24319 / 28124 test_bluesky_deploy · 24320 / 28125 test_tiled_roundtrip
+#               24321 / 28126 test_bluesky_web_deploy
 #   mongodb     no sibling pins one — the archiver's Mongo published the
 #               service default, and a tutorial stack deployed on this host
 #               holds it. The preflight refuses to touch any container when a
@@ -251,7 +252,8 @@ PANELS_PORT = 18097
 TILED_PORT = 18193
 VA_CA_PORT = 15066
 POSTGRES_PORT = 25435
-OPENOBSERVE_PORT = 25084
+TELEMETRY_GATEWAY_PORT = 24322
+TELEMETRY_STORE_PORT = 28127
 MONGODB_PORT = 27117
 
 #: Compose project this module deploys under. Container names and locally-built
@@ -3038,8 +3040,8 @@ PANELS_IMAGE = _orm_stack.panels_image(PROJECT_NAME)
 #: policy the headless agent needs. Note the two ALTITUDES, which is the
 #: whole reason this is one dict and not sibling entries:
 #:
-#: - ``services.postgresql.port_host`` / ``services.openobserve.port`` are
-#:   CONFIG keys — those services are in the preset's config template, so a
+#: - ``services.postgresql.port_host`` / ``services.telemetry_gateway.port`` /
+#:   ``services.telemetry_store.port`` are CONFIG keys — those services are in the preset's config template, so a
 #:   dotted key under ``config:`` edits them in place.
 #: - ``bluesky.tiled_port`` / ``bluesky_web.port`` / ``va_archiver.port_host``
 #:   are BUILD-PROFILE keys
@@ -3085,7 +3087,8 @@ PANELS_IMAGE = _orm_stack.panels_image(PROJECT_NAME)
 _EXTRA_CONFIG: dict[str, Any] = {
     "config": {
         "services.postgresql.port_host": POSTGRES_PORT,
-        "services.openobserve.port": OPENOBSERVE_PORT,
+        "services.telemetry_gateway.port": TELEMETRY_GATEWAY_PORT,
+        "services.telemetry_store.port": TELEMETRY_STORE_PORT,
         "approval.tools.queue_add": "skip",
         "approval.tools.queue_start": "skip",
         "approval.tools.queue_remove": "skip",
@@ -3140,15 +3143,23 @@ _REQUIRED_TOOLS = (
 class DeployedScanStack:
     """Everything a live test needs about the one deployed project.
 
-    ``correctors``/``readbacks`` are the device names the build staged into the
-    queueserver worker's device file (``_orm_stack.write_devices_file``), so a
-    test that composes a plan names exactly the devices the deployed worker
-    registered.
+    ``correctors``/``bpms`` are every corrector and monitor the queueserver
+    worker registered (``_orm_stack.select_correctors``/``select_bpms`` over
+    the device file the build staged): the worker holds the whole staged view
+    and the agent picks its own devices, so a floor asking whether a run drove
+    a wired corrector and read a wired monitor checks against all of them.
+
+    ``named`` is the ``(setpoint, model)`` of the corrector a limits record
+    bounds (``_facility_select.bounded_corrector``), the one device a prompt or a
+    protocol-side plan names when it depends on a range. ``named_bpms`` are
+    that model's monitors, the readings that respond to it.
     """
 
     repo: Path
     correctors: dict[str, tuple[str, str]]
     bpms: dict[str, str]
+    named: tuple[str, str]
+    named_bpms: list[str]
     token: str
 
 
@@ -3174,6 +3185,78 @@ def _run(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess
     )
 
 
+#: The pyAML skill a render ships only for a facility with measurement models.
+_PYAML_SKILL = "pyaml-tools"
+
+#: The pyAML measurement tool a render names only for a facility with
+#: measurement models.
+_PYAML_MEASURE_TOOL = "pyaml_measure"
+
+
+def _describe_queue_deployment(repo: Path) -> None:
+    """Shape the repo's facility tree, before the build, into the deployment
+    these lanes grade.
+
+    The lanes grade the queue route, so the facility carries no pyAML
+    measurement models: the render then offers no pyAML skill, no measurement
+    prompt section and no measurement tool, and a measurement request has the
+    queue as its one route.
+
+    The prompts ask for two correctors swept across the range they are allowed,
+    so the bounded corrector's model gets a second bounded corrector: the first
+    corrector of the other plane, given the bounded corrector's band. The
+    record goes into this throwaway tree only, read back through the same
+    limits render the build enforces.
+    """
+    shutil.rmtree(repo / "data" / "facility" / "measurement")
+
+    from osprey_connectors.simulation.view import SimulatorView
+
+    limits = _orm_stack.channel_limits(repo)
+    view = SimulatorView.open(SimulatorView.path_for_project(repo.parent / f"{repo.name}.limits"))
+    bounded = next(
+        (
+            address
+            for address in sorted(_facility_select.corrector_addresses(view))
+            if view.channel(address).value_range is not None
+        ),
+        None,
+    )
+    assert bounded is not None, "the facility's limits.yaml bounds no corrector"
+    (binding,) = (b for b in view.bindings(role="setpoint") if b.address == bounded)
+    other_plane = sorted(
+        b.address
+        for b in view.bindings(role="setpoint", model=binding.model)
+        if b.plane is not None and b.plane != binding.plane
+    )
+    assert other_plane, f"model {binding.model} wires no corrector of a second plane"
+
+    limits_file = repo / "data" / "facility" / "limits.yaml"
+    document = yaml.safe_load(limits_file.read_text(encoding="utf-8"))
+    band = limits[bounded]
+    document["records"].append(
+        {
+            "address": other_plane[0],
+            "min_value": band["min_value"],
+            "max_value": band["max_value"],
+        }
+    )
+    limits_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def _assert_no_pyaml_surface(repo: Path) -> None:
+    """The render offers the agent no pyAML measurement route."""
+    render = repo / "build"
+    assert not (render / ".claude" / "skills" / _PYAML_SKILL).exists(), (
+        f"the render ships the {_PYAML_SKILL} skill; the queue lanes need a deployment "
+        "without pyAML measurement models"
+    )
+    assert _PYAML_MEASURE_TOOL not in (render / "CLAUDE.md").read_text(encoding="utf-8"), (
+        f"the rendered CLAUDE.md names {_PYAML_MEASURE_TOOL}; the queue lanes need a "
+        "deployment without pyAML measurement models"
+    )
+
+
 @pytest.fixture(scope="module")
 def deployed_scan_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeployedScanStack]:
     """Build and ``osprey up --dev`` the plan stack; tear it down after.
@@ -3191,32 +3274,6 @@ def deployed_scan_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[De
     """
     base = tmp_path_factory.mktemp("scan_stack_agentic_build")
 
-    # The plan devices are authored BETWEEN `init` and `build`: the build copies
-    # <repo>/data into the build zone and stages the device file it finds there
-    # for the queueserver worker, so a set written after the build would never
-    # reach a container.
-    #
-    # Correctors and BPMs come from the deployment repo's own channel roster —
-    # the same channel database the build materializes for the deployed channel
-    # finder, and never a hardcoded preset channel. The correctors are a small
-    # slice: these scenarios ask for a measurement on a healthy stack, so no
-    # particular device has to be in range, and every corrector a plan drives
-    # adds a sweep to a real run. The BPMs are the roster's whole monitor set,
-    # as a production build derives them: reading one more channel per point
-    # costs nothing, and a worker that knows fewer monitors than the channel
-    # finder hands the agent a facility that disagrees with itself — a plan
-    # authored from the finder's answer is then refused at enqueue for naming
-    # monitors the worker never built.
-    correctors: dict[str, tuple[str, str]] = {}
-    bpms: dict[str, str] = {}
-
-    def author_devices(repo: Path) -> None:
-        nonlocal correctors, bpms
-        records = _orm_stack.roster_records(repo)
-        correctors = _orm_stack.select_correctors(records)
-        bpms = _orm_stack.select_bpms(records, count=None)
-        _orm_stack.write_devices_file(repo, correctors=correctors, bpms=bpms)
-
     repo = _orm_stack.build_project_subprocess(
         PROJECT_NAME,
         output_dir=base,
@@ -3229,9 +3286,16 @@ def deployed_scan_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[De
         timeout=BUILD_TIMEOUT_SEC,
         provider=JUDGE_PROVIDER,
         extra_config=_EXTRA_CONFIG,
-        pre_build=author_devices,
+        pre_build=_describe_queue_deployment,
     )
-    _orm_stack.assert_devices_authored(correctors, bpms)
+    _assert_no_pyaml_surface(repo)
+    # Correctors and BPMs come from the device file the build staged, never a
+    # hardcoded preset channel: the full sets the worker registered, which is
+    # what the liveness and hysteresis floors mean by "wired".
+    correctors = _orm_stack.select_correctors(repo, count=None, model=None)
+    bpms = _orm_stack.select_bpms(repo, count=None, model=None)
+    named_setpoint, _named_readback, named_model = _facility_select.bounded_corrector(repo)
+    named_bpms = list(_orm_stack.select_bpms(repo, count=None, model=named_model))
 
     # The repo root's `.env` — the deployment's whole secret store, and the file
     # `osprey up` refuses to start without.
@@ -3297,6 +3361,8 @@ def deployed_scan_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[De
             repo=repo,
             correctors=correctors,
             bpms=bpms,
+            named=(named_setpoint, named_model),
+            named_bpms=named_bpms,
             token=_orm_stack.minted_launch_token(repo),
         )
     finally:
@@ -3605,10 +3671,11 @@ async def test_agent_measures_orbit_response_on_a_healthy_stack(
 
 GRID_OPERATOR_REQUEST = (
     "I would like a two-dimensional map on the machine. Pick two of the "
-    "steering correctors, step them together over a grid of settings across "
-    "the range they are allowed, and take a beam-position reading at every "
-    "point of that grid. Once it has run, tell me what the map looks like "
-    "over the region you covered."
+    "steering correctors, step them together over a grid of settings within "
+    "2 A either side of where they sit now, and take a beam-position reading "
+    "at every point of that grid. You do not need to put them back afterwards. "
+    "Once it has run, tell me what the map looks like over the region you "
+    "covered."
 )
 
 
@@ -3749,7 +3816,7 @@ async def test_agent_authors_and_runs_a_hysteresis_loop(
     monkeypatch.setenv("BLUESKY_BRIDGE_URL", BRIDGE_URL)
     monkeypatch.setenv("BLUESKY_LAUNCH_TOKEN", deployed_scan_stack.token)
 
-    corrector = next(iter(deployed_scan_stack.correctors))
+    corrector = deployed_scan_stack.named[0]
     request_text = HYSTERESIS_OPERATOR_REQUEST_TEMPLATE.format(corrector=corrector)
 
     with _authoring_promoted(repo):
@@ -4248,29 +4315,35 @@ async def test_starting_a_queued_scan_costs_one_approval_per_plan_version(
 # so the agent's task begins where an operator's would: something is moving.
 # ---------------------------------------------------------------------------
 
-#: Points for the plan the abort test starts and the agent must stop. Sized
-#: against the measured VA pace (~18 points/s — see the grid-size calibration
-#: in test_bluesky_queue_e2e.py): ~7 minutes of running plan. That has to
-#: outlive SDK session startup plus the discovery turns between "stop it now"
-#: and the agent's abort — the queue e2e aborts its 4000-point plan within
-#: seconds over raw HTTP, but an agent needs minutes, so this one is double.
-#: If the plan completes before the abort lands, the floor fails as an
-#: AssertionError and ``flaky`` retries against a fresh plan.
+#: Points for the plan the abort test starts and the agent must stop. The
+#: bound that matters is the FASTEST pace a grid_scan point reaches on this
+#: stack shape (18 points/s, see the grid-size calibration in
+#: test_bluesky_queue_e2e.py): even there the plan runs ~7 minutes, which has
+#: to outlive SDK session startup plus the discovery turns between "stop it
+#: now" and the agent's abort. At the served VA's slower per-point pace it runs
+#: far longer, which only widens the abort window. The queue e2e aborts its
+#: 4000-point plan within seconds over raw HTTP, but an agent needs minutes,
+#: so this one is double. If the plan completes before the abort lands, the
+#: floor fails as an AssertionError and ``flaky`` retries against a fresh plan.
 ABORT_PLAN_POINTS = 8000
 
-#: Points for the re-arm twin's SETUP plan. This one is aborted by the test
-#: itself over raw HTTP within seconds of the run reporting ``running``, so
-#: it only has to outlive the abort's own pause-poll composition (~10 s) —
-#: and the agent's restart then re-runs the SAME plan to completion, so it
-#: must stay short enough to wait out: ~50 s at the measured pace.
-REARM_PLAN_POINTS = 900
+#: Points for the re-arm twin's SETUP plan, bounded at both ends of the
+#: measured grid_scan pace on this stack shape (18 points/s fast, 0.67 s per
+#: point slow; see the grid-size calibration in test_bluesky_queue_e2e.py).
+#: Lower bound: the test aborts this plan itself over raw HTTP, and the abort
+#: lands ~1.5 s after the run reports ``running`` (running, pausing, aborting),
+#: so even at the fastest pace the plan must still be running then; 300 points
+#: is ~17 s there. Upper bound: the agent's restart re-runs the SAME plan to
+#: completion inside REARM_RUN_TIMEOUT_SEC, so at the slowest pace it must
+#: take at most half that budget; 300 points is ~200 s there.
+REARM_PLAN_POINTS = 300
 
 #: How long a protocol-started plan may take to reach ``running`` — covers
 #: the manager handing the item to the worker, not the plan's own duration.
 RUNNING_WAIT_TIMEOUT_SEC = 180.0
 
-#: Budget for the restarted plan to complete, matching the per-plan
-#: wall-clock budget test_bluesky_queue_e2e.py uses on this same stack shape.
+#: Budget for the restarted plan to complete: at least twice what
+#: REARM_PLAN_POINTS takes at the slowest measured pace.
 REARM_RUN_TIMEOUT_SEC = 420.0
 
 #: Client id for the draft operations this module performs protocol-side.
@@ -4281,35 +4354,19 @@ def _long_grid_args(stack: DeployedScanStack, num_points: int) -> dict[str, Any]
     """Minimal single-axis ``grid_scan`` args sized to ``num_points``.
 
     Mirrors the queue e2e's calibrated shape: the sweep band is the middle
-    half of the corrector's OWN ``channel_limits.json`` entry, so nothing here
-    hardcodes a facility channel or asks the reference monitor for a value
-    outside its band.
+    half of the corrector's OWN limits record, so nothing here hardcodes a
+    facility channel or asks the reference monitor for a value outside its
+    band.
 
-    The corrector NAMES come from the roster (``stack.correctors``); the limit
-    VALUES come from ``channel_limits.json``, which gates a subset of those
-    channels and enumerates none of them (see ``_orm_stack.channel_limits``).
-    So the axis is the first staged corrector the limits file actually bounds,
-    not simply the first one staged.
+    The axis is the corrector a limits record bounds
+    (``_facility_select.bounded_corrector``), and the readback a monitor of that
+    corrector's own model, the readings that respond to it.
     """
-    limits = _orm_stack.channel_limits(stack.repo)
-    axis = next(
-        (
-            (name, entry)
-            for name, (sp_address, _rb) in stack.correctors.items()
-            if isinstance(entry := limits.get(sp_address), dict)
-            and "min_value" in entry
-            and "max_value" in entry
-        ),
-        None,
-    )
-    assert axis is not None, (
-        "no staged corrector has a channel_limits band -- the long grid needs "
-        "a bounded axis to size its sweep"
-    )
-    axis_name, entry = axis
+    axis_name, _readback, _model = _facility_select.bounded_corrector(stack.repo)
+    entry = _orm_stack.channel_limits(stack.repo)[axis_name]
     lo, hi = float(entry["min_value"]), float(entry["max_value"])
     return {
-        "readbacks": [next(iter(stack.bpms))],
+        "readbacks": [stack.named_bpms[0]],
         "axes": [
             {
                 "setpoint": axis_name,

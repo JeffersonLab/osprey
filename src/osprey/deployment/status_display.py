@@ -474,7 +474,7 @@ def _show_web_terminal_users(config, all_containers, repo_root=None):
     if not (web_terminals_cfg.get("enabled") and user_names):
         return
 
-    project_name = resolve_project_name(config)
+    project = resolve_project_name(config)
 
     by_name = {}
     for container in all_containers:
@@ -500,7 +500,7 @@ def _show_web_terminal_users(config, all_containers, repo_root=None):
     output.report("")
     output.section("Web Terminal Users:", ())
     for user in user_names:
-        container = by_name.get(web_container_name(project_name, user))
+        container = by_name.get(web_container_name(project, user))
         claude_config_volume, agent_data_volume = resolve_user_volume_names(config, user)
         # Only for a container that EXISTS: a marker names why a launch refused,
         # and there is no launch to explain for a user whose container was never
@@ -1073,9 +1073,11 @@ def _print_agent_section(repo_root, build_dir, config, *, show_agents):
                 (
                     "telemetry: the observability backend's credentials are missing or "
                     "unresolved, so the provider could not be resolved",
-                    "Set claude_code.telemetry.openobserve.user and .password — or the "
-                    f"environment variables they reference — in {repo_root / '.env'}, "
-                    "then rerun. The provider configuration itself is not the problem.",
+                    "Run `osprey build` to write each sender's gateway login "
+                    "(.env.telemetry-sender.<identity>), or set the variable "
+                    "claude_code.telemetry.auth.token_env names in "
+                    f"{repo_root / '.env'}, then rerun. The provider configuration "
+                    "itself is not the problem.",
                 )
             )
         except Exception as exc:

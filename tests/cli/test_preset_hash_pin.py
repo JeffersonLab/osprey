@@ -164,11 +164,47 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # advisory firing on already-deployed projects is the correct signal. The
     # five `extends` children inherit it; channel-finder-standalone and
     # hello-world stand still.
-    # The twenty-first move, and control-assistant's family alone: the root
+    # The twenty-first move, and every preset: each states
+    # `simulation.models: null`, the served-model list, whose null serves every
+    # model in the facility file as the absent key does, so a rebuilt project
+    # behaves identically; the digest moves because the preset now states it.
+    # The twenty-second move, and control-assistant's family and hello-world:
+    # the limits block names its mode. hello-world states
+    # `control_system.limits_checking.mode: optional` in place of the boolean
+    # it carried for the same posture; control-assistant states the same leaf
+    # deployment-wide and drops its per-type `virtual_accelerator` limits
+    # block, so one pair now covers every target, and the five `extends`
+    # children inherit it. A rebuilt control-assistant project writes a channel
+    # the limits file does not list on every target instead of refusing it on
+    # the hardware-shaped ones, so the staleness advisory firing on
+    # already-deployed projects is the correct signal. ariel-standalone and
+    # channel-finder-standalone carry no limits block and stand still.
+    # The twenty-third move, and the same seven: control-assistant and
+    # hello-world no longer state `control_system.limits_checking.database_path`.
+    # The build writes it into the render, naming the limits database it
+    # renders from `data/facility/limits.yaml`, so a rebuilt project carries
+    # the same path and reads its limits from the records of that file.
+    # The twenty-fourth move, and control-assistant's family alone: the root
+    # preset authors its knowledge pages inside the facility tree, so
+    # `facility_knowledge.bundle_path` reads `data/facility/knowledge` where it
+    # read `data/facility_knowledge`. A rebuilt project mounts and serves the
+    # bundle from the new directory, so the staleness advisory firing on
+    # already-deployed projects is the correct signal. The five `extends`
+    # children inherit it; ariel-standalone, channel-finder-standalone and
+    # hello-world carry no bundle and stand still.
+    # The twenty-fifth move, and every preset but hello-world: the presets stop
+    # stating the retired facility leaves. ariel-standalone and
+    # channel-finder-standalone drop `facility.name`, whose display name is now
+    # the facility identity's; channel-finder-standalone and control-assistant
+    # drop `facility.ontology`, whose terminology tables now render from the
+    # build's facts. Neither leaf had a reader, so a rebuilt project behaves as
+    # before. The five `extends` children inherit control-assistant's change;
+    # hello-world stated neither leaf and stands still.
+    # The twenty-sixth move, and control-assistant's family alone: the root
     # preset spells the EPICS and virtual-accelerator call bound `timeout_s`,
     # the one key every control-system connector reads, and the five `extends`
     # children inherit it; the other three stand still. The value is unchanged.
-    # The twenty-second move, and the four presets that reach no machine:
+    # The twenty-seventh move, and the four presets that reach no machine:
     # control-assistant-logbook and control-assistant-knowledge drop the
     # JUPYTER panel, whose kernels reach the control target, and they,
     # ariel-standalone and channel-finder-standalone state
@@ -177,7 +213,22 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # already did. A rebuilt project of any of the four has no picker, so the
     # advisory firing is correct. control-assistant and hello-world gained a
     # comment only, which moves no digest; the other five stand still.
-    # The twenty-third move, and the two presets that carry an `ariel:` block:
+    # The twenty-eighth move, and the two presets that run a graph store:
+    # control-assistant and ariel-standalone stop spelling
+    # `services.graphdb.ttl_path`, which the build now fills with the graph view
+    # it writes from the facility file. A rebuilt project seeds its store from
+    # that view, so the advisory firing is correct. The five `extends` children
+    # inherit control-assistant's change; the other two stand still.
+    # The twenty-ninth move, and control-assistant's family alone: the root
+    # preset stops stating `facility.prefix`, whose last reader is gone —
+    # container names and persona projects come from the project name. The
+    # five `extends` children inherit the change; ariel-standalone and
+    # channel-finder-standalone lose only a commented example and stand still.
+    # The thirtieth move, and every preset: each states `simulation.tick_s:
+    # 1.0`, the simulator's tick period, whose value is the one the absent key
+    # resolves, so a rebuilt project behaves identically; the digest moves
+    # because the preset now states it.
+    # The thirty-first move, and the two presets that carry an `ariel:` block:
     # ariel-standalone and control-assistant turned the ARIEL picture modules
     # on (`image_caption` and `image_embedding`, each with its own provider and
     # model) and state `ariel.attachments.copy_on_ingest: images` and
@@ -186,7 +237,7 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # on already-deployed projects is the correct signal. The five `extends`
     # children inherit them; channel-finder-standalone and hello-world stand
     # still.
-    # The twenty-fourth move, and ariel-standalone alone: it states
+    # The thirty-second move, and ariel-standalone alone: it states
     # `ariel.demo_narrative: data/logbook_seed` in place of its demo ingestion
     # block (`ariel.ingestion.adapter` / `source_url`, now commented examples),
     # so its deploy seeds the control-assistant scenario narratives, pictures
@@ -194,41 +245,97 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # a different demo logbook, so the staleness advisory firing on
     # already-deployed projects is the correct signal. Every other preset
     # stands still.
-    # The twenty-fifth move, and control-assistant's family alone: the root
+    # The thirty-third move, and control-assistant's family alone: the root
+    # preset states `simulation.default_scenarios: [rf-thermal]`, the set a
+    # deployment that never chose one starts in, which the machine model named
+    # before. A rebuilt project starts in the same set, from its profile; the
+    # five `extends` children inherit the line, and the other three presets
+    # state no start set and stand still.
+    # The thirty-fourth move, and ariel-standalone alone: it states
+    # `ariel.demo_narrative: all`, the scenario names whose logbook entries the
+    # deploy reads from the built simulator view, in place of a directory the
+    # init filled. A rebuilt project seeds the same entries from its facility,
+    # but the profile states a different value, so the staleness advisory
+    # firing on already-deployed projects is the correct signal. Every other
+    # preset stands still.
+    # The thirty-fifth move, and four presets: control-assistant lists
+    # `lattice` in `web_panels:`, so a rebuilt project serves the LATTICE tab,
+    # and the readonly, readwrite and admin children inherit it. The knowledge
+    # and logbook children exclude the panel, so their resolved content and
+    # their digests stand still, as do the other three presets.
+    # The thirty-sixth move, and control-assistant's family alone: the root
+    # preset stops stating `control_system.connector.mock.simulation_file` and
+    # `control_system.connector.virtual_accelerator.simulation_file`, whose last
+    # reader is gone — every connector serves the simulator view the build
+    # writes. A rebuilt project serves the same view and carries no mock
+    # connector block. The five `extends` children inherit the change; the
+    # other three presets stand still.
+    # The thirty-seventh move, and control-assistant's family alone: the root
     # preset's persona catalog states each entry's `build_profile` only, because
     # the build derives every persona's `project`/`project_path` from the
     # profile's `project_name`. The five `extends` children inherit the
     # catalog; the other three stand still.
-    # The twenty-sixth move, and the two presets that carry an `ariel:` block:
+    # The thirty-eighth move, and hello-world alone: its control system is the
+    # simulator served in process, `control_system.type: virtual_accelerator`
+    # with `control_system.connector.virtual_accelerator.serving: in_process`,
+    # in place of the retired `mock` type, which the build now refuses. A
+    # rebuilt project serves the same channels in process and baselines on
+    # `va`, so the staleness advisory firing on already-deployed projects is
+    # the correct signal. Every other preset stands still.
+    # The thirty-ninth move, and four presets: control-assistant lists the
+    # `pyaml-tools` skill, which renders only where the build has a pyAML view,
+    # and the readonly, readwrite and admin children inherit it. The knowledge
+    # and logbook children exclude the skill, so their resolved content and
+    # their digests stand still, as do the other three presets.
+    # The fortieth move, and the two presets that carry an `ariel:` block:
     # ariel-standalone and control-assistant state
     # `ariel.vocabulary.expand_entries: false`, the entry-side vocabulary
     # switch. Its value matches the behaviour a project had without the key,
     # but the resolved content gained a key, so the advisory fires once on
     # already-deployed projects. The five `extends` children inherit it;
     # channel-finder-standalone and hello-world stand still.
-    "ariel-standalone": ("sha256:15277d12a785a28ef7e415ac9dd79d3306b5cf5b145499cd381451c212715457"),
+    # The forty-first move, and every preset that deploys a telemetry store:
+    # the telemetry store is ClickHouse behind an OpenTelemetry Collector
+    # gateway. ariel-standalone, hello-world and control-assistant
+    # deploy `telemetry_store` and `telemetry_gateway`, emit with
+    # `claude_code.telemetry.backend: gateway` and state no store
+    # credential under `claude_code.telemetry`, carry
+    # `services.telemetry_store.retention_days`, and name a default reader in
+    # `services.telemetry_store.readers` (`carol` in control-assistant,
+    # `operator` in the two roster-less presets). The five `extends` children
+    # inherit the change. channel-finder-standalone deploys no store and
+    # stands still. A rebuilt project runs a different store, so the staleness
+    # advisory firing on already-deployed projects is the correct signal.
+    # The forty-second move, and control-assistant's family alone: the root
+    # preset states `web.panels.system-health.hidden: true`, so the SYSTEM panel
+    # is served without a rail entry and is opened from the status bar's health
+    # item or the rail's More menu. A rebuilt project's rail is one entry
+    # shorter, so the advisory firing is correct. The five `extends` children
+    # inherit it (logbook and knowledge do not select the panel, and their
+    # build writes the block off); the other three stand still.
+    "ariel-standalone": ("sha256:2c89e6847871ea21f8d6a4841a038e4ae30a064ea8965d8975de2ec2e05f3628"),
     "channel-finder-standalone": (
-        "sha256:7bec034ab9e5ae0c11d79df9cf294075e9c38c66bc7251ab9246a684165c9ee5"
+        "sha256:8503c046ea3c8a9ef1e3504e68853a5465556d65ec02c4ef790d3a3db32e4763"
     ),
     "control-assistant": (
-        "sha256:4c9c6c70b277f3c5347cc95ff63eebb5b51771762b7a8eac5c56563db3079913"
+        "sha256:9170b938245a14119cacdab85f6f4baec32b251060f1753d4431fa30fc5fab0d"
     ),
     "control-assistant-admin": (
-        "sha256:13baf93e559b7d02d80cd526142e5929119b61207e0b229a519c7f162d5030a7"
+        "sha256:348eaf114e5363047e4abf07a9ee8b2847622d1cc91b377e3cc4b2dc116ba119"
     ),
     "control-assistant-knowledge": (
-        "sha256:a31393997ea0fd93983aaab93df2cb6fba8612fb990a5dfc0db866e56d4d1215"
+        "sha256:e8b255203656017bb1d0999d1d1c89c084a424dd41cfc065c0113c5c136043b4"
     ),
     "control-assistant-logbook": (
-        "sha256:06991b0b2f53ff128afce01080a6cbaa00cf03691c68befaea32000e9d997226"
+        "sha256:027e39b7a498a8613066b8048e20bf9d0e5426edc610a72a7134647ef2ee3d2b"
     ),
     "control-assistant-readonly": (
-        "sha256:767cbb2f584bb44ac7430d631c586a093546d9a4d4c7fdf9ec736ed24eaccb92"
+        "sha256:134a458d21668f3670d95f466e1b793b05ad353bd677226179b4150248467eac"
     ),
     "control-assistant-readwrite": (
-        "sha256:385cea135107b2a6f7f1e0a0f35de12e3b2632da394d8956fb58a56fc32ac583"
+        "sha256:4aa499440a33a919afc0da1b849441e2d9e6cb1b482f933a227a408c824d9ae2"
     ),
-    "hello-world": ("sha256:ac89cdddebf7f249c0aab55057fce9b6872ff5d0de9679b12221814628e4c2e6"),
+    "hello-world": ("sha256:7c70f737295971c63093e823a2021e78251ca6c285b5da4c1f04cb0afd964803"),
 }
 
 

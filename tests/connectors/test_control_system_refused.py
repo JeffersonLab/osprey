@@ -23,6 +23,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from osprey.mcp_server.control_system.error_handling import (
     ToolError,
@@ -36,6 +37,7 @@ from osprey_connectors.control_system.base import (
 from osprey_connectors.errors import ChannelWriteBlockedError
 from tests.connectors._write_fakes import make_mock_epics_connector
 from tests.connectors._write_fakes import writes_enabled_config as _writes_enabled_config
+from tests.facility.served_tree import in_process_config, served_tree
 
 CHANNEL = "TEST:MAG:PS:SP"
 
@@ -142,6 +144,21 @@ class TestDenialContract:
         assert excinfo.value.reason == "CONTROL_SYSTEM_REFUSED"
         assert excinfo.value.channel_address == CHANNEL
 
+    def test_a_refusal_without_a_reason_keeps_no_reason(self):
+        """A refused result that names no reason is not read as writes-disabled."""
+        result = ChannelWriteResult(
+            channel_address=CHANNEL,
+            value_written=1.0,
+            outcome=WriteOutcome.REFUSED,
+            refusal_reason=None,
+        )
+
+        with pytest.raises(ChannelWriteBlockedError) as excinfo:
+            raise_for_write_result(result)
+
+        assert excinfo.value.reason is None
+        assert str(excinfo.value) == f"Write to '{CHANNEL}' refused"
+
     def test_bare_construction_does_not_misattribute_the_refusal(self):
         """With no message passed, the default text still names the right refuser."""
         err = ChannelWriteBlockedError(CHANNEL, "CONTROL_SYSTEM_REFUSED")
@@ -151,7 +168,7 @@ class TestDenialContract:
         )
         # Policy reasons keep their existing default verbatim.
         assert str(ChannelWriteBlockedError(CHANNEL, "LIMITS")) == (
-            f"Write to '{CHANNEL}' refused by reference monitor (LIMITS)"
+            f"Write to '{CHANNEL}' refused by the reference monitor (LIMITS)"
         )
 
 
@@ -197,12 +214,23 @@ class TestEnvelopeRendering:
 
         assert envelope["error_message"] == (
             "Write refused by the reference monitor during channel_write: "
-            f"Write to '{CHANNEL}' refused by reference monitor (WRITES_DISABLED)"
+            f"Write to '{CHANNEL}' refused by the reference monitor (WRITES_DISABLED)"
         )
         assert envelope["suggestions"] == [
             "This write was refused on policy grounds; it was never sent to the control system.",
             "Do NOT attempt to work around the refusal.",
         ]
+
+    @pytest.mark.asyncio
+    async def test_unknown_reason_envelope_names_no_refuser(self):
+        envelope = await _render(ChannelWriteBlockedError(CHANNEL, "SOMETHING_ELSE"))
+
+        assert envelope["error_type"] == "write_refused"
+        assert envelope["error_message"] == (
+            f"Write refused during channel_write: Write to '{CHANNEL}' refused (SOMETHING_ELSE)"
+        )
+        assert envelope["suggestions"] == ["Do NOT attempt to work around the refusal."]
+        assert envelope["details"] == {"channel": CHANNEL, "reason": "SOMETHING_ELSE"}
 
 
 def _write_result_stub(channel, reason):
@@ -216,21 +244,31 @@ def _write_result_stub(channel, reason):
     )
 
 
-async def _run_all_blocked_batch(tmp_path, monkeypatch, reason):
-    """Drive the channel_write tool with a batch every op of which was refused."""
+async def _run_all_blocked_batch(tmp_path, monkeypatch, *reasons):
+    """Drive the channel_write tool with a batch every op of which was refused.
+
+    One reason refuses both writes alike; two give each write its own reason,
+    in operation order.
+    """
+    first_reason, second_reason = reasons if len(reasons) == 2 else reasons * 2
     from unittest.mock import AsyncMock
 
     from osprey.mcp_server.control_system.server_context import initialize_server_context
     from osprey.mcp_server.control_system.tools.channel_write import channel_write
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yml").write_text("control_system:\n  type: mock\n")
+    view = served_tree(tmp_path / "served", ["PV:A", "PV:B"])
+    control_system = {
+        "type": "virtual_accelerator",
+        "connector": {"virtual_accelerator": in_process_config(view)},
+    }
+    (tmp_path / "config.yml").write_text(yaml.safe_dump({"control_system": control_system}))
     initialize_server_context()
 
     connector = AsyncMock()
     connector.write_multiple_channels.return_value = [
-        _write_result_stub("PV:A", reason),
-        _write_result_stub("PV:B", reason),
+        _write_result_stub("PV:A", first_reason),
+        _write_result_stub("PV:B", second_reason),
     ]
 
     fn = channel_write.fn if hasattr(channel_write, "fn") else channel_write
@@ -276,3 +314,40 @@ class TestAllBlockedBatchAttribution:
             "All 2 write(s) refused by the reference monitor: PV:A, PV:B"
             in (envelope["error_message"])
         )
+
+    @pytest.mark.asyncio
+    async def test_mixed_refusals_name_each_refuser(self, tmp_path, monkeypatch):
+        envelope = await _run_all_blocked_batch(
+            tmp_path, monkeypatch, "CONTROL_SYSTEM_REFUSED", "LIMITS"
+        )
+
+        assert envelope["error_type"] == "write_refused"
+        assert (
+            "All 2 write(s) refused — by the control system: PV:A; "
+            "by the reference monitor: PV:B" in envelope["error_message"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_address_first_does_not_hide_a_limits_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        envelope = await _run_all_blocked_batch(
+            tmp_path, monkeypatch, "CHANNEL_NOT_FOUND", "LIMITS"
+        )
+
+        assert envelope["error_type"] == "write_refused"
+        assert envelope["details"]["reason"] == "LIMITS"
+        assert envelope["details"]["channel"] == "PV:B"
+        assert (
+            "All 2 write(s) refused — by the reference monitor: PV:B; "
+            "PV:A is not a channel of this facility" in envelope["error_message"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_without_a_reason_names_no_refuser(self, tmp_path, monkeypatch):
+        envelope = await _run_all_blocked_batch(tmp_path, monkeypatch, None)
+
+        assert envelope["error_type"] == "write_refused"
+        assert envelope["details"]["reason"] is None
+        assert "All 2 write(s) refused — refused: PV:A, PV:B" in envelope["error_message"]
+        assert "reference monitor" not in envelope["error_message"]

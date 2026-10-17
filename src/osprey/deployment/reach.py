@@ -73,7 +73,6 @@ from osprey.bluesky_bridge_connection import (
     lane_env_prefix,
 )
 from osprey.deployment.graphdb_service import (
-    GRAPHDB_INDEX_PATH_CONFIG_KEY,
     GRAPHDB_PASSWORD_ENV,
     GRAPHDB_PORT_CONFIG_KEY,
     GRAPHDB_SERVICE_NAME,
@@ -419,12 +418,10 @@ def _ariel_on(config: Mapping[str, Any]) -> bool:
 
 
 def _telemetry_on(config: Mapping[str, Any]) -> bool:
+    from osprey.build.claude_code_telemetry import GATEWAY_BACKEND
+
     telemetry = as_dict(as_dict(as_dict(config).get("claude_code")).get("telemetry"))
-    return (
-        bool(telemetry.get("enabled"))
-        and telemetry.get("backend") == "openobserve"
-        and not telemetry.get("endpoint")
-    )
+    return bool(telemetry.get("enabled")) and telemetry.get("backend") == GATEWAY_BACKEND
 
 
 def _bluesky_server_on(config: Mapping[str, Any]) -> bool:
@@ -511,10 +508,20 @@ def _va_connector_on(config: Mapping[str, Any]) -> bool:
     session that switches to it, and its persona renders still have to be told
     the port that session would dial; gating on the baseline withheld the
     projection from exactly those renders.
-    """
-    from osprey_connectors.types import TARGET_VA
 
-    return _target_configured(config, TARGET_VA)
+    And the ``va`` it resolves to talks to a network: the simulator served in
+    process lives inside the process that asks, so there is no container port
+    for a session to dial and none is projected.
+    """
+    from osprey_connectors.types import TARGET_VA, resolve_target, talks_to_network
+
+    if not _target_configured(config, TARGET_VA):
+        return False
+    section = as_dict(config).get("control_system")
+    try:
+        return talks_to_network(section, resolve_target(section, TARGET_VA))
+    except ValueError:
+        return False
 
 
 def _live_standin_on(config: Mapping[str, Any]) -> bool:
@@ -929,12 +936,12 @@ REACH_CONTRACTS: dict[str, ReachContract] = {
         ),
         credentials=(CredentialGrant(GRAPHDB_PASSWORD_ENV, config_needs_graphdb_password),),
         names_external=_graphdb_named,
-        # The corpus and the search index derived from it are files in the
-        # render's own data/ tree, which every attached render stages: the
-        # build derives the persona's index from the persona's own corpus key,
-        # and inside the container the roster, the explorer and the keyword
-        # tool resolve both files against the render they sit in.
-        render_local=(GRAPHDB_TTL_PATH_CONFIG_KEY, GRAPHDB_INDEX_PATH_CONFIG_KEY),
+        # The corpus is a file in the render's own data/ tree, which every
+        # attached render stages: the build derives the persona's index from
+        # the persona's own corpus key, and inside the container the explorer
+        # and the keyword tool resolve the corpus and the index beside it
+        # against the render they sit in.
+        render_local=(GRAPHDB_TTL_PATH_CONFIG_KEY,),
         note="the graph MCP server and the graph channel finder dial bolt on loopback",
     ),
     "postgresql": ReachContract(
@@ -966,25 +973,41 @@ REACH_CONTRACTS: dict[str, ReachContract] = {
         names_external=_ariel_database_named,
         note="resolve_ariel_dsn derives the DSN from the block on loopback",
     ),
-    "openobserve": ReachContract(
-        service="openobserve",
+    "telemetry_gateway": ReachContract(
+        service="telemetry_gateway",
         consumers=(
             Consumer(
                 name="agent telemetry (OTLP exporter)",
                 switch_key="claude_code.telemetry.enabled",
                 is_on=_telemetry_on,
-                # The endpoint always derives (host from context, port from the
-                # block or the listen port); the projection keeps the port the
-                # host's.
+                # The gateway address always derives (host from where the
+                # launch runs, port from the block or the port base); the
+                # projection keeps the port the host's.
                 resolves=_always,
                 dial=_telemetry_dial,
             ),
         ),
-        projected=(ProjectedKey("services.openobserve.port", gate=_telemetry_on),),
-        # Every container emits as the one ingest account, by design (the
-        # compose template's ZO_INGEST_SA_TOKEN note): ungated.
-        credentials=(CredentialGrant("ZO_INGEST_SA_TOKEN", None),),
-        note="the exporter posts to the published port on loopback",
+        projected=(ProjectedKey("services.telemetry_gateway.port", gate=_telemetry_on),),
+        # Each sender authenticates with the login in its own
+        # `.env.telemetry-sender.<identity>` env_file, never a granted
+        # compose-environment credential.
+        note="the exporter posts to the gateway's published port",
+    ),
+    "telemetry_store": ReachContract(
+        service="telemetry_store",
+        no_client_reach=True,
+        note=(
+            "only the gateway, the archive pass and the history page query it; "
+            "nothing in a persona container dials the store"
+        ),
+    ),
+    "history": ReachContract(
+        service="history",
+        no_client_reach=True,
+        note=(
+            "browsers reach the history page through the readers' origin; "
+            "nothing in a persona container dials it"
+        ),
     ),
     "bluesky": ReachContract(
         service="bluesky",

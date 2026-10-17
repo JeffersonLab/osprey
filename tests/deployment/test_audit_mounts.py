@@ -64,7 +64,7 @@ from osprey_connectors.workspace import AUDIT_DIR_RELPATH
 from .web_terminals.test_golden_render import EXAMPLE_CONFIG
 
 #: The bundle the reference config mounts when a test needs the bundle half.
-BUNDLE_PATH = "data/facility_knowledge"
+BUNDLE_PATH = "data/facility/knowledge"
 
 #: The ARIEL qmd mirror the reference config mounts when a test needs that half.
 MIRROR_PATH = "var/ariel_mirror"
@@ -95,6 +95,7 @@ def _web_config(
             }
         }
     if personas:
+        web_terminals["default_persona"] = "operator"
         web_terminals["personas"] = {
             "operator": {"project": "dls-operator", "project_path": "../dls-operator"},
             "physicist": {"project": "dls-physicist", "project_path": "../dls-physicist"},
@@ -107,8 +108,17 @@ def _web_config(
 
 
 def _web_services(**kwargs) -> dict:
-    """The parsed ``services:`` mapping of a rendered web overlay."""
-    rendered = render_web_terminals(_web_config(**kwargs))["docker-compose.web.yml"]
+    """The parsed ``services:`` mapping of a rendered web overlay.
+
+    The reference roster's default persona is entitled to the bundle and the
+    mirror whenever the config carries them.
+    """
+    entitled = {"assistant"}
+    rendered = render_web_terminals(
+        _web_config(**kwargs),
+        facility_bundle_personas=entitled if kwargs.get("bundle") else None,
+        ariel_mirror_personas=entitled if kwargs.get("mirror") else None,
+    )["docker-compose.web.yml"]
     return yaml.safe_load(rendered)["services"]
 
 
@@ -231,7 +241,7 @@ def test_the_audit_path_is_routed_through_the_shared_constant():
 
     source, target = _audit_mounts(services["web-alice"])[0].split(":")
     assert source == f"./{AUDIT_DIR_RELPATH}/alice"
-    assert target == f"/app/dls-assistant/{AUDIT_DIR_RELPATH}/alice"
+    assert target == f"/app/dls_controls-assistant/{AUDIT_DIR_RELPATH}/alice"
 
 
 def test_the_target_is_computed_per_persona_from_its_own_project_dir():
@@ -1020,3 +1030,25 @@ def test_a_refused_identity_creates_nothing_and_is_not_fatal(tmp_path, caplog):
     assert "Skipping audit directory provisioning" in caplog.text
     assert not (tmp_path / "escaped").exists()
     assert not (tmp_path / "repo").exists()
+
+
+# ---------------------------------------------------------------------------
+# The telemetry gateway: the one reader of the whole zone, read-only
+# ---------------------------------------------------------------------------
+
+
+def test_the_gateway_mounts_the_audit_root_read_only():
+    """The gateway feeds every identity's ledger to the store, so it is the one
+    service holding the audit root itself — and it never writes a record. The
+    bind is the whole zone, so ``_audit_mounts`` (which matches subdirectories)
+    does not see it; the volume list is parsed directly."""
+    service = _service_fragment("telemetry_gateway")["telemetry_gateway"]
+    audit = [
+        mount
+        for mount in service["volumes"]
+        if mount.split(":", 1)[0].removeprefix("./").rstrip("/") == AUDIT_DIR_RELPATH
+    ]
+    assert len(audit) == 1, service["volumes"]
+    source, target, mode = audit[0].split(":")
+    assert (source, target, mode) == (f"./{AUDIT_DIR_RELPATH}", "/audit", "ro")
+    assert _audit_mounts(service) == []

@@ -116,8 +116,6 @@ tensorboard/
 tmp/
 temp/
 
-venv*
-
 *.jpg
 *.gif
 *.bmp
@@ -168,7 +166,7 @@ _ISSUES
 # Git worktrees
 .worktrees/
 
-# Generated benchmark databases (regenerate: uv run python scripts/generate_benchmark_suite.py)
+# Generated benchmark databases
 data/benchmarks/cross_paradigm/tier*/
 
 # OSPREY workspace (runtime data, not tracked — now covered by _agent_data/* above)
@@ -210,6 +208,7 @@ node_modules/
 # packaged into the wheel and sdist — the hook registers it as a build artifact.
 src/osprey/_version.py
 packages/osprey-connectors/src/osprey_connectors/_version.py
+packages/pyaml-cs-osprey/src/pyaml_cs_osprey/_version.py
 
 # feature-scaffolding logs (not committed)
 .claude/.logs/

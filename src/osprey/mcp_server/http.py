@@ -1,5 +1,6 @@
 """HTTP/IPC utilities for MCP tool code."""
 
+import contextlib
 import logging
 
 logger = logging.getLogger("osprey.mcp_server.http")
@@ -259,10 +260,8 @@ def _post_json_with_response(url: str, payload: dict, *, timeout: int = 3) -> tu
             return resp.status, _json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body: dict = {}
-        try:
+        with contextlib.suppress(Exception):
             body = _json.loads(exc.read())
-        except Exception:
-            pass
         return exc.code, body
 
 
@@ -496,10 +495,10 @@ def resolve_activity_target() -> str | None:
     for ``execute``), and every one of them reads the same file.
 
     Returns ``None``, and never the deployment baseline, when nothing is
-    published. The baseline of a ``mock`` deployment resolves to ``live``;
-    stamping that on an activity event would tell an operator a simulated write
-    touched the real machine. An unpublished target is an absent claim, not a
-    ``live`` one.
+    published. The baseline is what the config selects, not where a session
+    stands: stamping it on an activity event could tell an operator a simulated
+    write touched the real machine, or the reverse. An unpublished target is an
+    absent claim, not a baseline one.
 
     Never raises: a failure to answer degrades to an unstamped event, the same
     fail-closed direction every other reader of that record takes.
