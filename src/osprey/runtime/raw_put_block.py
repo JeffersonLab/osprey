@@ -99,6 +99,7 @@ should not pay for them. A framework already imported at install is patched on
 the spot.
 """
 
+import contextlib
 import importlib
 import inspect
 import logging
@@ -726,10 +727,8 @@ def _install_armed(
                 new = _blocked(dotted, attr, function)
             setattr(new, _ARMED_ATTR, True)
             for meta in ("__name__", "__qualname__", "__doc__"):
-                try:
+                with contextlib.suppress(Exception):
                     setattr(new, meta, getattr(function, meta))
-                except Exception:
-                    pass
             return new
 
         return _preserving_descriptor(owner, attr, original, marked)
@@ -790,10 +789,8 @@ def _install_no_client(
                 raise _client_refusal(library=library)
             handle = original(name, *args, **kwargs)
             if _exports_a_client_symbol(handle):
-                try:
+                with contextlib.suppress(Exception):
                     _ctypes.dlclose(handle)
-                except Exception:
-                    pass
                 raise _client_refusal(library=_library_label(name))
             return handle
 
@@ -817,10 +814,8 @@ def _install_no_client(
                     getattr(lib, symbol)
                 except Exception:
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     self.dlclose(lib)
-                except Exception:
-                    pass
                 raise _client_refusal(library=_library_label(name))
             return lib
 
