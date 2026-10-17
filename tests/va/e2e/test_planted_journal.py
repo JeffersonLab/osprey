@@ -323,7 +323,7 @@ def test_every_setpoint_holds_its_wiring_default_after_three_ticks(
 async def test_the_in_process_connector_replays_the_planted_journal(
     project: e2e_conftest.VaProject, ports: dict[str, int]
 ) -> None:
-    from osprey.connectors.control_system.va_in_process_connector import VAInProcessConnector
+    from osprey_connectors.control_system.va_in_process_connector import VAInProcessConnector
 
     del ports  # the containers read the journal first, and the mock may rewrite it
     connector = VAInProcessConnector()

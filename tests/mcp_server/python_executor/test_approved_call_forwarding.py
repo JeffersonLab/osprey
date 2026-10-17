@@ -342,7 +342,7 @@ def _launched_env(
     folder = tmp_path / "exec"
     (folder / "figures").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(executor, "_resolve_project_root", lambda: tmp_path)
-    monkeypatch.setattr("osprey.utils.workspace.load_osprey_config", lambda: config)
+    monkeypatch.setattr("osprey_connectors.workspace.load_osprey_config", lambda: config)
     monkeypatch.setattr(executor, "_apply_target_stamp", stamp_target)
     monkeypatch.setattr(executor, "_load_limits_validator", lambda target: None)
     monkeypatch.setattr(executor, "resolve_agent_interpreter", lambda root=None: "/bin/true")
@@ -452,7 +452,7 @@ async def test_a_refused_call_spawns_nothing(
         raise AssertionError("a refused call spawns nothing")
 
     monkeypatch.setattr(executor, "_resolve_project_root", lambda: tmp_path)
-    monkeypatch.setattr("osprey.utils.workspace.load_osprey_config", lambda: _ASKING_CONFIG)
+    monkeypatch.setattr("osprey_connectors.workspace.load_osprey_config", lambda: _ASKING_CONFIG)
     monkeypatch.setattr(executor, "_apply_target_stamp", stamp_target)
     monkeypatch.setattr(executor.asyncio, "create_subprocess_exec", spawn)
 
@@ -486,7 +486,7 @@ async def test_a_non_bool_switch_spawns_nothing(
 
     monkeypatch.setattr(executor, "_resolve_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        "osprey.utils.workspace.load_osprey_config", lambda: _approval(enabled="false")
+        "osprey_connectors.workspace.load_osprey_config", lambda: _approval(enabled="false")
     )
     monkeypatch.setattr(executor, "_apply_target_stamp", stamp_target)
     monkeypatch.setattr(executor.asyncio, "create_subprocess_exec", spawn)
@@ -544,7 +544,7 @@ async def test_a_measurement_whose_view_digest_disagrees_spawns_nothing(
         raise AssertionError("a refused call spawns nothing")
 
     monkeypatch.setattr(executor, "_resolve_project_root", lambda: tmp_path)
-    monkeypatch.setattr("osprey.utils.workspace.load_osprey_config", lambda: _ASKING_CONFIG)
+    monkeypatch.setattr("osprey_connectors.workspace.load_osprey_config", lambda: _ASKING_CONFIG)
     monkeypatch.setattr(executor, "_apply_target_stamp", stamp_target)
     monkeypatch.setattr(executor.asyncio, "create_subprocess_exec", spawn)
 

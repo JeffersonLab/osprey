@@ -165,7 +165,7 @@ def _clean_token_env(monkeypatch):
 
 
 def _parse_env(tmp_path):
-    from osprey.utils.dotenv import parse_dotenv_file
+    from osprey_connectors.dotenv import parse_dotenv_file
 
     p = tmp_path / ".env"
     return parse_dotenv_file(p) if p.is_file() else {}
@@ -4241,7 +4241,7 @@ CHAIN_PROJECT = "demo-deployment"
 
 def _write_shared_half(repo: Path, text: str) -> Path:
     """Lay down the chain's committed-defaults file beside the local one."""
-    from osprey.utils.dotenv import ENV_SHARED_FILENAME
+    from osprey_connectors.dotenv import ENV_SHARED_FILENAME
 
     path = repo / ENV_SHARED_FILENAME
     path.write_text(text, encoding="utf-8")
@@ -4257,7 +4257,7 @@ def _load_the_entry_point_chain(monkeypatch, repo: Path) -> None:
     because what is being measured IS that this step is what makes the shared
     half visible downstream.
     """
-    import osprey.utils.config as config
+    import osprey_connectors.config as config
 
     monkeypatch.setattr(config, "_dotenv_shell_overrides", {})
     monkeypatch.chdir(repo)

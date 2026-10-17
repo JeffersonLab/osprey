@@ -857,7 +857,7 @@ jobs:
         "
 
     # A step of its own, after the lean check rather than inside it: the pyAML
-    # control-system wheel imports the framework (osprey.runtime, osprey.errors)
+    # control-system wheel imports the framework (osprey.runtime)
     # by design, so the no-framework assertion above must keep reading a venv
     # that holds the connectors wheel alone. This venv holds all three wheels
     # from dist/ -- the framework declares a dependency on this one, and this
@@ -1022,7 +1022,7 @@ jobs:
             detect_compose_provider,
             get_runtime_command,
         )
-        from osprey.utils.config import load_config
+        from osprey_connectors.config import load_config
 
         config = load_config("build/config.yml")
         root = Path(resolve_repo_root(config)).resolve()

@@ -20,10 +20,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from osprey.connectors.control_system.base import ChannelValue
 from osprey.dispatch.sources import epics_ca
 from osprey.dispatch.sources.epics_ca import EpicsCaSource, _PvWatcher
 from osprey.dispatch.trigger_config import TriggerConfig
+from osprey_connectors.control_system.base import ChannelValue
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -704,7 +704,7 @@ class TestConnect:
     async def test_the_factory_builds_an_epics_connector_with_no_settings(self) -> None:
         create = AsyncMock(return_value=MagicMock())
         with patch(
-            "osprey.connectors.factory.ConnectorFactory.create_control_system_connector", create
+            "osprey_connectors.factory.ConnectorFactory.create_control_system_connector", create
         ):
             connector = await epics_ca._connect()
 
@@ -714,7 +714,7 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_the_dispatchers_ca_environment_is_left_as_it_stands(self, monkeypatch) -> None:
         """``dispatch.env`` hands the gateway over; a gateway block would rewrite it."""
-        from osprey.connectors.control_system.epics_connector import EPICSConnector
+        from osprey_connectors.control_system.epics_connector import EPICSConnector
         from tests.connectors._epics_fakes import install_fake_aioca
 
         install_fake_aioca(monkeypatch)

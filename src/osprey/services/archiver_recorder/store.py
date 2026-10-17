@@ -24,11 +24,11 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
-from osprey.connectors.archiver.mongodb_archiver_connector import (
+from osprey_connectors.archiver.field_names import field_name
+from osprey_connectors.archiver.mongodb_archiver_connector import (
     CA_FILE_ERRORS,
     mongo_client_kwargs,
 )
-from osprey_connectors.archiver.field_names import field_name
 
 from .config import RecorderSettings
 

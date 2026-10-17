@@ -17,22 +17,23 @@ pip install osprey-connectors
 
 ## Import map
 
-`osprey-framework` still imports every one of these from their historical
-`osprey.*` paths. Those old paths are compatibility shims — the real code
-now lives under `osprey_connectors.*`, and new code should import from there
-directly.
+These modules used to live under `osprey.*`. The old paths have been
+removed; import from `osprey_connectors.*` instead. The table maps each old
+path to its replacement.
 
 | Old path (`osprey.*`) | New path (`osprey_connectors.*`) |
 | --- | --- |
 | `osprey.connectors` | `osprey_connectors` |
 | `osprey.connectors.factory` | `osprey_connectors.factory` |
 | `osprey.connectors.types` | `osprey_connectors.types` |
+| `osprey.connectors.honesty` | `osprey_connectors.honesty` |
 | `osprey.connectors.control_system` | `osprey_connectors.control_system` |
 | `osprey.connectors.control_system.base` | `osprey_connectors.control_system.base` |
 | `osprey.connectors.control_system.epics_connector` | `osprey_connectors.control_system.epics_connector` |
 | `osprey.connectors.control_system.doocs_connector` | `osprey_connectors.control_system.doocs_connector` |
 | `osprey.connectors.control_system.va_in_process_connector` | `osprey_connectors.control_system.va_in_process_connector` |
 | `osprey.connectors.control_system.va_connector` | `osprey_connectors.control_system.va_connector` |
+| `osprey.connectors.control_system.tango_connector` | `osprey_connectors.control_system.tango_connector` |
 | `osprey.connectors.control_system.limits_validator` | `osprey_connectors.control_system.limits_validator` |
 | `osprey.connectors.archiver` | `osprey_connectors.archiver` |
 | `osprey.connectors.archiver.base` | `osprey_connectors.archiver.base` |
@@ -40,9 +41,15 @@ directly.
 | `osprey.connectors.archiver.doocs_archiver_connector` | `osprey_connectors.archiver.doocs_archiver_connector` |
 | `osprey.connectors.archiver.mongodb_archiver_connector` | `osprey_connectors.archiver.mongodb_archiver_connector` |
 | `osprey.connectors.archiver.mock_archiver_connector` | `osprey_connectors.archiver.mock_archiver_connector` |
+| `osprey.connectors.archiver.mya_archiver_connector` | `osprey_connectors.archiver.mya_archiver_connector` |
+| `osprey.connectors.archiver._timerange` | `osprey_connectors.archiver._timerange` |
 | `osprey.errors` | `osprey_connectors.errors` |
 | `osprey.utils.config` | `osprey_connectors.config` |
+| `osprey.utils.dotenv` | `osprey_connectors.dotenv` |
+| `osprey.utils.identity` | `osprey_connectors.identity` |
+| `osprey.utils.workspace` | `osprey_connectors.workspace` |
 | `osprey.utils.logger` | `osprey_connectors.logger` |
+| `osprey.utils.log_filter` | `osprey_connectors.log_filter` |
 | `osprey.utils.relative_time` | `osprey_connectors.relative_time` |
 
 ## Optional runtime dependencies

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from osprey.errors import ChannelLimitsViolationError
 from osprey_connectors.control_system import WriteOutcome
+from osprey_connectors.errors import ChannelLimitsViolationError
 from tests.va.e2e import conftest as e2e_conftest
 
 #: The corrector slot whose setpoint carries a limits record, and the slot whose

@@ -22,16 +22,16 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from osprey.connectors.control_system.base import (
-    ChannelWriteResult,
-    WriteOutcome,
-    raise_for_write_result,
-)
-from osprey.errors import ChannelWriteBlockedError
 from osprey.mcp_server.control_system.error_handling import (
     ToolError,
     connector_error_handler,
 )
+from osprey_connectors.control_system.base import (
+    ChannelWriteResult,
+    WriteOutcome,
+    raise_for_write_result,
+)
+from osprey_connectors.errors import ChannelWriteBlockedError
 from tests.connectors._epics_fakes import ECA_NOWTACCESS
 from tests.connectors._write_fakes import make_mock_epics_connector
 from tests.connectors._write_fakes import writes_enabled_config as _writes_enabled_config
@@ -46,7 +46,7 @@ def _make_connector():
 
 
 async def _write(connector, value=42.0, confirm=False):
-    with patch("osprey.utils.config.get_config_value", side_effect=_writes_enabled_config):
+    with patch("osprey_connectors.config.get_config_value", side_effect=_writes_enabled_config):
         return await connector.write_channel(CHANNEL, value, confirm=confirm)
 
 
@@ -234,12 +234,12 @@ async def _run_all_blocked_batch(tmp_path, monkeypatch, *reasons):
     fn = channel_write.fn if hasattr(channel_write, "fn") else channel_write
     with (
         patch(
-            "osprey.connectors.factory.ConnectorFactory.create_control_system_connector",
+            "osprey_connectors.factory.ConnectorFactory.create_control_system_connector",
             new_callable=AsyncMock,
             return_value=connector,
         ),
         patch(
-            "osprey.connectors.control_system.limits_validator.LimitsValidator.from_config",
+            "osprey_connectors.control_system.limits_validator.LimitsValidator.from_config",
             return_value=None,
         ),
         pytest.raises(ToolError) as excinfo,
