@@ -31,7 +31,7 @@ from osprey.services.virtual_accelerator.serving.model_surface import (
     ModelSurface,
 )
 from osprey.services.virtual_accelerator.serving.runner_config import periodic_addresses
-from osprey_connectors.simulation import DEFAULT_TICK_S
+from osprey_connectors.simulation import DEFAULT_TICK_S, archive
 from osprey_connectors.simulation import composite as composite_module
 from osprey_connectors.simulation.composite import Composite
 from osprey_connectors.simulation.view import SCHEMAS, SimulatorView
@@ -541,3 +541,127 @@ def test_sek_off_publishes_all_zeros(
     assert first.shape == second.shape == (500,)
     assert np.array_equal(first, np.zeros(500))
     assert np.array_equal(second, np.zeros(500))
+
+
+# -- a readback gate on a hand-written texture view ------------------------------
+
+GATE_SP = "G:PADDLE:SP"
+GATE_RB = "G:PADDLE:RB"
+GATED_SUM = "G:BPM:SUM"
+GATED_VALID = "G:BPM:STATUS:VALID"
+GATED_COUNT = "G:PADDLES:IN"
+GATED = (GATED_SUM, GATED_VALID, GATED_COUNT)
+
+
+def _gate_view(path: Path, *, paddle: str = "FALSE") -> Path:
+    """A texture-only view: one paddle whose in-state gates a sum, a valid flag and a count."""
+    channels = [
+        _channel(GATE_SP, role="setpoint", pair=GATE_RB, writable=True) | {"value_type": "bool"},
+        _channel(GATE_RB) | {"value_type": "bool"},
+        _channel(GATED_SUM),
+        _channel(GATED_VALID) | {"value_type": "bool"},
+        _channel(GATED_COUNT) | {"value_type": "int"},
+    ]
+    inputs = {GATE_RB: "TRUE"}
+    documents = {
+        "served_models.json": {"models": ["texture"]},
+        "addresses.json": {"channels": sorted(c["address"] for c in channels), "status": []},
+        "variables.json": {
+            "code": "G",
+            "models": [
+                {
+                    "name": "texture",
+                    "engine": "texture",
+                    "served": True,
+                    "settings": {},
+                    "deck": None,
+                    "wiring": [],
+                }
+            ],
+            "channels": channels,
+        },
+        "seeds.json": {
+            "seeds": {
+                GATE_SP: {"nominal": paddle},
+                GATED_SUM: {
+                    "nominal": 3.0,
+                    "noise": {"absolute": 0.001},
+                    "gate": {"inputs": inputs, "gated": 0.01},
+                },
+                GATED_VALID: {"nominal": "TRUE", "gate": {"inputs": inputs, "gated": "FALSE"}},
+                GATED_COUNT: {"nominal": 0, "gate": {"inputs": inputs, "gated": 1}},
+            }
+        },
+        "scenarios.json": {"scenarios": [{"name": "nominal"}]},
+    }
+    view = path / "simulator"
+    view.mkdir(parents=True, exist_ok=True)
+    for name, document in documents.items():
+        (view / name).write_text(
+            json.dumps({"schema": SCHEMAS[name], **document}), encoding="utf-8"
+        )
+    return view
+
+
+def _gate_surface(tmp_path: Path, **view: str) -> tuple[ModelSurface, Composite, _Clock]:
+    opened = SimulatorView.open(_gate_view(tmp_path, **view))
+    clock = _Clock(T0)
+    composite = Composite(opened, state_dir=tmp_path / "state", clock=clock)
+    surface = ModelSurface.for_view(
+        composite,
+        opened,
+        instance="va-1",
+        endpoint="va-1:5075",
+        model_write_token=TOKEN,
+        failed_pass_tolerance=3,
+        clock=iter((10.0, 12.5)).__next__,
+    )
+    return surface, composite, clock
+
+
+def test_the_surface_reads_the_gated_value_on_the_next_tick(tmp_path: Path) -> None:
+    surface, composite, clock = _gate_surface(tmp_path)
+    open_sum = surface.get([GATED_SUM])[GATED_SUM]
+    assert surface.get([GATED_VALID, GATED_COUNT]) == {GATED_VALID: "TRUE", GATED_COUNT: 0}
+
+    composite.set({GATE_SP: "TRUE"})
+    clock.now += DEFAULT_TICK_S
+    gated = surface.get(list(GATED))
+
+    assert 0.0 < gated[GATED_SUM] < open_sum / 10
+    assert gated[GATED_VALID] == "FALSE"
+    assert gated[GATED_COUNT] == 1
+
+    composite.set({GATE_SP: "FALSE"})
+    clock.now += DEFAULT_TICK_S
+    assert surface.get([GATED_VALID, GATED_COUNT]) == {GATED_VALID: "TRUE", GATED_COUNT: 0}
+    assert surface.get([GATED_SUM])[GATED_SUM] == pytest.approx(3.0, abs=0.01)
+
+
+def test_the_held_value_a_subscriber_compares_carries_the_gate(tmp_path: Path) -> None:
+    """An in-process subscription fires when a channel's held value changes."""
+    surface, composite, _ = _gate_surface(tmp_path)
+    before = composite.held(list(GATED))
+
+    composite.set({GATE_SP: "TRUE"})
+    after = composite.held(list(GATED))
+
+    assert before == {GATED_SUM: 3.0, GATED_VALID: "TRUE", GATED_COUNT: 0}
+    assert after == {GATED_SUM: pytest.approx(0.03), GATED_VALID: "FALSE", GATED_COUNT: 1}
+    diff = surface.diff(lambda address: None)
+    assert diff[GATED_VALID]["truth"] == "FALSE"
+
+
+@pytest.mark.parametrize("paddle", ["FALSE", "TRUE"])
+def test_the_seeded_value_at_t_equals_the_live_value_at_t(tmp_path: Path, paddle: str) -> None:
+    _, composite, _ = _gate_surface(tmp_path, paddle=paddle)
+    live = composite.get(list(GATED))
+
+    seeded = archive.build(tmp_path / "simulator", ["nominal"]).samples(list(GATED), [T0])
+
+    labels = ["FALSE", "TRUE"]
+    assert seeded[GATED_SUM] == [pytest.approx(live[GATED_SUM], rel=1e-12)]
+    assert seeded[GATED_VALID] == [labels.index(live[GATED_VALID])]
+    assert seeded[GATED_COUNT] == [live[GATED_COUNT]]
+    assert (live[GATED_VALID] == "FALSE") is (paddle == "TRUE")
+    assert seeded[GATED_SUM][0] > 0.0

@@ -216,7 +216,7 @@ def read_back(mongo_store, monkeypatch):
     monkeypatch.setenv(password_env, mongo_store["password"])
 
     async def query(channels, start, end):
-        from osprey.connectors.archiver.mongodb_archiver_connector import (
+        from osprey_connectors.archiver.mongodb_archiver_connector import (
             MongoDBArchiverConnector,
         )
 
@@ -804,6 +804,13 @@ class TestWaveformChannels:
         assert pulse_archive.waveform_addresses == [WAVE]
         assert WAVE not in pulse_archive.scalar_addresses
         assert sorted([*pulse_archive.scalar_addresses, WAVE]) == pulse_archive.addresses
+
+    def test_a_trace_of_an_address_outside_the_facility_is_a_typed_error(self, pulse_archive):
+        from osprey_connectors.errors import ChannelNotFoundError
+
+        with pytest.raises(ChannelNotFoundError) as caught:
+            pulse_archive.traces("NO:SUCH:WAVEFORM", [T0.timestamp()])
+        assert caught.value.channel_address == "NO:SUCH:WAVEFORM"
 
     def test_a_trace_is_the_pulse_at_its_instant(self, pulse_archive):
         instants = _tail_instants(SMALL, T0)[:3]

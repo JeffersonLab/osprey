@@ -303,6 +303,9 @@ class _ViewSurface(ModelSurface):
     def get(self, names: Iterable[str]) -> dict[str, Any]:
         """Read served addresses from the composite and model variables from their model.
 
+        A served address reads as the composite serves it at this instant, so a
+        texture channel's ``gate`` shows on the first read after its input moves.
+
         Raises:
             ModelRpcError: the composite refuses a name; its text is the
                 refusal, and nothing is returned.

@@ -54,7 +54,7 @@ def test_paired_readbacks_start_at_their_setpoint_value() -> None:
     channels = {channel["id"]: channel for channel in document["channels"]}
     setpoint_of = {c["pair"]: c["id"] for c in channels.values() if "pair" in c}
     models = [model for model in document["models"] if "deck" in model]
-    assert [model["name"] for model in models] == ["LINE", "SR"]
+    assert [model["name"] for model in models] == ["BTS", "LINE", "LTB", "SR"]
     wiring = {record["address"]: record for model in models for record in model["wiring"]}
     paired = [address for address in wiring if address in setpoint_of]
     for address in paired:
@@ -64,8 +64,9 @@ def test_paired_readbacks_start_at_their_setpoint_value() -> None:
         for address, record in wiring.items()
         if record["direction"] == "read" and address not in setpoint_of
     ]
-    assert len(unpaired) == 156
-    assert sum(":BPM:" in address for address in unpaired) == 152
+    # SR 148 (144 BPM positions, tune and chromaticity), LINE 8, LTB 12, BTS 12.
+    assert len(unpaired) == 180
+    assert sum(":BPM:" in address for address in unpaired) == 176
     assert all(wiring[address]["default"] == 0.0 for address in unpaired)
 
 

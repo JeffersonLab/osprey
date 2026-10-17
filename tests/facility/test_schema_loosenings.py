@@ -80,7 +80,7 @@ ACCELERATOR_WORDS = (
 
 #: The classes the vocabulary adds to the seed's class tree, each with its
 #: parent and whether it is abstract.
-VOCABULARY_ADDITIONS = {"Septum": ("Magnet", False)}
+VOCABULARY_ADDITIONS = {"Septum": ("Magnet", False), "Kicker": ("Magnet", False)}
 
 #: The word `ring` in any identifier shape; `string` is not a hit.
 RING_TOKEN = r"(?i)\bring\b|Ring(?=[A-Z_])|_ring\b|\bring_"
