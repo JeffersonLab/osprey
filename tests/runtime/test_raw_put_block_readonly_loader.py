@@ -1,10 +1,9 @@
 """The shared-library loaders a readonly run gates, against the real ``libca``.
 
 A readonly run gates the loader every ``ctypes`` spelling funnels into and
-cffi's ``FFI.dlopen`` beside it: every load refuses except pyepics' own load of
-``libca``, whose put entry points stay closed. Each case installs the block the
-executor emits for a readonly run, in a subprocess, so ``libca`` never loads in
-the test process itself.
+cffi's ``FFI.dlopen`` beside it, and every load through them refuses. Each case
+installs the block the executor emits for a readonly run, in a subprocess, so
+``libca`` never loads in the test process itself.
 """
 
 from __future__ import annotations
@@ -36,8 +35,8 @@ _INSTALL = """
             print(label, "ALLOWED")
 """
 
-# The process leaves without running exit handlers: pyepics' own would tear a
-# Channel Access context down, which has nothing to do with these checks.
+# The process leaves without running exit handlers: a Channel Access client's
+# own would tear a context down, which has nothing to do with these checks.
 _EXIT = """
     sys.stdout.flush()
     os._exit(0)
@@ -102,19 +101,3 @@ def test_readonly_install_does_not_import_cffi():
     )
 
     assert lines[-1] == "BEFORE False AFTER False", lines
-
-
-def test_pyepics_reads_through_the_funnel():
-    pytest.importorskip("epics")
-
-    lines = _run(
-        """
-    import epics.ca
-
-    print("HANDLE", epics.ca.initialize_libca() is not None)
-    attempt("put", lambda: epics.ca.libca.ca_array_put)
-    """
-    )
-
-    assert lines[-2] == "HANDLE True", lines
-    _assert_refused(lines[-1], "put")

@@ -379,11 +379,11 @@ class TestReadChannelDispatch:
         value = nt.NTNDArray().wrap(np.full((2, 2), 50000, dtype=np.uint16))
         get = _serving(value)
         connector = _pva_connector(get=get)
-        monkeypatch.setattr(
-            connector,
-            "_read_channel_sync",
-            lambda *a, **k: pytest.fail("PVA address must not touch Channel Access"),
-        )
+
+        async def no_channel_access(*_args, **_kwargs):
+            pytest.fail("PVA address must not touch Channel Access")
+
+        monkeypatch.setattr(connector, "_read_channel_ca", no_channel_access)
 
         result = await connector.read_channel(PVA_ADDRESS, timeout=1.5)
 
@@ -396,7 +396,11 @@ class TestReadChannelDispatch:
         get = _serving(FakeValue("epics:nt/NTScalar:1.0", {"value": 0.0}))
         connector = _pva_connector(get=get)
         sentinel = object()
-        monkeypatch.setattr(connector, "_read_channel_sync", lambda *a, **k: sentinel)
+
+        async def channel_access_read(*_args, **_kwargs):
+            return sentinel
+
+        monkeypatch.setattr(connector, "_read_channel_ca", channel_access_read)
 
         result = await connector.read_channel(CA_ADDRESS)
 

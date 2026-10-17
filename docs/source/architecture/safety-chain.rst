@@ -342,14 +342,14 @@ The raw-put block that sends Python runs through the connector has gaps of the s
 refuses a client library's own put, and it tells a connector's put apart by the connector's
 write door, which records who is making the put rather than guarding it. Code that goes around
 the client library altogether is not stopped: a ``libca`` handle loaded through ``ctypes``, a
-raw socket, a pyepics callback under ``PREEMPTIVE_CALLBACK=False`` run inside a connector's
-waiting put, or a connector subclass written in the run itself.
+raw socket, a user-installed pyepics' callback under ``PREEMPTIVE_CALLBACK=False`` run inside a
+connector's waiting put, or a connector subclass written in the run itself.
 
 A notebook kernel's block refuses the client library itself: client imports and Python's two
 loaders (``ctypes`` and ``cffi``) are refused. What remains is the OS loader itself (an extension
-module that links a client library, loaded from a copied package), a fresh interpreter (a
-shell escape such as ``!python -c …``, or ``subprocess``), an edited ``sys.meta_path``, and a
-raw socket.
+module that links a client library, loaded from a copied package), a fresh interpreter with no
+block at all (a shell escape such as ``!python -c …``, or ``subprocess``), an edited
+``sys.meta_path``, and a raw socket.
 
 These are **cooperative bypasses**: the block keeps honest code on the checked path, and it is
 not a sandbox. See :ref:`python-executor-armed-block`, :ref:`connector-write-door` and

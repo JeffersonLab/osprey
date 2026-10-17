@@ -9,10 +9,12 @@ prints the result as one marker-prefixed JSON line, then force-exits.
 Why a subprocess per proof (mirrors P2's ``sweep_check`` subprocess): repeated
 CA-context create/destroy cycles in a single process eventually trip a libca
 teardown assertion (``assert(this->pudpiiu)``, ``cac.cpp``, thread
-``CAC-TCP-send``) in ``EPICS_CA_NAME_SERVERS``-only mode -- a known
-pyepics/libca quirk on the CA-circuit teardown path, unrelated to the connector
-or the substrate: the read/write round trip completes and is correct *before*
-it fires (see ``scripts/va/probe_roundtrip.py``'s "KNOWN FINDING"). Isolating
+``CAC-TCP-send``) in ``EPICS_CA_NAME_SERVERS``-only mode -- a known libca
+quirk on the CA-circuit teardown path, unrelated to the connector or the
+substrate: the read/write round trip completes and is correct *before* it fires
+(see ``scripts/va/probe_roundtrip.py``'s "KNOWN FINDING"). It was found under
+pyepics, but it lives in libca itself, which aioca loads from the same
+``epicscorelibs`` build, so the guard stays. Isolating
 each proof's host CA work in its own process -- which emits its result and
 ``os._exit()``s *before* any connector disconnect / CA teardown runs -- means
 the fault can never recur in the pytest process.

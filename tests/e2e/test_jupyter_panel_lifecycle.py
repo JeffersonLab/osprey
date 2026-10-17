@@ -36,7 +36,7 @@ last.
    control-context record — owned by the web terminal — names the target the
    posture route reports.
 3. With writes on, a runtime write lands, while a cell cannot load a
-   control-system client library: ``import epics`` and a ``ctypes`` load of
+   control-system client library: ``import aioca`` and a ``ctypes`` load of
    libca are each refused with ``ClientLibraryRefusedError``, the line that
    names the runtime calls and one ``raw_client_import`` audit record, the
    setpoint holds where the runtime put it, no client module is loaded, and a
@@ -732,8 +732,8 @@ STAMPS_CELL = (
 )
 READ_CELL = f"from osprey.runtime import read_channel\nprint(repr(read_channel({CHANNEL!r})))\n"
 WRITE_CELL = f"from osprey.runtime import write_channel\nwrite_channel({CHANNEL!r}, 1.0)\n"
-#: A client library's import, straight past the runtime.
-CLIENT_IMPORT_CELL = "import epics\n"
+#: The Channel Access client's import, straight past the runtime.
+CLIENT_IMPORT_CELL = "import aioca\n"
 #: A client shared library loaded through ``ctypes``. The path comes from the
 #: distribution's file list: resolving the package's spec would itself be a
 #: refused import.
@@ -967,7 +967,7 @@ def test_a_cell_cannot_load_a_client_library_while_a_runtime_write_lands(
             _assert_held(_setpoint(socket, channel_session, band), 1.0, band)
 
             detail = refused_once(CLIENT_IMPORT_CELL, len(terminal.ledger()))
-            assert detail.get("package") == "epics", detail
+            assert detail.get("package") == "aioca", detail
             _assert_held(_setpoint(socket, channel_session, band), 1.0, band)
 
             detail = refused_once(LIBCA_LOAD_CELL, len(terminal.ledger()))

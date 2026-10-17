@@ -8,9 +8,9 @@ health-suite run: probes that need a control-system connection (e.g.
 that query the archiver (e.g. ``archiver_freshness``) acquire it via
 :meth:`HealthRuntime.get_archiver`; each constructs its connector on first call
 and caches it for the rest of the suite. A suite with no such probes never
-triggers construction, so no Channel Access client is created — and no PV is
-left for the garbage collector to finalize (a GC-finalized pyepics PV segfaults
-libca).
+triggers construction, so no Channel Access client is created — and no channel
+is left for the garbage collector to finalize, when a native client's teardown
+can crash or hang the process.
 
 The two accessors differ in how they source their config, reflecting the two
 connectors' asymmetric roles. The control-system connector is the runtime's

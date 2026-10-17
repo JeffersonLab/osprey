@@ -60,30 +60,28 @@ already refused; an armed replacement is recognised and never wrapped again.
 The table covers three kinds of route: the control-system client libraries
 themselves, the process-spawning surface that could shell out to ``caput``, and
 loading a shared library, which reaches Channel Access without importing any
-client package at all. The loader rows are gated rather than refused outright,
-because a readonly run reads through ``osprey.runtime`` and its EPICS connector
-is pyepics, which reaches Channel Access by loading ``libca`` through
-``ctypes``: a load is let through only while pyepics' own ``initialize_libca``
-is on the stack, and the handle it gets back has its put entry points refused,
-so the raw route through the library is closed like every other spelling. Every
-other load refuses, pyepics present or not.
+client package at all. A readonly run still reads through ``osprey.runtime``,
+whose EPICS connector is aioca, and aioca reaches Channel Access through the
+``libca`` handle ``epicscorelibs.ca.cadef`` loads with ``ctypes`` in its module
+body. That row precedes the loader rows, so the handle is loaded at install,
+before the loader is gated, and no library load is needed after it. Every later
+load refuses, including the one a user-installed pyepics would make.
 
 The gate is the loader every ``ctypes`` spelling funnels into
 (``ctypes._dlopen``, which is ``_ctypes.dlopen``) and cffi's ``FFI.dlopen``
 beside it — the same gate the ``no_client`` mode installs, under the readonly
 policy. No spelling of the loader class (``cdll._dlltype``, ``type(handle)``,
-a subclass, a reference bound before the install) loads around it, and cffi,
-which pyepics never loads through, refuses every load. Symbol lookup is gated
-at the class: ``CDLL.__getitem__``, which attribute access resolves through,
-refuses the put symbols on every handle. That reaches the handles loaded
-before the gate — ``epicscorelibs.ca.cadef.libca``, which aioca reads through
-and whose module body loads ``libca`` at install, and ``ctypes.pythonapi``,
-which resolves libca's symbols once it is loaded ``RTLD_GLOBAL``. A put symbol a handle already
-resolved is cached on the instance, so the table closes those on
-``cadef.libca`` by name. What stays open is building a function pointer by hand
-— from ``ctypes._CFuncPtr``, a ``CFUNCTYPE`` prototype or a handle's
-``_FuncPtr``, given a symbol name or a ``_ctypes.dlsym`` address — because the
-type every one of those constructs is an immutable C type the guard cannot
+a subclass, a reference bound before the install) loads around it. Symbol
+lookup is gated at the class: ``CDLL.__getitem__``, which attribute access
+resolves through, refuses the put symbols on every handle. That reaches the
+handles loaded before the gate — ``epicscorelibs.ca.cadef.libca``, which aioca
+reads through, and ``ctypes.pythonapi``, which resolves libca's symbols once it
+is loaded ``RTLD_GLOBAL``. A put symbol a handle already resolved is cached on
+the instance, so the table closes those on ``cadef.libca`` by name. What stays
+open is building a function pointer by hand — from ``ctypes._CFuncPtr``, a
+``CFUNCTYPE`` prototype or a handle's ``_FuncPtr``, given a symbol name or a
+``_ctypes.dlsym`` address — because the type every one of those constructs is
+an immutable C type the guard cannot
 patch. That is the same floor as any other immutable C type, below which
 ``ctypes`` is arbitrary memory access.
 
@@ -148,30 +146,6 @@ Rows = Iterable[tuple[str, Iterable[str]]]
 
 #: ``replacement(dotted, attr, original, owner)`` -> what replaces *original*.
 Replacement = Callable[[str, str, Any, Any], Any]
-
-
-def _pyepics_is_loading(_sys: Any = sys, _max_depth: int = 8) -> bool:
-    """True while ``epics.ca.initialize_libca`` is a near caller.
-
-    Matched by code object, not by name, so a same-named function opens nothing.
-    """
-    _code = getattr(
-        getattr(_sys.modules.get("epics.ca"), "initialize_libca", None),
-        "__code__",
-        None,
-    )
-    if _code is None:
-        return False
-    # Frame 0 is this function, frame 1 the loader policy's check and frame 2
-    # the gated loader; the walk starts at the loader's caller.
-    _frame = _sys._getframe(3)
-    for _ in range(_max_depth):
-        if _frame is None:
-            return False
-        if _frame.f_code is _code:
-            return True
-        _frame = _frame.f_back
-    return False
 
 
 def _resolve(dotted: str) -> Any:
@@ -667,14 +641,8 @@ def _install_readonly(
     def _osprey_readonly_refuse(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError(refusal)
 
-    def _permit_only_pyepics(_name: Any) -> None:
-        if not _pyepics_is_loading():
-            _osprey_readonly_refuse()
-
-    # pyepics loads ``libca`` through ``ctypes`` and never through cffi, so a
-    # cffi load has nothing to permit.
-    ctypes_policy = _LoaderPolicy(_permit_only_pyepics)
-    ffi_policy = _LoaderPolicy(_osprey_readonly_refuse)
+    # Every load after install refuses, through ``ctypes`` and cffi alike.
+    loader_policy = _LoaderPolicy(_osprey_readonly_refuse)
 
     def _osprey_gated_symbol(self: Any, name_or_ordinal: Any) -> Any:
         # ``CDLL.__getitem__``, restated rather than wrapped so the original is
@@ -695,9 +663,9 @@ def _install_readonly(
     def _readonly_replacement(dotted: str, attr: str, original: Any, _owner: Any) -> Any:
         row = (dotted, attr)
         if row in _CTYPES_LOADER_ROWS:
-            return _gated_load(original, policy=ctypes_policy)
+            return _gated_load(original, policy=loader_policy)
         if row in _FFI_LOADER_ROWS:
-            return _gated_ffi_load(original, policy=ffi_policy)
+            return _gated_ffi_load(original, policy=loader_policy)
         if row == _SYMBOL_LOOKUP_ROW:
             return _osprey_gated_symbol
         return _osprey_readonly_refuse
