@@ -267,6 +267,17 @@ NOMINAL_ADDITIONS: dict[str, frozenset[str]] = {
         }
     ),
     "the suite's synthetic string channel": frozenset({e2e_conftest.STRING_CHANNEL}),
+    # The golden captures the demo before it carried the storage ring's injection septa.
+    "the injection septa: their supplies and the pulse trace": frozenset(
+        {
+            "SR:MAG:SEPTUM:01:CURRENT:WAVEFORM",
+            *(
+                f"SR:MAG:SEPTUM:{index:02d}:{signal}"
+                for index in (1, 2)
+                for signal in ("CURRENT:RB", "CURRENT:SP", "STATUS:ON")
+            ),
+        }
+    ),
 }
 #: The physics model's status channel: ``ok`` while it solves, its error text
 #: once it fails.
@@ -356,9 +367,27 @@ def _tolerance(address: str) -> float:
     return CHROMATICITY_TOL if address in CHROMATICITY else EXACT_TOL
 
 
-def _same(address: str, expected: Any, served: Any) -> bool:
-    if isinstance(expected, float) or isinstance(served, float):
-        return abs(float(served) - float(expected)) <= _tolerance(address) * max(
+def _is_trace(value: Any) -> bool:
+    """Whether ``value`` is a waveform's trace: a sequence or array, never text."""
+    return not isinstance(value, str) and (
+        isinstance(value, (list, tuple)) or getattr(value, "ndim", 0) > 0
+    )
+
+
+def _same(address: str, expected: Any, served: Any, band: float = 0.0) -> bool:
+    """Whether ``served`` reads as ``expected``, a trace sample for sample."""
+    if _is_trace(expected) or _is_trace(served):
+        if not (_is_trace(expected) and _is_trace(served)):
+            return False
+        wanted, got = list(expected), list(served)
+        return len(wanted) == len(got) and all(
+            _same(address, float(want), float(have), band)
+            for want, have in zip(wanted, got, strict=True)
+        )
+    if isinstance(expected, str) or isinstance(served, str):
+        return served == expected
+    if band or isinstance(expected, float) or isinstance(served, float):
+        return abs(float(served) - float(expected)) <= band + _tolerance(address) * max(
             1.0, abs(float(expected))
         )
     return served == expected
@@ -551,12 +580,7 @@ def test_the_served_nominals_are_the_captured_golden(
             expected = golden[address]["nominal"]
             served = raw
         band = session_view.motion_band(address, z) if session_view.moving(address) else 0.0
-        if isinstance(expected, str):
-            ok = served == expected
-        else:
-            ok = abs(float(served) - float(expected)) <= band + _tolerance(address) * max(
-                1.0, abs(float(expected))
-            )
+        ok = _same(address, expected, served, band)
         if not ok:
             differing[address] = (expected, served)
 

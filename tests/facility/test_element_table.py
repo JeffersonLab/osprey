@@ -2,7 +2,7 @@
 
 ``scripts/facility_demo/injector_elements.tsv`` maps every GTLView/BTSView binding
 and every non-panel injector channel to a demo name in the six-token grammar.
-Every name uses only the grammar's alphabets and no MML or ALS form; every role
+Every name uses only the grammar's alphabets and no legacy MML form; every role
 has a template, and every injector BPM reads in millimetres. Every deck element
 a row names resolves to exactly one occurrence of the MML lattice arrays (LTB1 +
 LTB2 of ``gtblattice.m``, BTS of ``btslattice.m``), and every corrector,
@@ -31,8 +31,13 @@ ELEMENTS_SOURCE = REPO_ROOT / "scripts/facility_demo/_elements.py"
 EXAMPLE = REPO_ROOT / "src/osprey/templates/facilities/example"
 EXCERPTS = Path(__file__).resolve().parent / "fixtures/mml"
 
-#: Where an MML checkout keeps the ALS machine files, when one is present.
-MML_ROOT = Path(os.environ.get("MML_ALS_ROOT", Path.home() / "code/MML-prod/machine/ALS"))
+#: The machine folder of an MML checkout (the one holding ``GTB/`` and ``BTS/``),
+#: when ``OSPREY_MML_MACHINE_ROOT`` names one.
+MML_ROOT = (
+    Path(os.environ["OSPREY_MML_MACHINE_ROOT"])
+    if os.environ.get("OSPREY_MML_MACHINE_ROOT")
+    else None
+)
 
 #: Each deck section: its MML file, its excerpt, and the arrays it concatenates.
 LATTICES = {
@@ -64,7 +69,9 @@ def _module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("facility_demo_elements", ELEMENTS_SOURCE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    # Dataclasses resolve their annotations through the module's sys.modules entry.
+    # import-time required because the rows below feed a parametrize decorator, which
+    # is evaluated at import, and scripts/ is not a package: dataclasses resolve
+    # their annotations through the module's sys.modules entry.
     sys.modules.setdefault(spec.name, module)
     spec.loader.exec_module(module)
     return module
@@ -125,8 +132,8 @@ def scan(text: str, arrays: tuple[str, ...]) -> list[tuple[str, int, str | None]
 
 def _lattice_text(section: str, *, prefer_mml: bool) -> str:
     original, excerpt, _ = LATTICES[section]
-    source = MML_ROOT / original
-    path = source if prefer_mml and source.is_file() else EXCERPTS / excerpt
+    source = MML_ROOT / original if MML_ROOT is not None else None
+    path = source if prefer_mml and source is not None and source.is_file() else EXCERPTS / excerpt
     return path.read_text(encoding="latin-1")
 
 
@@ -154,7 +161,7 @@ def counted_elements() -> set[str]:
     }
 
 
-@pytest.mark.skipif(not MML_ROOT.is_dir(), reason="no MML checkout")
+@pytest.mark.skipif(MML_ROOT is None or not MML_ROOT.is_dir(), reason="no MML checkout")
 @pytest.mark.parametrize("section", sorted(LATTICES))
 def test_the_excerpt_scans_like_mml(section: str) -> None:
     arrays = LATTICES[section][2]
@@ -217,7 +224,6 @@ def test_every_demo_name_follows_the_grammar(row) -> None:
     assert match["field"] in elements.FIELDS
     assert match["sub"] in elements.SUBFIELDS
     assert not re.match(r"^[A-Z]{2,4}\d*_{2,}", name)
-    assert "ALS:" not in name
     assert not name.endswith((":Setpoint", ":Monitor"))
 
 
