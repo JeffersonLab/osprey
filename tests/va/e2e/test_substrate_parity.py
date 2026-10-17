@@ -164,8 +164,9 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 from osprey_connectors.control_system.va_in_process_connector import UDF_SEVERITY  # noqa: E402
-from osprey_connectors.simulation import decode_char_waveform  # noqa: E402
+from osprey_connectors.simulation import decode_char_waveform, pulse  # noqa: E402
 from osprey_connectors.simulation.envelope import declares_motion, noise_sigma  # noqa: E402
+from osprey_connectors.simulation.values import is_waveform  # noqa: E402
 from osprey_connectors.simulation.view import (  # noqa: E402
     TEXTURE,
     VIEW_RELPATH,
@@ -374,16 +375,28 @@ def _is_trace(value: Any) -> bool:
     )
 
 
+#: How far the peaks of two captures of one pulse may differ, as a fraction of the
+#: peak: the amplitude drift spans twice its bound, and the sample noise on the
+#: flat top adds a few of its standard deviations.
+TRACE_PEAK_TOL = 2 * pulse.AMPLITUDE_DRIFT_FRACTION + 6 * pulse.NOISE_FRACTION
+
+
 def _same(address: str, expected: Any, served: Any, band: float = 0.0) -> bool:
-    """Whether ``served`` reads as ``expected``, a trace sample for sample."""
+    """Whether ``served`` reads as ``expected``.
+
+    A trace is a capture keyed by the instant it is read, so two reads of one
+    pulse never agree sample for sample: they agree in length and in peak, which
+    follows the supply's setpoint and on-state.
+    """
     if _is_trace(expected) or _is_trace(served):
         if not (_is_trace(expected) and _is_trace(served)):
             return False
-        wanted, got = list(expected), list(served)
-        return len(wanted) == len(got) and all(
-            _same(address, float(want), float(have), band)
-            for want, have in zip(wanted, got, strict=True)
-        )
+        wanted = np.asarray(expected, dtype=np.float64)
+        got = np.asarray(served, dtype=np.float64)
+        if wanted.shape != got.shape:
+            return False
+        peak = float(np.max(np.abs(wanted)))
+        return abs(float(np.max(np.abs(got))) - peak) <= band + TRACE_PEAK_TOL * max(1.0, peak)
     if isinstance(expected, str) or isinstance(served, str):
         return served == expected
     if band or isinstance(expected, float) or isinstance(served, float):
@@ -568,7 +581,11 @@ def test_the_served_nominals_are_the_captured_golden(
     rebaselined = frozenset().union(*NOMINAL_REBASELINES.values())
     added = frozenset().union(*NOMINAL_ADDITIONS.values())
     z = _family_z(len(session_view.addresses))
-    mock = _composite(session_view, va_container.state_dir).held(session_view.addresses)
+    composite = _composite(session_view, va_container.state_dir)
+    mock = composite.held(session_view.addresses)
+    # A trace is computed when it is read, not held: the composite's read is its value.
+    traces = [a for a in session_view.addresses if is_waveform(session_view.value_type(a))]
+    mock.update(composite.get(traces))
 
     differing: dict[str, tuple[Any, Any]] = {}
     for address in session_view.addresses:
