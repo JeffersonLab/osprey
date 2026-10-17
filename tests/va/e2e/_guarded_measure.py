@@ -379,11 +379,11 @@ def ca_read(port: int, addresses: Sequence[str], *, timeout: float = 10.0) -> di
     An address that does not answer reads ``None``; a waveform reads as a list.
     """
     code = (
-        "import json, os, sys, epics\n"
+        "import asyncio, json, os, sys, aioca\n"
         f"names = {list(addresses)!r}\n"
-        f"values = epics.caget_many(names, connection_timeout={timeout}, timeout={timeout})\n"
+        f"values = asyncio.run(aioca.caget(names, timeout={timeout}, throw=False))\n"
         "def plain(v):\n"
-        "    if v is None: return None\n"
+        "    if isinstance(v, aioca.CANothing): return None\n"
         "    try: return float(v)\n"
         "    except TypeError: return [float(x) for x in v]\n"
         "out = {n: plain(v) for n, v in zip(names, values)}\n"

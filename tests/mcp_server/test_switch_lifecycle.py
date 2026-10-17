@@ -1878,13 +1878,13 @@ class TestConfigDerivedFacts:
     async def test_the_child_environment_drops_every_epics_variable(self, monkeypatch):
         monkeypatch.setenv("EPICS_CA_ADDR_LIST", "ambient.example.org")
         monkeypatch.setenv("EPICS_PVA_NAME_SERVERS", "ambient.example.org:5075")
-        monkeypatch.setenv("PYEPICS_LIBCA", "/opt/libca.dylib")
+        monkeypatch.setenv("CA_CLIENT_LIBRARY", "/opt/libca.dylib")
 
         env = host_env()
 
         assert "EPICS_CA_ADDR_LIST" not in env
         assert "EPICS_PVA_NAME_SERVERS" not in env
-        assert env["PYEPICS_LIBCA"] == "/opt/libca.dylib"
+        assert env["CA_CLIENT_LIBRARY"] == "/opt/libca.dylib"
 
 
 # ------------------------------------------------------ the serving seam
