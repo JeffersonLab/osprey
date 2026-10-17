@@ -513,6 +513,26 @@ class SignalRoleEnum(str, Enum):
     """
     Sampled time trace of one output pulse of a pulsed device (e.g. a septum or kicker current pulse), read as an array of samples rather than a scalar.
     """
+    ramp_gain_setpoint = "ramp_gain_setpoint"
+    """
+    Commanded gain that scales the whole energy-ramp table of a ramped power supply.
+    """
+    ramp_gain_readback = "ramp_gain_readback"
+    """
+    Readback of the gain applied to a ramped power supply's ramp table.
+    """
+    ramp_offset_setpoint = "ramp_offset_setpoint"
+    """
+    Commanded offset added to the whole energy-ramp table of a ramped power supply.
+    """
+    ramp_offset_readback = "ramp_offset_readback"
+    """
+    Readback of the offset applied to a ramped power supply's ramp table.
+    """
+    temperature_setpoint = "temperature_setpoint"
+    """
+    Commanded temperature of a regulated loop (e.g. a cooling-water heater).
+    """
 
 
 class PropertyNameEnum(str, Enum):
@@ -799,6 +819,20 @@ class Septum(Magnet):
                      'septum magnet',
                      'injection septum',
                      'extraction septum'],
+         'from_schema': 'https://narad.example.org/schema/osprey.facility.vocabulary'})
+
+    pass
+
+
+class Kicker(Magnet):
+    """
+    Fast pulsed dipole magnet that deflects the beam for a single passage or a few turns, to put an injected bunch onto the stored orbit or take a bunch out.
+    """
+    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'aliases': ['kicker',
+                     'kicker magnet',
+                     'injection kicker',
+                     'extraction kicker',
+                     'pulsed kicker'],
          'from_schema': 'https://narad.example.org/schema/osprey.facility.vocabulary'})
 
     pass
@@ -1598,6 +1632,7 @@ Sextupole.model_rebuild()
 Octupole.model_rebuild()
 WienFilter.model_rebuild()
 Septum.model_rebuild()
+Kicker.model_rebuild()
 Vacuum.model_rebuild()
 Pump.model_rebuild()
 Valve.model_rebuild()

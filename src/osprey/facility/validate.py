@@ -50,7 +50,7 @@ from osprey.facility.errors import (
 from osprey.facility.scenarios import FaultRoster, fault_roster, map_fault_errors
 from osprey.facility.sources import Sources, group_families, load_sources
 from osprey_connectors.settle import declared_tolerance
-from osprey_connectors.simulation import STILL_ALL
+from osprey_connectors.simulation import GATED_TYPES, LABELLED_TYPES, STILL_ALL
 
 __all__ = [
     "FACILITY_HEADER",
@@ -127,10 +127,6 @@ _MAX_LABEL = 25
 _MAX_PRECISION = 17
 
 _NUMERIC_TYPES = ("float", "int")
-#: The value types whose channels carry labels.
-_LABELLED_TYPES = ("bool", "enum")
-#: The value types a seed's ``gate`` applies to.
-_GATED_TYPES = ("float", "int", *_LABELLED_TYPES)
 _LIMIT_BOUNDS = ("min_value", "max_value", "max_step")
 _MOTION = ("noise", "drift")
 #: The two terms a ``noise`` record states exactly one of.
@@ -1080,7 +1076,7 @@ class _Records:
         options = channel.get("options")
         shape = channel.get("shape")
         problem = None
-        if value_type in ("bool", "enum"):
+        if value_type in LABELLED_TYPES:
             problem = _options_problem(value_type, options)
         elif options is not None:
             problem = f"a {value_type} channel carries `options`"
@@ -1340,7 +1336,7 @@ class _Records:
     ) -> Iterator[FacilityBuildError]:
         """A ``gate`` reads unwired bool or enum inputs; ``gated`` is typed by its channel."""
         value_type = self._type(address)
-        if value_type not in _GATED_TYPES:
+        if value_type not in GATED_TYPES:
             yield self._error(
                 "value-invalid",
                 "channel",
@@ -1357,7 +1353,7 @@ class _Records:
             source = str(source)
             if source in self.index.wired:
                 problems.append(f"`gate` input {source} is wired")
-            elif self._type(source) not in _LABELLED_TYPES:
+            elif self._type(source) not in LABELLED_TYPES:
                 problems.append(f"`gate` input {source} is {self._type(source)}, not bool or enum")
             elif source not in self.broken:
                 refusal = self._label_refusal(source, label)

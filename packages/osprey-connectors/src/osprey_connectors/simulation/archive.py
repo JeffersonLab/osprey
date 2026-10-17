@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from osprey_connectors.archiver.field_names import field_name
+from osprey_connectors.errors import ChannelNotFoundError
 from osprey_connectors.logger import get_logger
 from osprey_connectors.simulation import pulse
 from osprey_connectors.simulation import values as channel_values
@@ -305,7 +306,8 @@ class ArchiveComposite:
     Args:
         channels: Each channel's record in ``variables.json``, by address.
         held: Each channel's held value at the start state, in its stored
-            representation.
+            representation; a ``gate`` channel's is its gated value while an
+            input blocks, as the live read serves it.
         events: The active scenarios' archiver events, by address.
         composite: The composite at the start state, whose readings every
             float channel carries.
@@ -389,10 +391,11 @@ class ArchiveComposite:
             One flat float64 trace per timestamp.
 
         Raises:
-            KeyError: ``address`` is not a channel of the view.
+            ChannelNotFoundError: ``address`` is not a channel of the facility.
             ValueError: ``address`` is not a ``waveform`` channel.
         """
-        self._require(address)
+        if address not in self._channels:
+            raise ChannelNotFoundError(address)
         if not self._is_waveform(address):
             raise ValueError(f"{address} is not a waveform channel")
         times = np.asarray(t_s, dtype=np.float64).reshape(-1)
@@ -541,7 +544,7 @@ class ArchiveComposite:
     def _wire(channel: Mapping[str, Any], value: Any) -> Any:
         """A stored value as the wire carries it: a label as its option index."""
         value_type = channel.get("value_type")
-        if value_type in ("bool", "enum"):
+        if value_type in channel_values.LABELLED_TYPES:
             return channel_values.channel_labels(channel).index(value)
         return value
 

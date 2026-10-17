@@ -73,9 +73,98 @@ SECTIONS: dict[str, Section] = {
         new_classes=("Septum",),
         new_families=("SR/SEPTUM",),
     ),
-    "BR": Section(),
-    "BTS": Section(),
-    "LINE": Section(),
+    "BR": Section(
+        new_classes=("Kicker", "Septum", "ScreenDiagnostic"),
+        new_families=(
+            "BR/DIPOLE-RAMP",
+            "BR/KICKER",
+            "BR/QD-RAMP",
+            "BR/QF-RAMP",
+            "BR/SEPTUM",
+            "BR/TV",
+        ),
+    ),
+    # Two queries ask about BTS channels the transfer line gained; two older
+    # aggregate queries (all corrector setpoints, all quadrupole readbacks) now
+    # also reach those channels, so four queries count as added.
+    "BTS": Section(
+        added_queries=4,
+        new_classes=("ScreenDiagnostic",),
+        new_families=(
+            "BTS/DIPOLE",
+            "BTS/ICT",
+            "BTS/PADDLES",
+            "BTS/QD",
+            "BTS/QF",
+            "BTS/TV",
+        ),
+    ),
+    "LINE": Section(
+        added_queries=1,
+        new_families=("LINE/QD", "LINE/QF"),
+    ),
+    "GTL": Section(
+        added_queries=2,
+        new_classes=(
+            "BuckingCoil",
+            "ElectronGun",
+            "ScreenDiagnostic",
+            "Solenoid",
+            "SubHarmonicBuncher",
+        ),
+        new_places=("GTL",),
+        new_families=(
+            "GTL/BC",
+            "GTL/BPM",
+            "GTL/EGUN",
+            "GTL/HCM",
+            "GTL/ICT",
+            "GTL/SHB",
+            "GTL/SOL",
+            "GTL/TV",
+            "GTL/VCM",
+        ),
+    ),
+    "LN": Section(
+        added_queries=2,
+        new_classes=(
+            "BunchingCavity",
+            "RadioFrequency",
+            "ScreenDiagnostic",
+            "Solenoid",
+            "TravellingWaveCavity",
+        ),
+        new_places=("LN",),
+        new_families=(
+            "LN/ACC",
+            "LN/BPM",
+            "LN/BUNCHER",
+            "LN/HCM",
+            "LN/ICT",
+            "LN/MASTER",
+            "LN/QD",
+            "LN/QF",
+            "LN/SOL",
+            "LN/TV",
+            "LN/VCM",
+            "LN/WATER",
+        ),
+    ),
+    "LTB": Section(
+        added_queries=3,
+        new_classes=("ScreenDiagnostic",),
+        new_places=("LTB",),
+        new_families=(
+            "LTB/BPM",
+            "LTB/DIPOLE",
+            "LTB/HCM",
+            "LTB/ICT",
+            "LTB/QD",
+            "LTB/QF",
+            "LTB/TV",
+            "LTB/VCM",
+        ),
+    ),
 }
 
 
