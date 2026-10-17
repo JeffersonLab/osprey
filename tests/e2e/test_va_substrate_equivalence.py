@@ -310,8 +310,12 @@ def _select_sp_echo_pairs(repo: Path, count: int) -> list[tuple[str, str]]:
     Which of the two a channel is, is read off the facility file's own
     models: an address a physics model wires is coupled to the model, and a
     writable address no physics model wires is the software echo this probe
-    wants. The facility file and its view are built in memory from the repo's
-    tree, because the pairs are chosen before the build.
+    wants. Only a float setpoint seeded inside ``SP_ECHO_BAND`` is a
+    candidate: the probe authors that band as the setpoint's limits record,
+    which a bool or enum channel does not carry and which the build refuses
+    when it excludes the channel's operating point. The facility file and its
+    view are built in memory from the repo's tree, because the pairs are
+    chosen before the build.
     """
     from osprey.facility.build import build_facility
     from osprey.facility.views.bluesky import bluesky_document
@@ -326,11 +330,20 @@ def _select_sp_echo_pairs(repo: Path, count: int) -> list[tuple[str, str]]:
         if model.get("engine") != TEXTURE
         for entry in simulator_wiring(facility, str(model["name"]))
     }
+    low, high = SP_ECHO_BAND
+    in_band = {
+        str(channel["id"])
+        for channel in facility.get("channels") or []
+        if channel.get("value_type", "float") == "float"
+        and isinstance(nominal := (channel.get("simulation") or {}).get("nominal"), int | float)
+        and low <= nominal <= high
+    }
     document = bluesky_document(facility)
     pairs = sorted(
         (entry["setpoint"], entry["readback"])
         for entry in document[SETTABLES_KEY]
         if "readback" in entry
+        and entry["setpoint"] in in_band
         and entry["setpoint"] not in coupled
         and entry["readback"] not in coupled
     )
