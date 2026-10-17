@@ -306,27 +306,34 @@ PINNED_PRESET_HASHES: dict[str, str] = {
     # inherit the change. channel-finder-standalone deploys no store and
     # stands still. A rebuilt project runs a different store, so the staleness
     # advisory firing on already-deployed projects is the correct signal.
+    # The forty-second move, and control-assistant's family alone: the root
+    # preset states `web.panels.system-health.hidden: true`, so the SYSTEM panel
+    # is served without a rail entry and is opened from the status bar's health
+    # item or the rail's More menu. A rebuilt project's rail is one entry
+    # shorter, so the advisory firing is correct. The five `extends` children
+    # inherit it (logbook and knowledge do not select the panel, and their
+    # build writes the block off); the other three stand still.
     "ariel-standalone": ("sha256:2c89e6847871ea21f8d6a4841a038e4ae30a064ea8965d8975de2ec2e05f3628"),
     "channel-finder-standalone": (
         "sha256:8503c046ea3c8a9ef1e3504e68853a5465556d65ec02c4ef790d3a3db32e4763"
     ),
     "control-assistant": (
-        "sha256:bc0b8119ab8460bf4e40cc981017130c4b6c0fc3435db11642f283a35e3522da"
+        "sha256:9170b938245a14119cacdab85f6f4baec32b251060f1753d4431fa30fc5fab0d"
     ),
     "control-assistant-admin": (
-        "sha256:2e127cc7c0f294a9f10d5a7f9e42771659f41fdcff69572e482580006b0de678"
+        "sha256:348eaf114e5363047e4abf07a9ee8b2847622d1cc91b377e3cc4b2dc116ba119"
     ),
     "control-assistant-knowledge": (
-        "sha256:cf0703e80ead1ed7a69df98817191c5a5e70055ad614136038c73a18dd10c2ea"
+        "sha256:e8b255203656017bb1d0999d1d1c89c084a424dd41cfc065c0113c5c136043b4"
     ),
     "control-assistant-logbook": (
-        "sha256:59210330f7ba9ab7dec810f88c0281ef464268e2bfb15b2476106b68f3961e4f"
+        "sha256:027e39b7a498a8613066b8048e20bf9d0e5426edc610a72a7134647ef2ee3d2b"
     ),
     "control-assistant-readonly": (
-        "sha256:94774aee878c7d85e620c50d9f3da38b9ec3033a234aef81e77b7f8505e5dd2e"
+        "sha256:134a458d21668f3670d95f466e1b793b05ad353bd677226179b4150248467eac"
     ),
     "control-assistant-readwrite": (
-        "sha256:e66025b8305f8aaea17489cecef83cea98be2d441f834205c1c5c758a2691381"
+        "sha256:4aa499440a33a919afc0da1b849441e2d9e6cb1b482f933a227a408c824d9ae2"
     ),
     "hello-world": ("sha256:7c70f737295971c63093e823a2021e78251ca6c285b5da4c1f04cb0afd964803"),
 }

@@ -104,6 +104,7 @@ should not pay for them. A framework already imported at install is patched on
 the spot.
 """
 
+import contextlib
 import importlib
 import inspect
 import logging
@@ -450,10 +451,8 @@ def _gated_ffi_load(original: Callable[..., Any], *, policy: _LoaderPolicy) -> C
         if policy.after is not None:
 
             def _close() -> None:
-                try:
+                with contextlib.suppress(Exception):
                     self.dlclose(lib)
-                except Exception:
-                    pass
 
             policy.after(name, lib, _close)
         return lib
@@ -843,10 +842,8 @@ def _install_armed(
                 new = _blocked(dotted, attr, function)
             setattr(new, _ARMED_ATTR, True)
             for meta in ("__name__", "__qualname__", "__doc__"):
-                try:
+                with contextlib.suppress(Exception):
                     setattr(new, meta, getattr(function, meta))
-                except Exception:
-                    pass
             return new
 
         return _preserving_descriptor(owner, attr, original, marked)
