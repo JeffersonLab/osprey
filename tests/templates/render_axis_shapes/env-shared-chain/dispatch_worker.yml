@@ -30,6 +30,7 @@ services:
     # unchanged here — so this rename needs no network alias.
     container_name: golden-project-dispatch-worker-1
     command: ["python", "-m", "osprey.mcp_server.dispatch_worker"]
+    security_opt: ["no-new-privileges:true"]
     labels:
       # Content fingerprint of the env chain this deploy read (runtime_helper's
       # env_chain_digest, carried in by OSPREY_ENV_DIGEST). It is a label, not
