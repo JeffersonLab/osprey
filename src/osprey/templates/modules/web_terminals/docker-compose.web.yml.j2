@@ -558,6 +558,7 @@ services:
     container_name: {{ project_name }}-nginx
     restart: unless-stopped
     network_mode: host
+    security_opt: ["no-new-privileges:true"]
     labels:
       com.osprey.repo-id: "{{ repo_id }}"
 {%- if nginx_history_gate_file %}
@@ -679,6 +680,7 @@ services:
     container_name: {{ project_name }}-auth
     restart: unless-stopped
     network_mode: host
+    security_opt: ["no-new-privileges:true"]
     {#- Single process, deliberately: the revocation list and the brute-force
        throttle are in-memory, so a second worker would answer with a different
        view of both. Bound to `bind_host` for the same reason the per-user apps
@@ -987,6 +989,7 @@ services:
     container_name: {{ project_name }}-web-{{ svc.user }}
     restart: unless-stopped
     network_mode: host
+    security_opt: ["no-new-privileges:true"]
     labels:
       com.osprey.repo-id: "{{ repo_id }}"
 {%- if telemetry_sender_file_prefix and telemetry_cred_digests.get(svc.audit_identity) %}

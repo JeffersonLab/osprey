@@ -1316,6 +1316,14 @@ def test_worker_on_the_host_namespace_declares_no_network() -> None:
     assert "osprey-network" not in rendered
 
 
+def test_every_worker_runs_with_no_new_privileges() -> None:
+    """The worker runs the agent, so no process in it may gain a privilege."""
+    rendered = _render_worker_template(env_present=True, dispatch_worker={"worker_count": 2})
+
+    for index in (1, 2):
+        assert _worker_service(rendered, index)["security_opt"] == ["no-new-privileges:true"]
+
+
 def test_worker_binds_loopback_only_on_the_host_namespace() -> None:
     """The worker's socket is a host socket there, so it binds loopback."""
     rendered = _render_worker_template(env_present=True, dispatch_worker={"network": "host"})

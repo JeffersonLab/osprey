@@ -399,6 +399,19 @@ def test_per_user_services_bind_loopback_not_0_0_0_0() -> None:
         assert env["OSPREY_TERMINAL_BIND_HOST"] == "127.0.0.1"
 
 
+def test_every_service_runs_with_no_new_privileges() -> None:
+    """No process in a terminal, nginx or login container may gain a privilege.
+
+    A setuid binary in the image could otherwise hand the agent a capability
+    that undoes the non-dumpable guard on the terminal's own processes.
+    """
+    services = _compose(_auth_config())["services"]
+
+    assert {"nginx", "auth", "web-alice", "web-bob", "web-carol"} <= services.keys()
+    for name, service in services.items():
+        assert service["security_opt"] == ["no-new-privileges:true"], name
+
+
 def test_nginx_fragment_has_one_routing_location_per_user() -> None:
     """nginx.conf.j2 emits one `location /u/<user>/` proxy block per configured user."""
     # Arrange
