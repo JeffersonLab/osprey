@@ -44,8 +44,8 @@ _SHELL_METACHARACTERS = ("|", "&&", "||", "$(", "`")
 _EXIT_GRACE_SECONDS = 5.0
 """Seconds a streamed step's child gets to exit once its stdout has drained.
 
-Some test frameworks (a pyepics CA context, for one) keep background threads
-alive that stop the process exiting promptly after its last line.
+Some test frameworks (a Channel Access client context, for one) keep background
+threads alive that stop the process exiting promptly after its last line.
 """
 
 _DRAIN_SHUTDOWN_SECONDS = 5.0

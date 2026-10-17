@@ -1225,7 +1225,7 @@ class TestMaxStepCheck:
         assert exc.value.violation_type == "MAX_STEP_EXCEEDED"
 
     def test_no_reader_blocks_write(self):
-        """No reader, no measurement, no write -- and no reaching for pyepics.
+        """No reader, no measurement, no write -- and no reaching for a CA client.
 
         This is the branch that used to `import epics` and caget the address
         whatever control system the write was bound for.
@@ -1356,9 +1356,9 @@ class TestValidate:
 class TestNonNumericValues:
     """A channel with any numeric limit checks the number the write delivers.
 
-    A string written to a numeric channel is converted by the EPICS client, not
-    by the validator: pyepics reads one for an integer field with
-    ``int(value, 0)``, and EPICS's C conversion uses base-0 ``strtol`` for an
+    A string written to a numeric channel is converted by the connector, not by
+    the validator: the EPICS connector reads one bound for a numeric field by
+    EPICS's own C rules before aioca sends it -- base-0 ``strtol`` for an
     integer field and ``strtod`` for a floating-point one -- so ``"0x10"``
     writes 16. The validator used to treat a string ``float()`` rejects as
     "nothing numeric to check", so a value far outside [min, max] could be

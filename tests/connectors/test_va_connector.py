@@ -18,7 +18,7 @@ from osprey_connectors.factory import (
     register_builtin_connectors,
 )
 from osprey_connectors.types import VIRTUAL_ACCELERATOR
-from tests.connectors._epics_fakes import fake_pyepics  # noqa: F401 - fixture, used by name
+from tests.connectors._epics_fakes import fake_aioca  # noqa: F401 - fixture, used by name
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ class TestFactoryResolution:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("fake_pyepics")
+    @pytest.mark.usefixtures("fake_aioca")
     async def test_factory_creates_virtual_accelerator_connector(self):
         register_builtin_connectors()
 

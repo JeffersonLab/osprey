@@ -24,12 +24,12 @@ from osprey_connectors.control_system.epics_connector import EPICSConnector
 from osprey_connectors.control_system.va_connector import VirtualAcceleratorConnector
 from tests.connectors._epics_fakes import (  # noqa: F401 - fixtures, used by name
     clean_epics_env,
-    fake_pyepics,
+    fake_aioca,
 )
 
-# connect() runs against a stand-in pyepics: the real one would load libca and
-# keep the shutdown-hook change for every later test in the worker.
-pytestmark = pytest.mark.usefixtures("fake_pyepics")
+# connect() runs against a stand-in aioca and an inline CA loop: the real loop
+# would claim this process's Channel Access environment for every later test.
+pytestmark = pytest.mark.usefixtures("fake_aioca")
 
 
 def _both_gateways():

@@ -30,9 +30,8 @@ variable the connector wrote back after each test.
 **The Channel Access half of the mixed batch is unreachable on purpose.** Its
 address matches no ``pva_channels`` glob, so it takes the CA path, where no
 server answers it — that is the point. The connectors are built against a
-stand-in pyepics whose channels never connect, so that half sends no Channel
-Access search off the host, and the real libca is never loaded into (nor its
-shutdown hook taken out of) the test process.
+stand-in aioca whose channels never connect, so that half sends no Channel
+Access search off the host, and the process's real CA loop is never started.
 """
 
 import gc
@@ -50,7 +49,7 @@ from p4p.server.thread import SharedPV
 from osprey_connectors.control_system.base import WriteOutcome
 from osprey_connectors.control_system.epics_connector import EPICSConnector
 from tests.connectors._epics_fakes import (
-    install_fake_pyepics,
+    install_fake_aioca,
     writes_enabled,  # noqa: F401 - fixture, used by name
 )
 from tests.mcp_server.conftest import extract_response_dict, get_tool_fn
@@ -190,7 +189,7 @@ def connector_factory(pva_server):
     and they must be closed deterministically rather than collected at some
     later moment. The ``EPICS_PVA_*`` variables ``connect()`` writes are put
     back at the same time, so nothing downstream of this module inherits a
-    pinned name server, and the stand-in pyepics is taken out of
+    pinned name server, and the stand-in aioca is taken out of
     ``sys.modules`` again.
     """
     import asyncio
@@ -199,7 +198,7 @@ def connector_factory(pva_server):
     saved_env = {key: os.environ.get(key) for key in _PVA_ENV_KEYS}
     built: list[EPICSConnector] = []
     patcher = pytest.MonkeyPatch()
-    install_fake_pyepics(patcher)
+    install_fake_aioca(patcher)
 
     def build(timeout: float = READ_TIMEOUT_S) -> EPICSConnector:
         connector = EPICSConnector()
