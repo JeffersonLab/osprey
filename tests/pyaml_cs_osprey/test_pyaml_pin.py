@@ -1,19 +1,20 @@
 """What holds about the pyAML release OSPREY pins.
 
-``osprey-framework`` declares ``accelerator-middle-layer`` directly, next to
-``pyaml-cs-osprey``, because the framework's own code imports pyAML.
-``pyaml-cs-osprey`` declares the same package for its control-system backend.
+``osprey-framework`` declares ``accelerator-middle-layer-apg`` (pyAML, imported
+as ``pyaml``) directly, next to ``pyaml-cs-osprey``, because the framework's own
+code imports pyAML. ``pyaml-cs-osprey`` declares the same package for its
+control-system backend.
 The two specifiers must be string-equal: a drift between them would let one
 package be built and tested against a pyAML the other refuses.
 
 The release's ``MeasurementTool.save`` cannot write a measurement holding numpy
 values as JSON, which is why the measurement script carries its own writer; its
-test fails on the first pinned release that can. The release reads a zero-length
-magnet's polynomials as zero, which is why the pyAT plug-in lends such a
-corrector a length; its test fails on the first pinned release that reads the
-integrated strength. The release reads no kick held in ``KickAngle``, which is
-why the pyAT plug-in copies kicks into polynomials; its test fails on the first
-pinned release that reads it.
+test fails on the first pinned release that can. The release reads no kick held
+in ``KickAngle``, which is why the pyAT plug-in copies kicks into polynomials;
+its test fails on the first pinned release that reads it. The release drives a
+magnet whose slices mix zero-length and thick elements with one coefficient in
+every slice, which is why the pyAML view leaves such a magnet out; its test
+fails on the first pinned release that refuses or drives it faithfully.
 """
 
 from __future__ import annotations
@@ -28,11 +29,11 @@ from packaging.utils import canonicalize_name
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FRAMEWORK_PYPROJECT = REPO_ROOT / "pyproject.toml"
 MEMBER_PYPROJECT = REPO_ROOT / "packages" / "pyaml-cs-osprey" / "pyproject.toml"
-AML_PACKAGE = "accelerator-middle-layer"
+AML_PACKAGE = "accelerator-middle-layer-apg"
 
 
 def _aml_requirement(pyproject: pathlib.Path) -> str | None:
-    """Return the ``accelerator-middle-layer`` entry of ``project.dependencies``.
+    """Return the ``accelerator-middle-layer-apg`` entry of ``project.dependencies``.
 
     ``None`` when the package is not declared; several entries come back joined,
     so the comparison below fails with every one of them in its message.
@@ -88,26 +89,6 @@ def test_pyaml_save_still_refuses_numpy_values(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_pyaml_still_reads_a_zero_length_magnet_as_zero() -> None:
-    import at
-    from pyaml.lattice.abstract_impl import RWStrengthScalar
-    from pyaml.lattice.polynom_info import PolynomInfo
-
-    reading = RWStrengthScalar(
-        [at.ThinMultipole("thin", [0.0], [2.0e-3])], PolynomInfo("PolynomB", 0), None
-    ).get()
-    if reading == 0.0:
-        return
-    pytest.fail(
-        "the pinned pyAML reads a zero-length magnet's polynomials as its integrated strength "
-        f"(reading {reading}): the length borrow in osprey/simulation/engines/pyat.py "
-        "(POLYNOMIAL_KICK_LENGTH_M and its __all__ entry, _DRIFT_PASS, _length_donor, _shorten, "
-        "PolynomialKicks.refused and the refusals in polynomial_kicks), the unkicked list and its "
-        "note in osprey/facility/views/pyaml.py, their tests, this test and its row in "
-        "tests/infrastructure/test_stand_in_canaries.py go"
-    )
-
-
 def test_pyaml_still_reads_no_kick_angle() -> None:
     import at
     import numpy as np
@@ -130,8 +111,8 @@ def test_pyaml_still_reads_no_kick_angle() -> None:
         return
     pytest.fail(
         f"the pinned pyAML reads the kick held in KickAngle of {read}: polynomial_kicks, "
-        "PolynomialKicks, _polynomial_kick, _fold_kick, _KICK_PASS, _KICK_ONLY_ATTRIBUTES, "
-        "_json_text and the __all__ entries in osprey/simulation/engines/pyat.py, the "
+        "_polynomial_kick, _fold_kick, _KICK_PASS, _KICK_ONLY_ATTRIBUTES, "
+        "_json_text and its __all__ entry in osprey/simulation/engines/pyat.py, the "
         "EnginePlugin row in "
         "osprey/simulation/engines/__init__.py, _design_lattice's call and engine-invalid stop "
         "in osprey/facility/views/pyaml.py (the view then writes the deck as it is), the mention "
@@ -139,4 +120,36 @@ def test_pyaml_still_reads_no_kick_angle() -> None:
         "tests/simulation/test_pyat_polynomial_kicks.py, the polynomial-kick tests in "
         "tests/facility/test_pyaml_view_lattice.py and tests/facility/test_pyaml_view.py, this "
         "test and its row in tests/infrastructure/test_stand_in_canaries.py go"
+    )
+
+
+def test_pyaml_still_round_trips_no_mixed_thin_thick_magnet() -> None:
+    import at
+    from pyaml.lattice.abstract_impl import RWStrengthScalar
+    from pyaml.lattice.polynom_info import PolynomInfo
+
+    gone = (
+        "the marker and _mixes_thin_and_thick in osprey/facility/views/pyaml.py, the "
+        "mixed-length note, "
+        "test_a_magnet_split_across_thin_and_thick_elements_is_left_out_with_a_note in "
+        "tests/facility/test_pyaml_view_calibration.py, the second note's sentence in "
+        "docs/source/architecture/facility-file.rst, this test and its row in "
+        "tests/infrastructure/test_stand_in_canaries.py go; if pyAML now refuses the group, "
+        "the guard stays as pyAML's rule with a plain comment instead of the marker"
+    )
+    elements = [at.Multipole("thick", 0.1, [0.0], [0.0]), at.ThinMultipole("thin", [0.0], [0.0])]
+    try:
+        strength = RWStrengthScalar(elements, PolynomInfo("PolynomB", 0), None)
+    except Exception as exc:
+        pytest.fail(
+            f"the pinned pyAML refuses a magnet whose slices mix zero-length and thick "
+            f"elements ({exc}): {gone}"
+        )
+    strength.set(1.0e-4)
+    integrated = sum(element.PolynomB[0] * (element.Length or 1.0) for element in elements)
+    if integrated != pytest.approx(1.0e-4):
+        return
+    pytest.fail(
+        "the pinned pyAML drives a magnet whose slices mix zero-length and thick elements "
+        f"with its set strength: {gone}"
     )
