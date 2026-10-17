@@ -43,6 +43,7 @@ from typing import Any
 
 import pytest
 
+from osprey_connectors.simulation.values import DEFAULT_BOOL_OPTIONS, LABELLED_TYPES
 from osprey_connectors.simulation.view import TEXTURE, VIEW_RELPATH, Channel, SimulatorView
 from tests.va.e2e import conftest as e2e_conftest
 
@@ -109,12 +110,17 @@ def _wiring_defaults(view: SimulatorView) -> dict[str, float]:
 
 
 def _seed_nominals(view: SimulatorView) -> dict[str, float]:
-    """Every writable texture setpoint whose seed states a nominal, with that nominal."""
+    """Every writable texture setpoint whose seed states a nominal, as Channel Access reads it.
+
+    A bool or enum seed states a label, which Channel Access reads as its index.
+    """
     nominals: dict[str, float] = {}
     for address in view.channels():
         channel = view.channel(address)
         nominal = (view.seed(address) or {}).get("nominal")
         if _writable_setpoint(channel) and channel.owner == TEXTURE and nominal is not None:
+            if channel.value_type in LABELLED_TYPES:
+                nominal = list(channel.options or DEFAULT_BOOL_OPTIONS).index(nominal)
             nominals[address] = float(nominal)
     return nominals
 
