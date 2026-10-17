@@ -30,6 +30,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
@@ -48,9 +49,11 @@ from osprey.services.archiver_recorder import (
 # internal contract, and the package surface stays the narrow reader it was.
 from osprey.services.archiver_recorder.config import (
     DEFAULT_DATA_DIR,
+    ChannelSet,
     RecordingFacts,
     read_recording_facts,
 )
+from osprey_connectors.simulation.archive import waveform_collection, waveform_document
 
 # The session-scoped MongoDB container, reused rather than re-declared: one
 # container for the whole test session, skipping cleanly without Docker.
@@ -164,6 +167,20 @@ class _FakeWriter:
         if self.fail_with is not None:
             raise self.fail_with
         self.samples.append((timestamp, dict(values)))
+
+
+class _FakeWaveformWriter(_FakeWriter):
+    """A fake writer that also records the traces it would have stored."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.traces: list[tuple[datetime, dict[str, list[float]]]] = []
+        self.trace_fail_with: Exception | None = None
+
+    def write_waveforms(self, timestamp: datetime, traces: dict[str, list[float]]) -> None:
+        if self.trace_fail_with is not None:
+            raise self.trace_fail_with
+        self.traces.append((timestamp, {a: list(t) for a, t in traces.items()}))
 
 
 def _reader(values):
@@ -320,6 +337,77 @@ def test_any_channel_address_is_recorded(tmp_path: Path) -> None:
     _addresses(tmp_path, addresses)
 
     assert resolve_channel_addresses(tmp_path) == addresses
+
+
+def _variables(view: Path, value_types: dict[str, str]) -> None:
+    """Write a simulator view's ``variables.json`` giving each channel its value type."""
+    channels = [
+        {
+            "address": address,
+            "role": "readback",
+            "pair": None,
+            "value_type": value_type,
+            "unit": None,
+            "description": None,
+            "writable": False,
+            "value_range": None,
+            "owner": "texture",
+            "on": None,
+            **({"shape": [TRACE_POINTS]} if value_type == "waveform" else {}),
+        }
+        for address, value_type in value_types.items()
+    ]
+    document = {"schema": "osprey.facility.simulator/2", "code": "demo", "channels": channels}
+    (view / "variables.json").write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_the_channel_set_is_partitioned_by_value_type(tmp_path: Path) -> None:
+    """A waveform channel is recorded as a trace, every other channel as a number;
+    the set as a whole is still the view's channels, in its order."""
+    _addresses(tmp_path, ["SR:BPM01:X", WAVEFORM, "SR:STATE:MODE"])
+    _variables(tmp_path, {"SR:BPM01:X": "float", WAVEFORM: "waveform", "SR:STATE:MODE": "enum"})
+
+    channels = resolve_channel_addresses(tmp_path)
+
+    assert channels == ["SR:BPM01:X", WAVEFORM, "SR:STATE:MODE"]
+    assert channels.scalars == ("SR:BPM01:X", "SR:STATE:MODE")
+    assert channels.waveforms == (WAVEFORM,)
+
+
+def test_without_value_types_every_channel_is_a_number(tmp_path: Path) -> None:
+    """A channel ``variables.json`` does not state carries the default value type."""
+    _addresses(tmp_path, ["SR:BPM01:X", "SR:BPM01:Y"])
+    _variables(tmp_path, {"SR:BPM01:X": "float"})
+
+    channels = resolve_channel_addresses(tmp_path)
+    assert channels.scalars == ("SR:BPM01:X", "SR:BPM01:Y")
+    assert channels.waveforms == ()
+
+    (tmp_path / "variables.json").unlink()
+    assert resolve_channel_addresses(tmp_path).waveforms == ()
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "not json",
+        json.dumps({"schema": "osprey.facility.simulator/1", "channels": []}),
+        json.dumps({"schema": "osprey.facility.simulator/2"}),
+        json.dumps({"schema": "osprey.facility.simulator/2", "channels": [{"address": "X"}]}),
+    ],
+)
+def test_unreadable_value_types_are_fatal(tmp_path: Path, document: str) -> None:
+    """Guessing a channel's value type would put a trace where a number goes."""
+    _addresses(tmp_path, ["X"])
+    (tmp_path / "variables.json").write_text(document, encoding="utf-8")
+
+    with pytest.raises(RecorderConfigError, match="variables.json"):
+        resolve_channel_addresses(tmp_path)
+
+
+def test_a_waveform_channel_must_be_in_the_channel_set() -> None:
+    with pytest.raises(ValueError, match="not in the channel set"):
+        ChannelSet(["SR:BPM01:X"], waveforms=[WAVEFORM])
 
 
 # ---------------------------------------------------------------------------
@@ -488,8 +576,8 @@ async def test_the_recorders_ca_environment_is_left_as_it_stands(
     """The compose entry hands the recorder its gateway in ``EPICS_CA_*``; the
     connector it samples through must not rewrite that with a gateway block
     written for the agent's side of the network."""
-    from osprey.connectors.control_system.epics_connector import EPICSConnector
     from osprey.services.archiver_recorder import recorder
+    from osprey_connectors.control_system.epics_connector import EPICSConnector
     from tests.connectors._epics_fakes import install_fake_aioca
 
     install_fake_aioca(monkeypatch)
@@ -513,7 +601,7 @@ class _StallingConnector:
         self.timeouts: list[float | None] = []
 
     async def read_channel(self, address: str, timeout: float | None = None):
-        from osprey.connectors.control_system.base import ChannelValue
+        from osprey_connectors.control_system.base import ChannelValue
 
         self.timeouts.append(timeout)
         if address in self.stalled:
@@ -602,6 +690,127 @@ async def test_non_numeric_channels_are_skipped_and_warned_about_once(
 
     assert writer.samples[0][1] == {"SR:BPM01:X": 1.5}
     assert caplog.text.count("SR:STATE:MODE") == 1
+
+
+#: A waveform channel's address, and the number of points in its trace.
+WAVEFORM = "SR:SEK:WAVEFORM"
+TRACE_POINTS = 500
+
+
+def _trace(scale: float = 1.0) -> np.ndarray:
+    return np.linspace(0.0, scale, TRACE_POINTS)
+
+
+async def test_a_waveform_is_recorded_once_per_tail_cadence_never_in_scalar_docs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Traces go to the waveform path on the tail grid; the scalar documents
+    never carry one, and nothing is warned about as non-numeric."""
+    writer = _FakeWaveformWriter()
+    recorder = Recorder(
+        settings=_settings(cadence_sec=10, tail_cadence_sec=60),
+        addresses=ChannelSet(["SR:BPM01:X", WAVEFORM], waveforms=[WAVEFORM]),
+        writer=writer,
+        config_path=_write_config(tmp_path / "config.yml"),
+        reader=_reader({"SR:BPM01:X": 1.5, WAVEFORM: _trace()}),
+    )
+    start = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
+
+    with caplog.at_level(logging.WARNING):
+        for step in range(0, 130, 10):  # 12:00:00 .. 12:02:00, every scalar slot
+            await recorder.tick(start + timedelta(seconds=step))
+        # A second tick in an already-recorded tail slot writes nothing more.
+        await recorder.tick(start + timedelta(seconds=125))
+
+    assert len(writer.samples) == 13
+    assert all(values == {"SR:BPM01:X": 1.5} for _, values in writer.samples)
+    assert [ts for ts, _ in writer.traces] == [
+        start,
+        start + timedelta(seconds=60),
+        start + timedelta(seconds=120),
+    ]
+    for _, traces in writer.traces:
+        assert list(traces) == [WAVEFORM]
+        assert len(traces[WAVEFORM]) == TRACE_POINTS
+        assert all(isinstance(v, float) for v in traces[WAVEFORM])
+        assert traces[WAVEFORM] == _trace().tolist()
+    assert "non-numeric" not in caplog.text
+    assert WAVEFORM not in caplog.text
+
+
+async def test_a_waveform_off_the_tail_grid_is_not_recorded(tmp_path: Path) -> None:
+    """Only tail-grid instants carry traces: a missed one is a gap, never a
+    trace stamped with an instant it was not read at."""
+    writer = _FakeWaveformWriter()
+    recorder = Recorder(
+        settings=_settings(cadence_sec=10, tail_cadence_sec=60),
+        addresses=ChannelSet([WAVEFORM], waveforms=[WAVEFORM]),
+        writer=writer,
+        config_path=_write_config(tmp_path / "config.yml"),
+        reader=_reader({WAVEFORM: _trace()}),
+    )
+
+    wrote = await recorder.tick(datetime(2026, 8, 10, 12, 0, 10, tzinfo=UTC))
+
+    assert wrote is False
+    assert writer.traces == []
+    assert writer.samples == []
+
+
+async def test_a_plain_address_list_records_only_scalars(tmp_path: Path) -> None:
+    """A list without value types is the scalar path exactly as before."""
+    writer = _FakeWaveformWriter()
+    recorder = Recorder(
+        settings=_settings(),
+        addresses=["SR:BPM01:X"],
+        writer=writer,
+        config_path=_write_config(tmp_path / "config.yml"),
+        reader=_reader({"SR:BPM01:X": 1.5}),
+    )
+
+    await recorder.tick(datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC))
+
+    assert writer.samples == [(datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC), {"SR:BPM01:X": 1.5})]
+    assert writer.traces == []
+
+
+async def test_a_waveform_that_answers_with_no_trace_is_warned_about_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    writer = _FakeWaveformWriter()
+    recorder = Recorder(
+        settings=_settings(cadence_sec=10, tail_cadence_sec=60),
+        addresses=ChannelSet([WAVEFORM, "SR:SEK:OTHER"], waveforms=[WAVEFORM, "SR:SEK:OTHER"]),
+        writer=writer,
+        config_path=_write_config(tmp_path / "config.yml"),
+        reader=_reader({WAVEFORM: "OFF", "SR:SEK:OTHER": _trace(2.0)}),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await recorder.tick(datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC))
+        await recorder.tick(datetime(2026, 8, 10, 12, 1, 0, tzinfo=UTC))
+
+    assert [list(traces) for _, traces in writer.traces] == [["SR:SEK:OTHER"], ["SR:SEK:OTHER"]]
+    assert caplog.text.count(WAVEFORM) == 1
+
+
+async def test_a_failed_trace_write_does_not_end_the_loop(tmp_path: Path) -> None:
+    writer = _FakeWaveformWriter()
+    writer.trace_fail_with = ConnectionError("store restarting")
+    recorder = Recorder(
+        settings=_settings(cadence_sec=10, tail_cadence_sec=60),
+        addresses=ChannelSet(["SR:BPM01:X", WAVEFORM], waveforms=[WAVEFORM]),
+        writer=writer,
+        config_path=_write_config(tmp_path / "config.yml"),
+        reader=_reader({"SR:BPM01:X": 1.5, WAVEFORM: _trace()}),
+    )
+
+    assert await recorder.tick(datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)) is True
+    writer.trace_fail_with = None
+    await recorder.tick(datetime(2026, 8, 10, 12, 1, 0, tzinfo=UTC))
+
+    assert len(writer.samples) == 2
+    assert [ts for ts, _ in writer.traces] == [datetime(2026, 8, 10, 12, 1, 0, tzinfo=UTC)]
 
 
 # ---------------------------------------------------------------------------
@@ -978,7 +1187,7 @@ async def _connected_reader(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """The agent's archive connector, connected to the collection ``settings`` names."""
-    from osprey.connectors.archiver.mongodb_archiver_connector import (
+    from osprey_connectors.archiver.mongodb_archiver_connector import (
         HOST_OVERRIDE_ENV,
         PORT_OVERRIDE_ENV,
         MongoDBArchiverConnector,
@@ -1134,6 +1343,82 @@ def test_writing_an_instant_twice_merges_and_never_restamps_expiry(archive_colle
         "re-stamping expiry on a document the recorder did not create would make a "
         "scenario-protected event window expirable"
     )
+
+
+@pytest.fixture
+def waveform_handle(archive_collection):
+    """The waveform collection beside ``archive_collection``, emptied around the test."""
+    settings, collection, password = archive_collection
+    handle = collection.database[waveform_collection(collection.name)]
+    handle.delete_many({})
+    try:
+        yield handle
+    finally:
+        handle.delete_many({})
+
+
+def test_stored_traces_are_the_waveform_document(archive_collection, waveform_handle) -> None:
+    """A recorded trace is exactly the document the shared helper builds, in the
+    waveform collection, and nothing of it lands in the snapshot documents."""
+    settings, collection, password = archive_collection
+    timestamp = datetime(2026, 8, 10, 12, 1, 0, tzinfo=UTC)  # on the tail grid
+    trace = _trace(3.0)
+
+    writer = ArchiveWriter(settings, password)
+    writer.connect()
+    try:
+        writer.write_waveforms(timestamp, {WAVEFORM: trace.tolist(), "SR:SEK:OTHER": trace})
+    finally:
+        writer.close()
+
+    assert collection.count_documents({}) == 0, "a trace never goes into the snapshot documents"
+    for address in (WAVEFORM, "SR:SEK:OTHER"):
+        stored = waveform_handle.find_one({"date": timestamp, address: {"$exists": True}})
+        assert stored is not None
+        stored.pop("_id")
+        stored["date"] = stored["date"].replace(tzinfo=UTC)
+        stored["expireAt"] = stored["expireAt"].replace(tzinfo=UTC)
+        expected = waveform_document(
+            address, timestamp, trace, expire_at=expiry_for(timestamp, settings)
+        )
+        assert stored == expected
+        assert len(stored[address]) == TRACE_POINTS
+    assert stored["expireAt"] == timestamp + timedelta(days=settings.retention_days)
+
+
+def test_writing_a_trace_twice_replaces_it_and_never_restamps_expiry(
+    archive_collection, waveform_handle
+) -> None:
+    """The waveform half honours the same coexistence guards as the snapshot half."""
+    settings, _collection, password = archive_collection
+    timestamp = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
+    waveform_handle.insert_one({"date": timestamp, WAVEFORM: [0.0] * TRACE_POINTS})
+    waveform_handle.insert_one({"date": timestamp, "SR:SEK:SEEDED": [7.0] * TRACE_POINTS})
+
+    writer = ArchiveWriter(settings, password)
+    writer.connect()
+    try:
+        writer.write_waveforms(timestamp, {WAVEFORM: _trace()})
+    finally:
+        writer.close()
+
+    assert waveform_handle.count_documents({"date": timestamp}) == 2
+    doc = waveform_handle.find_one({"date": timestamp, WAVEFORM: {"$exists": True}})
+    assert doc[WAVEFORM] == _trace().tolist()
+    assert "expireAt" not in doc
+    seeded = waveform_handle.find_one({"date": timestamp, "SR:SEK:SEEDED": {"$exists": True}})
+    assert seeded["SR:SEK:SEEDED"] == [7.0] * TRACE_POINTS
+
+
+def test_a_trace_that_is_not_one_dimensional_is_refused(archive_collection) -> None:
+    settings, _collection, password = archive_collection
+    writer = ArchiveWriter(settings, password)
+    writer.connect()
+    try:
+        with pytest.raises(ValueError, match="1-D"):
+            writer.write_waveforms(datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC), {WAVEFORM: []})
+    finally:
+        writer.close()
 
 
 def test_a_missing_credential_is_a_connection_error(archive_collection) -> None:

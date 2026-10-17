@@ -35,7 +35,7 @@ from pyaml.control.deviceaccess import DeviceAccess
 from pyaml.control.deviceaccesslist import DeviceAccessList
 
 import osprey.runtime
-from osprey.errors import ChannelWriteBlockedError, ChannelWriteFailedError
+from osprey_connectors.errors import ChannelWriteBlockedError, ChannelWriteFailedError
 from pyaml_cs_osprey import _run
 from pyaml_cs_osprey.device import (
     _SETTLING,

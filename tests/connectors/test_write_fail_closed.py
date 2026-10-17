@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from osprey.connectors.control_system.base import ChannelWriteResult, WriteOutcome
-from osprey.errors import ChannelLimitsViolationError
+from osprey_connectors.control_system.base import ChannelWriteResult, WriteOutcome
+from osprey_connectors.errors import ChannelLimitsViolationError
 from tests.connectors._epics_fakes import ECA_DISCONN
 from tests.connectors._write_fakes import make_mock_epics_connector as _make_connector
 from tests.connectors._write_fakes import writes_enabled_config as _writes_enabled_config
@@ -28,7 +28,7 @@ class TestFailClosedValidation:
         connector = _make_connector(validate_side_effect=RuntimeError("boom"))
 
         with patch(
-            "osprey.utils.config.get_config_value",
+            "osprey_connectors.config.get_config_value",
             side_effect=_writes_enabled_config,
         ):
             result = await connector.write_channel("TEST:PV", 42.0, confirm=False)
@@ -65,7 +65,7 @@ class TestFailClosedValidation:
         connector = _make_connector(validate_side_effect=violation)
 
         with patch(
-            "osprey.utils.config.get_config_value",
+            "osprey_connectors.config.get_config_value",
             side_effect=_writes_enabled_config,
         ):
             with pytest.raises(ChannelLimitsViolationError) as raised:
@@ -86,7 +86,7 @@ class TestFailClosedValidation:
         connector = _make_connector(put=ECA_DISCONN)
 
         with patch(
-            "osprey.utils.config.get_config_value",
+            "osprey_connectors.config.get_config_value",
             side_effect=_writes_enabled_config,
         ):
             with pytest.raises(ConnectionError):
@@ -119,7 +119,7 @@ class TestNonBlockingOffload:
         connector._limits_validator.validate = MagicMock(side_effect=recording_validate)
 
         with patch(
-            "osprey.utils.config.get_config_value",
+            "osprey_connectors.config.get_config_value",
             side_effect=_writes_enabled_config,
         ):
             result = await connector.write_channel("TEST:PV", 42.0, confirm=False)

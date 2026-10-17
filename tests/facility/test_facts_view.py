@@ -149,6 +149,25 @@ def test_each_device_class_carries_its_count_aliases_and_groups(
     assert {"BPM", "PM"} <= set(classes["BeamPositionMonitor"]["aliases"])
 
 
+def test_the_injection_septa_are_a_septum_class(built_control_assistant: BuiltProject) -> None:
+    facts = _built_facts(built_control_assistant)
+
+    septum = facts["device_classes"]["Septum"]
+    assert septum["count"] == 2
+    assert septum["groups"] == ["SR/SEPTUM"]
+    assert "injection septum" in septum["aliases"]
+
+
+def test_the_septum_waveform_signal_is_in_the_vocabulary(
+    built_control_assistant: BuiltProject,
+) -> None:
+    signal = _built_facts(built_control_assistant)["vocabulary"]["signals"]["pulse_waveform"]
+
+    assert signal["count"] == 1
+    assert signal["roles"] == {"readback": 1}
+    assert signal["description"]
+
+
 def _class_count(devices: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for device in devices:

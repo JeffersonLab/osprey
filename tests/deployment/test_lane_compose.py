@@ -46,7 +46,7 @@ from osprey.deployment.control_identity import (
     SAFETY_FILE_CONTAINER_PATH,
 )
 from osprey.port_layout import DEFAULT_PORT_BASE, default_port, layout_ports
-from osprey.utils.workspace import AUDIT_DIR_RELPATH
+from osprey_connectors.workspace import AUDIT_DIR_RELPATH
 
 # Rooted at the templates/ PROJECT root, not services/, because service
 # templates import the shared axis macros as "services/_*.j2" — the spelling
@@ -1234,7 +1234,7 @@ def env_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _dotenv(env_path: Path) -> dict[str, str]:
-    from osprey.utils.dotenv import parse_dotenv_file
+    from osprey_connectors.dotenv import parse_dotenv_file
 
     return parse_dotenv_file(env_path) if env_path.is_file() else {}
 
@@ -1370,7 +1370,7 @@ def test_one_template_serving_two_lanes_is_passed_to_compose_once() -> None:
 @pytest.fixture
 def rendered_config(monkeypatch: pytest.MonkeyPatch):
     """Patch the config the connection resolvers read, and return the setter."""
-    from osprey.utils import workspace
+    from osprey_connectors import workspace
 
     def _set(config: dict[str, Any]) -> None:
         monkeypatch.setattr(workspace, "load_osprey_config", lambda *a, **kw: config)

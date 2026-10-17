@@ -47,8 +47,8 @@ from tests._facility_file import write_demo_facility_file
 
 #: What the shipped demo tree holds, pinned alongside
 #: ``tests/channel_roster/test_facade.py``.
-DEMO_WRITES = 412
-DEMO_READS = 2540
+DEMO_WRITES = 414
+DEMO_READS = 2545
 
 _SOURCE = RosterSource(
     kind=RosterSourceKind.FACILITY, path=Path("/data/facility.json"), spelled="facility.json"
@@ -311,7 +311,7 @@ class TestTheShippedDemoRoster:
         return {"config_dir": str(tmp_path), "channel_finder": {"pipeline_mode": "graph"}}
 
     def test_the_demo_machine_yields_a_device_per_channel(self, demo_config) -> None:
-        """412 settables / 2540 readables: every channel the demo tree holds."""
+        """414 settables / 2545 readables: every channel the demo tree holds."""
         result = registered_channels(demo_config)
 
         document = devices_document(result.records)

@@ -13640,6 +13640,59 @@
   signal: ready_status
   value_type: bool
   description: 'Storage ring sextupole (defocusing) 24 status ready. Operational status for defocusing sextupole. Ready (read-only): Power supply ready.'
+- id: SR:MAG:SEPTUM:01:CURRENT:RB
+  'on':
+    device: SR/SEPTUM01
+  signal: current_readback
+  unit: A
+  description: 'Storage ring injection septum SEK current readback (read-only): the measured peak current of the septum pulse.'
+- id: SR:MAG:SEPTUM:01:CURRENT:SP
+  role: setpoint
+  pair: SR:MAG:SEPTUM:01:CURRENT:RB
+  tolerance:
+    absolute: 1.0
+  'on':
+    device: SR/SEPTUM01
+  signal: current_setpoint
+  unit: A
+  description: 'Storage ring injection septum SEK current setpoint (read-write): the commanded peak current of the septum pulse. Scales the sampled current pulse.'
+- id: SR:MAG:SEPTUM:01:CURRENT:WAVEFORM
+  'on':
+    device: SR/SEPTUM01
+  signal: pulse_waveform
+  value_type: waveform
+  shape:
+  - 500
+  unit: A
+  description: 'Storage ring injection septum SEK current pulse waveform (read-only): the sampled time trace of one current pulse, 500 samples in A, refreshed about once a second. Its peak follows the current setpoint; it is flat zero while the septum is off.'
+- id: SR:MAG:SEPTUM:01:STATUS:ON
+  'on':
+    device: SR/SEPTUM01
+  signal: power_on_status
+  value_type: bool
+  description: 'Storage ring injection septum SEK on status (read-only): the septum supply is energized and pulsing. When false the sampled current pulse is a flat zero trace.'
+- id: SR:MAG:SEPTUM:02:CURRENT:RB
+  'on':
+    device: SR/SEPTUM02
+  signal: current_readback
+  unit: A
+  description: 'Storage ring injection septum SEN current readback (read-only): the measured peak current of the septum pulse.'
+- id: SR:MAG:SEPTUM:02:CURRENT:SP
+  role: setpoint
+  pair: SR:MAG:SEPTUM:02:CURRENT:RB
+  tolerance:
+    absolute: 1.0
+  'on':
+    device: SR/SEPTUM02
+  signal: current_setpoint
+  unit: A
+  description: 'Storage ring injection septum SEN current setpoint (read-write): the commanded peak current of the septum pulse.'
+- id: SR:MAG:SEPTUM:02:STATUS:ON
+  'on':
+    device: SR/SEPTUM02
+  signal: power_on_status
+  value_type: bool
+  description: 'Storage ring injection septum SEN on status (read-only): the septum supply is energized and pulsing.'
 - id: SR:MAG:SF:01:CURRENT:GOLDEN
   'on':
     device: SR/SF01

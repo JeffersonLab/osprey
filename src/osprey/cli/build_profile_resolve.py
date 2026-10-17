@@ -36,9 +36,9 @@ from typing import Any
 import click
 import yaml
 
-from osprey.errors import BuildProfileError
 from osprey.port_layout import PORT_BASE_CONFIG_KEY
-from osprey.utils.logger import get_logger
+from osprey_connectors.errors import BuildProfileError
+from osprey_connectors.logger import get_logger
 from osprey_connectors.safety_file import atomic_replace
 
 from .build_profile_document import _read_profile_document

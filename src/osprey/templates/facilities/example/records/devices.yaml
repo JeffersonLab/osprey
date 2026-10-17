@@ -1994,6 +1994,22 @@
   names:
   - SD24
   label: SD 24
+- id: SR/SEPTUM01
+  class: Septum
+  description: 'Storage ring injection septum SEK: pulsed injection septum; its current pulse is sampled as a waveform.'
+  names:
+  - SEPTUM01
+  - SEK
+  label: SEK
+  place: SR/SECT1
+- id: SR/SEPTUM02
+  class: Septum
+  description: 'Storage ring injection septum SEN: the second injection septum; its current is read as a scalar.'
+  names:
+  - SEPTUM02
+  - SEN
+  label: SEN
+  place: SR/SECT1
 - id: SR/SF01
   class: Sextupole
   names:

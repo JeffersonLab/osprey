@@ -68,6 +68,7 @@ import numpy as np
 
 from osprey_connectors.archiver.field_names import field_name
 from osprey_connectors.logger import get_logger
+from osprey_connectors.simulation import pulse
 from osprey_connectors.simulation import values as channel_values
 from osprey_connectors.simulation.series import (
     apply_events,
@@ -107,6 +108,8 @@ __all__ = [
     "seed_grid",
     "synthesize_documents",
     "tier_expiry",
+    "waveform_collection",
+    "waveform_document",
     "write_manifest",
 ]
 
@@ -310,6 +313,12 @@ class ArchiveComposite:
         tz: The zone a daily ``at_time`` event is placed in.
         state: The directory holding ``composite``'s active set, kept as long
             as the archive is.
+        pulses: Each pulsed waveform channel's ``pulse`` seed, by address: the
+            ``driver`` and ``enable`` channels its trace is computed from.
+
+    Raises:
+        ValueError: A ``pulse`` seed names a driver or enable that is not a
+            channel of the view.
     """
 
     def __init__(
@@ -322,8 +331,20 @@ class ArchiveComposite:
         anchor_s: float,
         tz: ZoneInfo | None,
         state: tempfile.TemporaryDirectory[str] | None = None,
+        pulses: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self._channels = dict(channels)
+        self._pulses = {
+            address: {"driver": str(seed["driver"]), "enable": str(seed["enable"])}
+            for address, seed in (pulses or {}).items()
+        }
+        for address, seed in self._pulses.items():
+            for role, source in seed.items():
+                if source not in self._channels:
+                    raise ValueError(
+                        f"the pulse seed of {address} names {role} {source}, "
+                        "which is not a channel of the simulator view"
+                    )
         self._held = dict(held)
         self._events = {address: list(scripts) for address, scripts in events.items()}
         self._composite = composite
@@ -335,6 +356,56 @@ class ArchiveComposite:
     def addresses(self) -> list[str]:
         """The archived channel addresses, sorted."""
         return sorted(self._channels)
+
+    @property
+    def waveform_addresses(self) -> list[str]:
+        """The archived ``waveform`` channel addresses, sorted.
+
+        Their traces are stored one document per channel and instant in the
+        :func:`waveform_collection` beside the snapshot documents.
+        """
+        return [address for address in self.addresses if self._is_waveform(address)]
+
+    @property
+    def scalar_addresses(self) -> list[str]:
+        """The archived addresses the snapshot documents carry: every non-waveform channel."""
+        return [address for address in self.addresses if not self._is_waveform(address)]
+
+    def traces(self, address: str, t_s: Sequence[float] | np.ndarray) -> list[np.ndarray]:
+        """One waveform channel's traces at absolute epoch seconds.
+
+        A pulsed channel's trace is :func:`~osprey_connectors.simulation.pulse.trace`
+        at each instant, at its driver's and its enable's levels there: each
+        one's start-state value moved by the active scenarios' archiver events,
+        with no texture motion. An enable is on where its wire value is not
+        zero, so a ``bool`` or ``enum`` enable is off at its first option. A
+        waveform channel without a ``pulse`` seed holds its start-state trace.
+
+        Args:
+            address: A ``waveform`` channel address of the view.
+            t_s: Epoch seconds, ascending.
+
+        Returns:
+            One flat float64 trace per timestamp.
+
+        Raises:
+            KeyError: ``address`` is not a channel of the view.
+            ValueError: ``address`` is not a ``waveform`` channel.
+        """
+        self._require(address)
+        if not self._is_waveform(address):
+            raise ValueError(f"{address} is not a waveform channel")
+        times = np.asarray(t_s, dtype=np.float64).reshape(-1)
+        seed = self._pulses.get(address)
+        if seed is None:
+            held = np.asarray(self._held[address], dtype=np.float64).reshape(-1)
+            return [held.copy() for _ in times]
+        drive = self._drive(seed["driver"], times)
+        enabled = self._drive(seed["enable"], times) != 0.0
+        return [
+            pulse.trace(address, float(moment), float(level), bool(on))
+            for moment, level, on in zip(times, drive, enabled, strict=True)
+        ]
 
     def held(self, address: str) -> Any:
         """A channel's held value at the start state, in its stored representation.
@@ -353,7 +424,8 @@ class ArchiveComposite:
         serves it: a moving channel with its motion, its engine's readout and
         its clamp, a physics setpoint as it is. Any other channel holds its
         start-state value, moved only by ``step`` events; a ``bool`` or
-        ``enum`` sample is its option index.
+        ``enum`` sample is its option index. A ``waveform`` sample is its
+        trace (:meth:`traces`) as a ``list[float]``.
 
         Args:
             address: A channel address of the view.
@@ -402,6 +474,9 @@ class ArchiveComposite:
             if address in read:
                 out[address] = [float(value) for value in read[address]]
                 continue
+            if self._is_waveform(address):
+                out[address] = [trace.tolist() for trace in self.traces(address, times)]
+                continue
             channel = self._channels[address]
             stored = self._stepped(
                 channel, self._held[address], self._events.get(address, []), times
@@ -412,6 +487,21 @@ class ArchiveComposite:
     def _is_float(self, address: str) -> bool:
         channel = self._channels[address]
         return (channel.get("value_type") or channel_values.DEFAULT_VALUE_TYPE) == "float"
+
+    def _is_waveform(self, address: str) -> bool:
+        return channel_values.is_waveform(self._channels[address].get("value_type"))
+
+    def _drive(self, address: str, times: np.ndarray) -> np.ndarray:
+        """A pulse source's level: held, moved by its archiver events, as a number.
+
+        A float channel is moved by every archiver event, any other only by
+        ``step`` events; a ``bool`` or ``enum`` level is its option index.
+        """
+        if self._is_float(address):
+            return self._level(address, times)
+        channel = self._channels[address]
+        stored = self._stepped(channel, self._held[address], self._events.get(address, []), times)
+        return np.asarray([float(self._wire(channel, value)) for value in stored], dtype=np.float64)
 
     def _require(self, address: str) -> None:
         if address not in self._channels:
@@ -503,6 +593,7 @@ def build(
     Raises:
         RuntimeError: A physics model fails to build or read at the start
             state; the message names it and its engine's error.
+        ValueError: A ``pulse`` seed names a channel the view does not hold.
         NoSimulatorView: The directory holds no simulator view.
         ViewSchemaError: A view file is not the schema this OSPREY reads.
     """
@@ -536,16 +627,28 @@ def build(
         )
 
     events = scenario_events(scenarios, composite.active)
+    pulses = {
+        address: seed["pulse"]
+        for address in archived
+        if channel_values.is_waveform(records[address].get("value_type"))
+        and (seed := view.seed(address)) is not None
+        and seed.get("pulse") is not None
+    }
 
-    return ArchiveComposite(
-        {address: records[address] for address in archived},
-        held,
-        {address: scripts for address, scripts in events.items() if address in records},
-        composite,
-        anchor_s=time.time() if anchor_s is None else float(anchor_s),
-        tz=get_facility_timezone(),
-        state=state,
-    )
+    try:
+        return ArchiveComposite(
+            {address: records[address] for address in archived},
+            held,
+            {address: scripts for address, scripts in events.items() if address in records},
+            composite,
+            anchor_s=time.time() if anchor_s is None else float(anchor_s),
+            tz=get_facility_timezone(),
+            state=state,
+            pulses=pulses,
+        )
+    except ValueError:
+        state.cleanup()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -644,12 +747,14 @@ def _as_utc_datetimes(epoch_s: np.ndarray) -> list[datetime]:
 
 
 def synthesize_documents(archive: ArchiveComposite, epoch_s: np.ndarray) -> list[dict[str, Any]]:
-    """One document per timestamp, carrying every archived channel's value at it.
+    """One document per timestamp, carrying every archived scalar channel's value at it.
 
     This is the single definition of "what the archive holds at time T", and it
     is deliberately exported: the base seed writes it and an equivalence test
     compares a served read against it. Every value is the archive composite's
-    sample (:meth:`ArchiveComposite.samples`), in the wire representation.
+    sample (:meth:`ArchiveComposite.samples`), in the wire representation. A
+    ``waveform`` channel is not among them: its traces are stored in the
+    :func:`waveform_collection`, one document per channel and instant.
 
     Args:
         archive: The archive composite of the active set.
@@ -672,7 +777,7 @@ def synthesize_documents(archive: ArchiveComposite, epoch_s: np.ndarray) -> list
     reader_epoch_s = epoch_seconds_array(stamps)
     assert reader_epoch_s is not None  # datetimes always convert
 
-    addresses = archive.addresses
+    addresses = archive.scalar_addresses
     for address, values in archive.samples(addresses, reader_epoch_s).items():
         field = field_name(address)
         for document, value in zip(documents, values, strict=True):
@@ -695,8 +800,9 @@ def seed_fingerprint(
     """The knobs a store's coverage depends on, as a comparable dict.
 
     Everything here changes what the store *contains*: the window's depth and
-    density, which channels are in it, how it is compressed on disk, and the
-    document schema itself. Nothing here is an instant or a count — those move
+    density, which channels are in it, how it is compressed on disk, the
+    document schema itself, and the pulse shape every stored trace is drawn
+    from (:data:`~osprey_connectors.simulation.pulse.SHAPE_VERSION`). Nothing here is an instant or a count — those move
     on every deploy and would make the comparison a coin flip.
 
     Args:
@@ -717,6 +823,7 @@ def seed_fingerprint(
         "hot_cadence_sec": knobs.hot_cadence_sec,
         "tail_cadence_sec": knobs.tail_cadence_sec,
         "compression": compression,
+        "shape_version": pulse.SHAPE_VERSION,
         "channel_count": len(names),
         "channel_set_sha256": digest,
     }
@@ -794,7 +901,53 @@ def compare_fingerprint(
 # ---------------------------------------------------------------------------
 
 
-def prepare_collection(collection: Collection) -> None:
+def waveform_collection(collection: str) -> str:
+    """The name of the collection holding ``collection``'s archived waveforms.
+
+    A trace is hundreds of samples, so it is stored as its own document beside
+    the per-timestamp snapshot documents rather than inside them. Every party to
+    the store — preparation, the reseed drop, the seeder, the live recorder and
+    the reader — derives the sibling's name here, and nowhere else spells it,
+    so the writers and the reader cannot drift apart.
+    """
+    return f"{collection}_waveforms"
+
+
+def waveform_document(
+    channel: str,
+    date: datetime,
+    values: Sequence[float] | np.ndarray,
+    *,
+    expire_at: datetime,
+) -> dict[str, Any]:
+    """One archived trace: one document per (channel, instant).
+
+    The keys mirror a scalar snapshot document, so the same field naming and the
+    same TTL index serve both: ``date`` is the sample instant, the channel's
+    :func:`~osprey_connectors.archiver.field_names.field_name` holds the trace,
+    and ``expireAt`` is the document's own deadline.
+
+    The trace is stored as plain doubles: a ``list[float]`` with one entry per
+    element of the channel's shape, which BSON keeps as an array of doubles and
+    every reader gets back unchanged.
+
+    Raises:
+        ValueError: when ``values`` is not a non-empty one-dimensional array.
+    """
+    trace = np.asarray(values, dtype=np.float64)
+    if trace.ndim != 1 or trace.size == 0:
+        raise ValueError(
+            f"A waveform trace for {channel!r} must be a non-empty 1-D array, "
+            f"got shape {trace.shape}."
+        )
+    return {
+        DATE_FIELD: date,
+        field_name(channel): trace.tolist(),
+        EXPIRE_FIELD: expire_at,
+    }
+
+
+def prepare_collection(collection: Collection, *, waveforms: Collection | None = None) -> None:
     """Create the two indexes the store cannot work without.
 
     ``{date: 1}`` is not an optimization: every archiver read sorts on ``date``,
@@ -809,9 +962,14 @@ def prepare_collection(collection: Collection) -> None:
 
     Both are idempotent: re-creating an identical index is a no-op, so this is
     safe on every deploy rather than only on the first.
+
+    ``waveforms``, the handle of :func:`waveform_collection` beside
+    ``collection``, gets the same two indexes: its documents are read by date
+    and age out by their own ``expireAt`` exactly as the snapshot documents do.
     """
-    collection.create_index(DATE_FIELD)
-    collection.create_index(EXPIRE_FIELD, expireAfterSeconds=0)
+    for handle in (collection,) if waveforms is None else (collection, waveforms):
+        handle.create_index(DATE_FIELD)
+        handle.create_index(EXPIRE_FIELD, expireAfterSeconds=0)
 
 
 def seed_base(
@@ -824,6 +982,7 @@ def seed_base(
     workers: int = DEFAULT_WORKERS,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     progress: Callable[[SeedReport], None] | None = None,
+    waveforms: Collection | None = None,
 ) -> SeedReport:
     """Build the store: indexes, the whole base series, then the manifest.
 
@@ -837,6 +996,11 @@ def seed_base(
     That split is deliberate: the composite is not contractually thread-safe,
     while the round trip to the store is the part worth overlapping. Submission blocks once the pool is saturated, so memory
     stays bounded at a few chunks rather than the whole window.
+
+    A ``waveform`` channel's traces go to the :func:`waveform_collection` beside
+    ``collection``, one document per channel per coarse-cadence instant over the
+    whole retention window (:func:`waveform_document`), written in the same
+    chunk loop and so also before the manifest.
 
     Args:
         collection: The sample collection. Existing samples are not removed —
@@ -852,9 +1016,12 @@ def seed_base(
         chunk_size: Timestamps synthesized and inserted per batch.
         progress: Called after each chunk with the running report, for a
             deploy-time progress line.
+        waveforms: The :func:`waveform_collection` beside ``collection``;
+            ``None`` opens it from ``collection``'s database. Only a view with
+            ``waveform`` channels needs it.
 
     Returns:
-        The completed report.
+        The completed report; ``documents`` counts the snapshot documents.
 
     Raises:
         ValueError: If ``chunk_size`` or ``workers`` is below one, or the knobs
@@ -874,7 +1041,10 @@ def seed_base(
         report.start = datetime.fromtimestamp(float(times[0]), UTC)
         report.end = datetime.fromtimestamp(float(times[-1]), UTC)
 
-    prepare_collection(collection)
+    traced = archive.waveform_addresses
+    if traced and waveforms is None:
+        waveforms = collection.database[waveform_collection(collection.name)]
+    prepare_collection(collection, waveforms=waveforms if traced else None)
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="archiver-seed") as pool:
         pending: set[Future[None]] = set()
@@ -884,6 +1054,10 @@ def seed_base(
                 document[EXPIRE_FIELD] = expire_at
 
             pending = _submit_bounded(pool, pending, collection, documents, workers)
+            if traced and waveforms is not None:
+                coarse = np.mod(chunk_times, knobs.tail_cadence_sec) == 0
+                traces = _waveform_documents(archive, chunk_times[coarse], chunk_expiry[coarse])
+                pending = _submit_bounded(pool, pending, waveforms, traces, workers)
 
             report.documents += len(documents)
             report.chunks += 1
@@ -903,6 +1077,29 @@ def seed_base(
     )
     logger.debug(report.describe())
     return report
+
+
+def _waveform_documents(
+    archive: ArchiveComposite, epoch_s: np.ndarray, expire_s: np.ndarray
+) -> list[dict[str, Any]]:
+    """The trace documents of every waveform channel at these instants.
+
+    Valued at the epoch seconds a reader derives from the stored dates, as the
+    snapshot documents are (:func:`synthesize_documents`).
+    """
+    stamps = _as_utc_datetimes(epoch_s)
+    if not stamps:
+        return []
+    expiry = _as_utc_datetimes(expire_s)
+    reader_epoch_s = epoch_seconds_array(stamps)
+    assert reader_epoch_s is not None  # datetimes always convert
+    documents: list[dict[str, Any]] = []
+    for address in archive.waveform_addresses:
+        for stamp, expire_at, trace in zip(
+            stamps, expiry, archive.traces(address, reader_epoch_s), strict=True
+        ):
+            documents.append(waveform_document(address, stamp, trace, expire_at=expire_at))
+    return documents
 
 
 def _submit_bounded(

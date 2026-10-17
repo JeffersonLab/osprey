@@ -13,11 +13,6 @@ import yaml
 
 import osprey.runtime
 import osprey_connectors.settle as settle_step
-from osprey.errors import (
-    ChannelLimitsViolationError,
-    ChannelReadFailedError,
-    ChannelWriteFailedError,
-)
 from osprey.runtime import (
     ENV_CONTROL_TARGET,
     ENV_CONTROL_TARGET_GENERATION,
@@ -32,6 +27,11 @@ from osprey_connectors.control_system.base import (
     WriteOutcome,
 )
 from osprey_connectors.control_system.limits_validator import ChannelLimitsConfig
+from osprey_connectors.errors import (
+    ChannelLimitsViolationError,
+    ChannelReadFailedError,
+    ChannelWriteFailedError,
+)
 from osprey_connectors.workspace import reset_config_cache
 from pyaml_cs_osprey import _run
 

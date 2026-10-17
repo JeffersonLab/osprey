@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
-from osprey.connectors.control_system.va_in_process_connector import VAInProcessConnector
-from osprey.errors import ChannelNotFoundError
 from osprey.mcp_server.control_system.error_handling import ToolError, connector_error_handler
 from osprey.mcp_server.control_system.server_context import initialize_server_context
+from osprey_connectors.control_system.va_in_process_connector import VAInProcessConnector
+from osprey_connectors.errors import ChannelNotFoundError
 from tests.connectors.test_mock_connector import _config_with_writes_enabled
 from tests.facility.served_tree import in_process_config, served_tree
 from tests.mcp_server.conftest import extract_response_dict, get_tool_fn, hook_error_class_map
@@ -46,18 +46,18 @@ async def served(tmp_path, monkeypatch):
     }
     (tmp_path / "config.yml").write_text(yaml.safe_dump({"control_system": control_system}))
     initialize_server_context()
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _config_with_writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _config_with_writes_enabled)
 
     connector = VAInProcessConnector()
     await connector.connect(in_process_config(view, response_delay_ms=0))
     with (
         patch(
-            "osprey.connectors.factory.ConnectorFactory.create_control_system_connector",
+            "osprey_connectors.factory.ConnectorFactory.create_control_system_connector",
             new_callable=AsyncMock,
             return_value=connector,
         ),
         patch(
-            "osprey.connectors.control_system.limits_validator.LimitsValidator.from_config",
+            "osprey_connectors.control_system.limits_validator.LimitsValidator.from_config",
             return_value=None,
         ),
     ):

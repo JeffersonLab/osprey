@@ -1,0 +1,709 @@
+{
+  "_reproduce": "hand-maintained: update with the pin in the same commit",
+  "_description": "Every pinned demo-facility count the expansion moves, one entry per stated value. `pin` is `assign:NAME` (a module-level constant, compared after literal_eval), `json:KEY` / `json:len(KEY)` / `json:len()` (a JSON file's value or length), or `text:FRAGMENT` with `{value}` standing for the number (a literal fragment of the file, digits not running on either side). `facility` holds the counts the built control-assistant facility must show.",
+  "facility": {
+    "channels": 2959,
+    "devices": 534,
+    "groups": 30,
+    "setpoints": 414,
+    "readables": 2545
+  },
+  "entries": [
+    {
+      "file": "tests/facility/golden/demo_fingerprint.json",
+      "pin": "json:count",
+      "value": 2908
+    },
+    {
+      "file": "tests/facility/golden/demo_fingerprint.json",
+      "pin": "json:len(rows)",
+      "value": 2908
+    },
+    {
+      "file": "tests/facility/golden/demo_fingerprint_additions.json",
+      "pin": "json:len(rows)",
+      "value": 51
+    },
+    {
+      "file": "tests/facility/golden/nominal_in_process.json",
+      "pin": "json:len(channels)",
+      "value": 2914
+    },
+    {
+      "file": "tests/facility/test_nominal_goldens.py",
+      "pin": "text:assert len(floats) == {value}",
+      "value": 1666
+    },
+    {
+      "file": "tests/facility/test_nominal_goldens.py",
+      "pin": "text:assert len(bools) == {value}",
+      "value": 1248
+    },
+    {
+      "file": "tests/facility/test_nominal_goldens.py",
+      "pin": "text:assert checked == {value}",
+      "value": 227
+    },
+    {
+      "file": "tests/facility/golden/nominal_va.json",
+      "pin": "json:len(channels)",
+      "value": 2908
+    },
+    {
+      "file": "tests/facility/golden/cf_standalone_addresses.json",
+      "pin": "json:count",
+      "value": 1228
+    },
+    {
+      "file": "tests/facility/golden/cf_standalone_addresses.json",
+      "pin": "json:len(addresses)",
+      "value": 1228
+    },
+    {
+      "file": "src/osprey/templates/apps/control_assistant/data/benchmarks/cross_paradigm/queries/tree_queries.json",
+      "pin": "json:len()",
+      "value": 61
+    },
+    {
+      "file": "tests/facility/test_cf_view_parity.py",
+      "pin": "text:assert len(rows) == golden[\"count\"] == {value}",
+      "value": 2908
+    },
+    {
+      "file": "tests/facility/test_cf_view_parity.py",
+      "pin": "text:assert golden[\"count\"] == len(addresses) == {value}",
+      "value": 1228
+    },
+    {
+      "file": "tests/facility/test_cf_view_parity.py",
+      "pin": "text:assert len(queries) == {value}",
+      "value": 61
+    },
+    {
+      "file": "tests/facility/test_cf_view_parity.py",
+      "pin": "text:assert len(families) == {value}",
+      "value": 28
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:The build holds {value} devices",
+      "value": 534
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:devices in {value} groups",
+      "value": 30
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:assert len(rows) == {value}",
+      "value": 2908
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:assert len(served) == {value}",
+      "value": 40
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:def test_the_demo_holds_{value}_devices",
+      "value": 534
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:_devices_in_{value}_groups",
+      "value": 30
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:assert len(built_control_assistant.facility[\"devices\"]) == {value}",
+      "value": 534
+    },
+    {
+      "file": "tests/facility/test_demo_fingerprint.py",
+      "pin": "text:assert len(groups) == {value}",
+      "value": 30
+    },
+    {
+      "file": "tests/facility/test_compute_demo.py",
+      "pin": "text:assert len(line) == {value}",
+      "value": 20
+    },
+    {
+      "file": "tests/facility/test_compute_demo.py",
+      "pin": "text:sum(len(setup[\"DeviceList\"]) for setup in setups.values()) == {value}",
+      "value": 20
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "assign:DEMO_GROUPS",
+      "value": {
+        "BR": [
+          "BPM",
+          "DIAG",
+          "DIPOLE",
+          "MAG",
+          "QD",
+          "QF"
+        ],
+        "BTS": [
+          "BPM",
+          "DIAG",
+          "HCM",
+          "MAG",
+          "VCM"
+        ],
+        "LINE": [
+          "BPM",
+          "HCM",
+          "VCM"
+        ],
+        "SR": [
+          "BPM",
+          "DIAG",
+          "DIPOLE",
+          "HCM",
+          "MAG",
+          "QD",
+          "QF",
+          "QFA",
+          "RF",
+          "SD",
+          "SEPTUM",
+          "SF",
+          "SHD",
+          "SHF",
+          "VAC",
+          "VCM"
+        ]
+      }
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "assign:DEMO_DERIVED",
+      "value": {
+        "BR": [
+          "BeamCurrentMonitor"
+        ],
+        "BTS": [
+          "Quadrupole"
+        ],
+        "LINE": [
+          "Quadrupole"
+        ],
+        "SR": [
+          "AcceleratingCavity",
+          "BeamCurrentMonitor",
+          "BeamLossMonitor",
+          "Gauge",
+          "Modulator",
+          "Pump",
+          "Valve"
+        ]
+      }
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "text:assert sum(len(families) for families in _families(document).values()) == {value}",
+      "value": 40
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "text:assert len(fields) == {value}",
+      "value": 1542
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "text:assert by_address == {value}",
+      "value": 1388
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "text:assert counts == ({value}, 2955)",
+      "value": 5863
+    },
+    {
+      "file": "tests/facility/test_cf_index_middle_layer.py",
+      "pin": "text:assert counts == (5863, {value})",
+      "value": 2955
+    },
+    {
+      "file": "tests/facility/test_demo_seed_rules.py",
+      "pin": "text:assert len(moving) == {value}",
+      "value": 628
+    },
+    {
+      "file": "tests/facility/test_demo_seed_rules.py",
+      "pin": "text:assert len(setpoints) == {value}",
+      "value": 414
+    },
+    {
+      "file": "tests/facility/test_bluesky_view.py",
+      "pin": "text:assert len(setpoints) == {value}",
+      "value": 414
+    },
+    {
+      "file": "tests/facility/test_pairing.py",
+      "pin": "text:assert len(authored) == {value}",
+      "value": 414
+    },
+    {
+      "file": "tests/services/bluesky_bridge/test_substrate_devices.py",
+      "pin": "assign:DEMO_WRITES",
+      "value": 414
+    },
+    {
+      "file": "tests/services/bluesky_bridge/test_substrate_devices.py",
+      "pin": "assign:DEMO_READS",
+      "value": 2545
+    },
+    {
+      "file": "tests/services/bluesky_bridge/test_substrate_devices.py",
+      "pin": "text:{value} settables /",
+      "value": 414
+    },
+    {
+      "file": "tests/services/bluesky_bridge/test_substrate_devices.py",
+      "pin": "text:/ {value} readables",
+      "value": 2545
+    },
+    {
+      "file": "tests/channel_roster/test_facade.py",
+      "pin": "assign:DEMO_CHANNELS",
+      "value": 2959
+    },
+    {
+      "file": "tests/channel_roster/test_facade.py",
+      "pin": "assign:DEMO_WRITES",
+      "value": 414
+    },
+    {
+      "file": "tests/channel_roster/test_facade.py",
+      "pin": "assign:DEMO_READS",
+      "value": 2545
+    },
+    {
+      "file": "tests/channel_roster/test_facade.py",
+      "pin": "text:-- {value} channels,",
+      "value": 2959
+    },
+    {
+      "file": "tests/channel_roster/test_facade.py",
+      "pin": "text:channels, {value} of them settable",
+      "value": 414
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_DEVICES",
+      "value": 535
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_WRITE_ONLY",
+      "value": 414
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_READ_ONLY",
+      "value": 2541
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_MAGNETS",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:({value} binding owners",
+      "value": 535
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:/ {value} bindings /",
+      "value": 2959
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:/ {value} write-only",
+      "value": 414
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:+ {value} read-only",
+      "value": 2541
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:/ {value} magnets",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:binding: the {value} devices",
+      "value": 534
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "assign:EXPECTED_TRIPLES_LOADED",
+      "value": 25070
+    },
+    {
+      "file": "tests/integration/test_graphdb_store.py",
+      "pin": "text:and its {value} triples",
+      "value": 25070
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "assign:EXPECTED_DEVICES",
+      "value": 534
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "assign:EXPECTED_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "assign:EXPECTED_WRITE_ONLY",
+      "value": 414
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "assign:EXPECTED_READ_ONLY",
+      "value": 2541
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "assign:EXPECTED_MAGNETS",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:sums to the {value} verified devices",
+      "value": 534
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:reproduces {value} write-only",
+      "value": 414
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:/ {value} read-only /",
+      "value": 2541
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:/ {value} total",
+      "value": 2959
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:lists exactly the {value} verified devices",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:compare 200 against {value} and",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:reaches the same {value} without",
+      "value": 400
+    },
+    {
+      "file": "tests/integration/test_graph_mcp.py",
+      "pin": "text:demo machine has {value} magnets",
+      "value": 400
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_DEVICES",
+      "value": 535
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_TYPED_DEVICES",
+      "value": 534
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_WRITE_ONLY",
+      "value": 414
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_READ_ONLY",
+      "value": 2541
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_MAGNETS",
+      "value": 400
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "assign:DEMO_CLASS_COUNT",
+      "value": 20
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "text:the {value} typed devices",
+      "value": 534
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_parse_corpus.py",
+      "pin": "text:assert demo.signal_count == {value}",
+      "value": 32
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "assign:DEMO_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "assign:DEMO_DEVICES",
+      "value": 535
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "assign:DEMO_CLASSES",
+      "value": 20
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "assign:DEMO_SIGNALS",
+      "value": 32
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "assign:DEMO_SECTIONS",
+      "value": 16
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "text:is one of the {value};",
+      "value": 535
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "text:assert \"{value} bindings\" in line",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_build.py",
+      "pin": "text:assert \"{value} devices\" in line",
+      "value": 535
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_writer.py",
+      "pin": "text:assert report.binding_count == {value}",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_writer.py",
+      "pin": "text:\"SELECT count(*) FROM bindings\") == [({value},)]",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_writer.py",
+      "pin": "text:assert report.class_count == {value}",
+      "value": 20
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_writer.py",
+      "pin": "text:\"SELECT count(*) FROM classes\") == [({value},)]",
+      "value": 20
+    },
+    {
+      "file": "tests/services/channel_finder/graph_index/test_search.py",
+      "pin": "text:assert payload[\"total\"] == {value}",
+      "value": 2959
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "assign:EXPECTED_DEVICES",
+      "value": 534
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "assign:EXPECTED_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "assign:EXPECTED_WRITES",
+      "value": 414
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "assign:EXPECTED_READS",
+      "value": 2541
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:The census below ({value}",
+      "value": 534
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:devices, {value} bindings",
+      "value": 2959
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:{value} written and",
+      "value": 414
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:{value} read signals",
+      "value": 2541
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:and the {value} writes are",
+      "value": 414
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:database's {value} device channels",
+      "value": 2908
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:the transfer line's {value} channels",
+      "value": 40
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "assign:EXPECTED_FAMILY_DESCRIBED",
+      "value": 526
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:predicate appearing {value} times",
+      "value": 2959
+    },
+    {
+      "file": "tests/templates/test_control_assistant_demo_ttl.py",
+      "pin": "text:injection septa's {value} channels",
+      "value": 7
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "assign:EXPECTED_CHANNELS",
+      "value": 2908
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "assign:EXPECTED_BINDINGS",
+      "value": 2959
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "assign:EXPECTED_DEVICES",
+      "value": 534
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "text:the {value} addresses the facility adds included",
+      "value": 51
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "text:\"familyDescription\": {value},\n    \"systemDescription\": EXPECTED_DEVICES",
+      "value": 526
+    },
+    {
+      "file": "tests/services/facility_knowledge/test_demo_ttl_consistency.py",
+      "pin": "assign:EXPECTED_DISTINCT_DEVICE_TEXTS",
+      "value": {
+        "familyDescription": 27,
+        "systemDescription": 4
+      }
+    },
+    {
+      "file": "tests/va/e2e/test_substrate_parity.py",
+      "pin": "assign:EXPECTED_NOISY_CHANNELS",
+      "value": 628
+    },
+    {
+      "file": "tests/e2e/claude_code/test_channel_finder_mcp_benchmarks.py",
+      "pin": "assign:GRAPH_CHANNEL_COUNT",
+      "value": 2959
+    },
+    {
+      "file": "tests/mcp_server/channel_finder_graph/test_examples_live.py",
+      "pin": "text:the corpus' {value} channel bindings",
+      "value": 2959
+    },
+    {
+      "file": "tests/_facility_file.py",
+      "pin": "text:{value} channels: 414 setpoints",
+      "value": 2959
+    },
+    {
+      "file": "tests/_facility_file.py",
+      "pin": "text:channels: {value} setpoints",
+      "value": 414
+    },
+    {
+      "file": "tests/_facility_file.py",
+      "pin": "text:readback, and {value}",
+      "value": 2545
+    },
+    {
+      "file": "tests/_graph_index.py",
+      "pin": "text:{value} channels, 414 of them settable",
+      "value": 2959
+    },
+    {
+      "file": "tests/_graph_index.py",
+      "pin": "text:channels, {value} of them settable",
+      "value": 414
+    },
+    {
+      "file": "tests/simulation/test_active_logbook_seed.py",
+      "pin": "text:assert len(entries) == {value}",
+      "value": 28
+    },
+    {
+      "file": "tests/simulation/test_active_logbook_seed.py",
+      "pin": "text:assert seed_active_logbook(config, project, config[\"ariel\"]) == {value}",
+      "value": 28
+    },
+    {
+      "file": "tests/simulation/test_active_logbook_seed.py",
+      "pin": "text:range(1, {value})",
+      "value": 29
+    },
+    {
+      "file": "tests/services/ariel_search/test_apply_seed.py",
+      "pin": "text:assert result.logbook_seeded == {value}",
+      "value": 28
+    },
+    {
+      "file": "tests/services/ariel_search/test_apply_seed.py",
+      "pin": "text:second.logbook_seeded == {value}",
+      "value": 28
+    },
+    {
+      "file": "tests/services/ariel_search/test_apply_seed.py",
+      "pin": "text:assert len(entries) == {value}",
+      "value": 28
+    }
+  ]
+}

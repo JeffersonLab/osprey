@@ -304,7 +304,7 @@ def test_the_demo_view_holds_every_setpoint_and_readback(
     rows = fingerprint_rows() + load_golden("demo_fingerprint_additions.json")["rows"]
     setpoints = sorted(row["address"] for row in rows if row["role"] == "setpoint")
     readbacks = sorted(row["address"] for row in rows if row["role"] == "readback")
-    assert len(setpoints) == 412
+    assert len(setpoints) == 414
     assert sum(address.startswith("LINE:") for address in setpoints) == 16
 
     settables, readables = specs_from_file(

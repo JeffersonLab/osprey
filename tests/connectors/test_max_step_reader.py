@@ -18,23 +18,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from osprey.connectors.control_system.base import WriteOutcome
-from osprey.connectors.control_system.epics_connector import EPICSConnector
-from osprey.connectors.control_system.limits_validator import (
+from osprey_connectors.control_system.base import WriteOutcome
+from osprey_connectors.control_system.epics_connector import EPICSConnector
+from osprey_connectors.control_system.limits_validator import (
     DEFAULT_STEP_READ_TIMEOUT_SECONDS,
     ChannelLimitsConfig,
     LimitsValidator,
     step_read_timeout_seconds,
 )
-from osprey.connectors.control_system.va_in_process_connector import VAInProcessConnector
-from osprey.errors import ChannelLimitsViolationError
+from osprey_connectors.control_system.va_in_process_connector import VAInProcessConnector
+from osprey_connectors.errors import ChannelLimitsViolationError
 from tests.connectors._epics_fakes import FakeChannel, ca_connector, ca_reading
 from tests.facility.served_tree import in_process_config, served_tree
 
-_DOOCS_LIMITS_PATCH = "osprey.connectors.control_system.doocs_connector.LimitsValidator.from_config"
-_DOOCS_TZ_PATCH = "osprey.connectors.control_system.doocs_connector.get_facility_timezone"
-_TANGO_LIMITS_PATCH = "osprey.connectors.control_system.tango_connector.LimitsValidator.from_config"
-_TANGO_TZ_PATCH = "osprey.connectors.control_system.tango_connector.get_facility_timezone"
+_DOOCS_LIMITS_PATCH = "osprey_connectors.control_system.doocs_connector.LimitsValidator.from_config"
+_DOOCS_TZ_PATCH = "osprey_connectors.control_system.doocs_connector.get_facility_timezone"
+_TANGO_LIMITS_PATCH = "osprey_connectors.control_system.tango_connector.LimitsValidator.from_config"
+_TANGO_TZ_PATCH = "osprey_connectors.control_system.tango_connector.get_facility_timezone"
 
 CURRENT = 10.0
 
@@ -64,7 +64,7 @@ def _step_validator(channel: str, max_step: float = 5.0) -> LimitsValidator:
 
 
 async def test_the_simulator_reads_its_own_store(monkeypatch, tmp_path):
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _writes_enabled)
     connector = VAInProcessConnector()
     await connector.connect(
         in_process_config(served_tree(tmp_path, ["SIM:CHANNEL:SP"]), response_delay_ms=0)
@@ -115,7 +115,7 @@ async def test_the_doocs_connector_reads_with_doocs4py():
         patch(_DOOCS_LIMITS_PATCH, return_value=None),
         patch(_DOOCS_TZ_PATCH, return_value=UTC),
     ):
-        from osprey.connectors.control_system.doocs_connector import DOOCSConnector
+        from osprey_connectors.control_system.doocs_connector import DOOCSConnector
 
         conn = DOOCSConnector()
         await conn.connect({})
@@ -142,7 +142,7 @@ async def test_the_tango_connector_reads_with_its_device_proxy():
         patch(_TANGO_LIMITS_PATCH, return_value=None),
         patch(_TANGO_TZ_PATCH, return_value=UTC),
     ):
-        from osprey.connectors.control_system.tango_connector import TangoConnector
+        from osprey_connectors.control_system.tango_connector import TangoConnector
 
         conn = TangoConnector()
         await conn.connect({})
@@ -164,7 +164,7 @@ async def test_max_step_blocks_an_oversized_step_on_the_simulator(monkeypatch, t
     No Channel Access read could ever answer for a simulated channel, so this
     write used to be refused as unverifiable however small the step was.
     """
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _writes_enabled)
     connector = VAInProcessConnector()
     await connector.connect(
         in_process_config(served_tree(tmp_path, ["SIM:CHANNEL:SP"]), response_delay_ms=0)
@@ -182,7 +182,7 @@ async def test_max_step_blocks_an_oversized_step_on_the_simulator(monkeypatch, t
 
 
 async def test_max_step_lets_a_small_step_through_on_the_simulator(monkeypatch, tmp_path):
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _writes_enabled)
     connector = VAInProcessConnector()
     await connector.connect(
         in_process_config(served_tree(tmp_path, ["SIM:CHANNEL:SP"]), response_delay_ms=0)

@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import numpy
 import pytest
 from click.testing import CliRunner
 from lume.model import LUMEModel
@@ -27,8 +28,8 @@ from lume.variables import ScalarVariable, StrVariable, Variable
 from lume_pyat.exceptions import OrbitSolveError
 
 from osprey.cli.sim import sim_group
-from osprey.connectors.control_system.base import WriteOutcome
-from osprey.connectors.control_system.va_in_process_connector import (
+from osprey_connectors.control_system.base import WriteOutcome
+from osprey_connectors.control_system.va_in_process_connector import (
     VAInProcessConnector,
     simulation_state_dir,
 )
@@ -62,7 +63,7 @@ def _writes_enabled(key: str, default: Any = None) -> Any:
 @pytest.fixture(autouse=True)
 def _no_model_log_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(composite_module, "default_config_path", lambda: None)
-    monkeypatch.setattr("osprey.utils.config.get_config_value", _writes_enabled)
+    monkeypatch.setattr("osprey_connectors.config.get_config_value", _writes_enabled)
 
 
 async def _connected(view: Path) -> VAInProcessConnector:
@@ -172,7 +173,12 @@ async def test_a_solve_that_raises_fails_sr_and_leaves_the_texture(
     assert readbacks and texture
     assert [address for address in readbacks if not math.isnan(read[address])] == []
     assert failed.output_severity(readbacks) == dict.fromkeys(readbacks, {"condition": "udf"})
-    assert failed.get(texture) == serving.get(texture)
+    failed_texture, serving_texture = failed.get(texture), serving.get(texture)
+    assert failed_texture.keys() == serving_texture.keys()
+    assert all(
+        numpy.array_equal(failed_texture[address], serving_texture[address])
+        for address in failed_texture
+    )
     assert math.isnan(reading.value)
     assert reading.metadata.alarm_severity == 3
     assert model_status(connector, "SR") == str(error)
