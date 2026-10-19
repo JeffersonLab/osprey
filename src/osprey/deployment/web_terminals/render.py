@@ -66,6 +66,7 @@ from osprey.deployment.web_terminals.personas import (
     effective_image_source,
     entry_is_shared,
     resolve_access_principals,
+    resolve_image_tag,
     resolve_personas,
     roster_role_by_name,
 )
@@ -1657,6 +1658,9 @@ def render_web_terminals(
         # of them has to contend for the same lock.
         "guarded_run_source": repo_relative_mount_source(guarded_run_relpath()),
         **auth_tls_ctx,
+        # After the spread: the sidecar's image depends on registry.url and the
+        # project name, which the auth stanza alone does not carry.
+        "auth_image": resolve_auth_image(web_terminals, registry, project_name),
     }
 
     from osprey.interfaces.common_middleware import URL_MOUNT_ROOT
@@ -2605,6 +2609,31 @@ def _tls_enabled(web_terminals: dict[str, Any]) -> bool:
     return bool(as_dict(web_terminals.get("tls")).get("enabled", False))
 
 
+def resolve_auth_image(
+    web_terminals: dict[str, Any], registry_cfg: Any, project_name: str
+) -> str | None:
+    """The image the auth sidecar's compose service runs, or ``None`` for the local tag.
+
+    An explicit ``auth.image`` wins in either image source: the deployment
+    pinned an external sidecar. Otherwise registry mode names the sidecar like
+    every other image the deployment pushes, under ``registry.url`` and the
+    tag :func:`resolve_image_tag` resolves, as ``<project>-auth`` -- the local
+    tag's name, so both sources call the sidecar the same thing. Local mode,
+    and registry mode with no ``registry.url`` (which the render refuses),
+    return ``None``, and the compose template falls back to
+    ``<project>-auth:local``.
+    """
+    pinned = as_dict(web_terminals.get("auth")).get("image")
+    if pinned:
+        return pinned
+    if effective_image_source(web_terminals) == "local":
+        return None
+    registry_url = configured_registry_url(registry_cfg)
+    if not registry_url:
+        return None
+    return f"{registry_url}/{project_name}-auth:{resolve_image_tag(web_terminals)}"
+
+
 def _auth_tls_context(web_terminals: dict[str, Any], *, base: int | None = None) -> dict[str, Any]:
     """Read the ``web_terminals.auth``/``web_terminals.tls`` stanzas into the context
     keys the nginx seam and the auth sidecar's compose service consume.
@@ -2670,8 +2699,8 @@ def _auth_tls_context(web_terminals: dict[str, Any], *, base: int | None = None)
         ``sidecar_active``/``inject_secret``/``walled``/``token_exchange``/``open_perimeter``
         described above, ``auth_port``
         (int, the sidecar's listen port), ``auth_session_lifetime`` (int
-        seconds), ``auth_allow_insecure_http`` (bool), ``auth_image`` (str or
-        ``None`` — required only in registry image-source mode),
+        seconds), ``auth_allow_insecure_http`` (bool), ``auth_image`` (the explicit ``auth.image``
+        or ``None``; :func:`resolve_auth_image` adds the registry default),
         ``auth_oidc_issuer`` (str or ``None``),
         ``auth_oidc_client_id_env``/``auth_oidc_client_secret_env`` (the env-var
         *names* the sidecar reads its OIDC client credentials from — never the

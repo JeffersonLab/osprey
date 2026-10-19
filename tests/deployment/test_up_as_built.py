@@ -1088,7 +1088,7 @@ def _password_roster(project_root: Path) -> dict:
 def test_a_mint_prints_the_password_on_a_terminal(tmp_path, monkeypatch, capsys):
     """The show-once design is unchanged where a person is watching."""
     monkeypatch.setattr(provision, "_stdout_is_a_terminal", lambda: True)
-    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda web_terminals: None)
+    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda config: None)
 
     provision._provision_auth_secrets(_password_roster(tmp_path), str(tmp_path))
 
@@ -1107,7 +1107,7 @@ def test_a_mint_prints_no_password_when_stdout_is_not_a_terminal(
     of ``.env.auth``, which holds hashes.
     """
     monkeypatch.setattr(provision, "_stdout_is_a_terminal", lambda: False)
-    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda web_terminals: None)
+    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda config: None)
 
     provision._provision_auth_secrets(_password_roster(tmp_path), str(tmp_path))
 
@@ -1140,7 +1140,7 @@ def test_a_mint_prints_no_password_when_stdout_is_not_a_terminal(
 def test_a_supplied_password_is_never_echoed_either_way(tmp_path, monkeypatch, capsys):
     """A password the operator already knows is hashed in without a notice."""
     monkeypatch.setattr(provision, "_stdout_is_a_terminal", lambda: True)
-    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda web_terminals: None)
+    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda config: None)
     roster = _password_roster(tmp_path)
     (tmp_path / ".env").write_text("OSPREY_AUTH_PW_ALICE=chosen-by-hand\n", encoding="utf-8")
 
@@ -1168,7 +1168,7 @@ def test_the_up_path_reaches_the_sink_aware_mint(lifecycle_repo, monkeypatch):
         return real(usernames, project_root, echo=echo)
 
     monkeypatch.setattr(provision, "ensure_auth_credentials", _record)
-    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda web_terminals: None)
+    monkeypatch.setattr(provision, "_require_auth_sidecar_image", lambda config: None)
 
     (lifecycle_repo / ".env").write_text("ANTHROPIC_API_KEY=x\n", encoding="utf-8")
     config = json.loads(

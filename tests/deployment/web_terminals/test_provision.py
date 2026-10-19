@@ -4,7 +4,7 @@ Covers ``osprey.deployment.web_terminals.provision`` in isolation: the web
 stack's own ``compose down``, the single post-``up`` force-recreate (podman
 image drift), the ``preflight_web_terminals`` auth-credential provisioning
 (mint order and the fail-closed gate), and the auth sidecar's image
-production (registry-mode ``auth.image`` requirement, local-mode build, pull
+production (registry-mode sidecar image name, local-mode build, pull
 scoping) plus the shared force-recreate primitive. The
 deploy_up-entry orchestration that wires the provisioning modules together
 lives in ``tests/deployment/test_container_lifecycle.py``; the split-out
@@ -292,8 +292,9 @@ def test_reconcile_skipped_when_compose_file_unreadable(monkeypatch, tmp_path):
 def _auth_config(method: str, users=("alice", "bob"), auth_image="reg/osprey-auth:1") -> dict:
     """A registry-mode web-terminals config with `method` authentication.
 
-    Carries an `auth.image` by default because registry mode requires one (see
-    the sidecar-image section below); pass None to exercise that requirement.
+    Carries an `auth.image` by default because the config has no `registry.url`
+    to name the sidecar under (see the sidecar-image section below); pass None
+    to exercise that requirement.
     """
     auth: dict = {"method": method}
     if auth_image is not None:
@@ -830,7 +831,7 @@ def test_preflight_does_not_warn_without_a_gitignore_at_all(monkeypatch, tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# Auth sidecar image: the registry-mode requirement and the local-mode build
+# Auth sidecar image: the registry-mode name and the local-mode build
 # ---------------------------------------------------------------------------
 
 
@@ -841,15 +842,23 @@ def _sidecar_config(image_source: str, *, auth_image=None, method="password") ->
     return config
 
 
-def test_registry_mode_without_auth_image_fails_preflight(monkeypatch, tmp_path):
-    """Registry mode builds nothing locally, and the compose overlay falls back
-    to a `:local` tag that mode never produces — so a deployment that forgot
-    auth.image must abort here, naming the key, instead of dying at `pull` on a
-    tag no registry has."""
+def test_registry_mode_without_auth_image_or_registry_url_fails_preflight(monkeypatch, tmp_path):
+    """Registry mode builds nothing locally, and with neither `auth.image` nor
+    `registry.url` the sidecar has no name to pull — so the deploy aborts here,
+    naming both keys, instead of dying at `pull` on a `:local` tag no registry has."""
     _stub_clean_provisioning(monkeypatch, tmp_path)
 
-    with pytest.raises(RuntimeError, match="auth.image"):
+    with pytest.raises(RuntimeError, match=r"registry\.url .*auth\.image"):
         _run_preflight(monkeypatch, tmp_path, _sidecar_config("registry"))
+
+
+def test_registry_mode_with_registry_url_needs_no_auth_image(monkeypatch, tmp_path):
+    """The sidecar is named under `registry.url` like the persona images."""
+    _stub_clean_provisioning(monkeypatch, tmp_path)
+    config = _sidecar_config("registry")
+    config["registry"] = {"url": "reg.example/osprey"}
+
+    _run_preflight(monkeypatch, tmp_path, config)
 
 
 def test_registry_mode_with_auth_image_passes_preflight(monkeypatch, tmp_path):
