@@ -1,0 +1,94 @@
+<div class="osprey-diagram">
+<svg viewBox="0 0 1000 880" role="img" aria-labelledby="fv-title fv-desc">
+  <title id="fv-title">How the signal vocabulary is used: from the NARAD dictionary to the facility file, the knowledge graph and the agent</title>
+  <desc id="fv-desc">Top: NARAD, an outside project (narad-uitf, built on JLab's UITF data), a semantic layer for finding channels: a dictionary of accelerator words written in LinkML, with 40 device classes such as Quadrupole, BPM, RFCavity and VacuumGauge, 89 signal roles such as current_setpoint, position_x_readback, vacuum_readback and rf_forward_power_readback plus the aliases people type, and 15 properties such as betax, s_position and length. It is carried into OSPREY as src/osprey/facility/schema/vocabulary.yaml. The OSPREY facility file: data/facility/*.yaml goes through osprey build to build/facility.json. One channel record has address SR:MAG:QF:01:CURRENT:SP, on device SR/QF1 whose class Quadrupole comes from the dictionary, role setpoint, and signal current_setpoint, which says what the channel is and also comes from the dictionary. The build checks every class and signal against the dictionary and stops on an unknown one. The graph view: data/graph/facility.ttl is loaded into a graph database, where SR/QF1, a Quadrupole, hasBinding the channel QF:01:CURRENT:SP, which writesSignal current_setpoint. The graph is queried by the agent's graph channel finder tools: an operator asks to show the forward power on the cavities; the agent maps the alias forward power to the role rf_forward_power_readback, queries for channels that readsSignal that role on RFCavity devices, and gets SR:RF:CAV1:PFWD and SR:RF:CAV2:PFWD.</desc>
+  <defs>
+    <marker id="fv-arr" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><polygon points="0,0 8,3 0,6" style="fill: var(--od-muted)"/></marker>
+    <marker id="fv-arr-acc" viewBox="0 0 8 6" refX="7" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><polygon points="0,0 8,3 0,6" style="fill: var(--od-accent)"/></marker>
+  </defs>
+
+  <!-- 1. NARAD dictionary -->
+  <rect class="nb-ext" x="40" y="30" width="920" height="160" rx="8"/>
+  <text class="te" x="60" y="50">OUTSIDE OSPREY</text>
+  <text class="tn" x="60" y="70">NARAD</text>
+  <text class="ts" x="110" y="70">an outside project (narad-uitf, built on JLab's UITF data)</text>
+  <text class="ts" x="60" y="88">a “semantic layer” for finding channels: a dictionary of accelerator words, written in LinkML</text>
+  <text class="ta" x="60" y="118">DEVICE CLASSES (40)</text>
+  <text class="ts" x="210" y="118">Quadrupole, BPM, RFCavity, VacuumGauge, ...</text>
+  <text class="ta" x="60" y="140">SIGNAL ROLES (89)</text>
+  <text class="ts" x="210" y="140">current_setpoint, position_x_readback, vacuum_readback, rf_forward_power_readback, ...</text>
+  <text class="ts" x="210" y="153">+ aliases people type</text>
+  <text class="ta" x="60" y="175">PROPERTIES (15)</text>
+  <text class="ts" x="210" y="175">betax, s_position, length, ...</text>
+
+  <line class="e-acc" x1="100" y1="190" x2="100" y2="250" marker-end="url(#fv-arr-acc)"/>
+  <text class="ta ta-acc" x="114" y="218">CARRIED INTO OSPREY AS</text>
+  <text class="ts" x="114" y="232">src/osprey/facility/schema/vocabulary.yaml</text>
+
+  <!-- 2. Facility file -->
+  <rect class="nb-foc" x="40" y="250" width="920" height="240" rx="8"/>
+  <text class="te" x="60" y="270">OSPREY FACILITY FILE</text>
+  <rect class="nb" x="60" y="284" width="190" height="30" rx="4"/>
+  <text class="ts" x="155" y="302" text-anchor="middle">data/facility/*.yaml</text>
+  <line class="e" x1="250" y1="299" x2="300" y2="299" marker-end="url(#fv-arr)"/>
+  <rect class="nb nb-acc-stroke" x="300" y="284" width="140" height="30" rx="4"/>
+  <text class="tn" x="370" y="303" text-anchor="middle">osprey build</text>
+  <line class="e" x1="440" y1="299" x2="490" y2="299" marker-end="url(#fv-arr)"/>
+  <rect class="nb" x="490" y="284" width="190" height="30" rx="4"/>
+  <text class="ts" x="585" y="302" text-anchor="middle">build/facility.json</text>
+
+  <text class="ta" x="60" y="342">ONE CHANNEL RECORD</text>
+  <rect class="nb" x="60" y="352" width="380" height="92" rx="4"/>
+  <text class="ta" x="76" y="374">address</text>
+  <text class="ts" x="140" y="374">SR:MAG:QF:01:CURRENT:SP</text>
+  <text class="ta" x="76" y="394">on</text>
+  <text class="ts" x="140" y="394">{device: SR/QF1}</text>
+  <text class="ta" x="76" y="414">role</text>
+  <text class="ts" x="140" y="414">setpoint</text>
+  <text class="ta" x="76" y="434">signal</text>
+  <text class="ts" x="140" y="434">current_setpoint</text>
+
+  <line class="e-thin" x1="250" y1="391" x2="470" y2="391"/>
+  <text class="ts t-acc" x="478" y="394">class: Quadrupole</text>
+  <line class="e-acc" x1="760" y1="391" x2="586" y2="391" marker-end="url(#fv-arr-acc)"/>
+  <text class="ta ta-acc" x="768" y="394">FROM THE DICTIONARY</text>
+  <line class="e-acc" x1="760" y1="431" x2="250" y2="431" marker-end="url(#fv-arr-acc)"/>
+  <rect class="mask" x="456" y="422" width="238" height="12" rx="2"/>
+  <text class="ta" x="575" y="431" text-anchor="middle">“what this channel is”</text>
+  <text class="ta ta-acc" x="768" y="434">FROM THE DICTIONARY</text>
+
+  <text class="ts" x="60" y="472">the build checks every class and signal against the dictionary (unknown = stop)</text>
+
+  <line class="e" x1="100" y1="490" x2="100" y2="550" marker-end="url(#fv-arr)"/>
+  <text class="ta" x="114" y="524">GRAPH VIEW</text>
+
+  <!-- 3. Knowledge graph -->
+  <rect class="nb" x="40" y="550" width="920" height="120" rx="8"/>
+  <text class="te" x="60" y="570">KNOWLEDGE GRAPH</text>
+  <text class="ts" x="60" y="590">data/graph/facility.ttl → graph database</text>
+  <rect class="nb-st" x="60" y="614" width="190" height="30" rx="15"/>
+  <text class="ts" x="155" y="632" text-anchor="middle">SR/QF1 : Quadrupole</text>
+  <line class="e" x1="250" y1="629" x2="340" y2="629" marker-end="url(#fv-arr)"/>
+  <text class="ta" x="295" y="620" text-anchor="middle">hasBinding</text>
+  <rect class="nb-st" x="340" y="614" width="250" height="30" rx="15"/>
+  <text class="ts" x="465" y="632" text-anchor="middle">channel ...QF:01:CURRENT:SP</text>
+  <line class="e" x1="590" y1="629" x2="690" y2="629" marker-end="url(#fv-arr)"/>
+  <text class="ta" x="640" y="620" text-anchor="middle">writesSignal</text>
+  <rect class="nb-st" x="690" y="614" width="170" height="30" rx="15"/>
+  <text class="ts" x="775" y="632" text-anchor="middle">current_setpoint</text>
+
+  <line class="e" x1="100" y1="670" x2="100" y2="730" marker-end="url(#fv-arr)"/>
+  <text class="ta" x="114" y="704">QUERIED BY</text>
+
+  <!-- 4. Agent -->
+  <rect class="nb" x="40" y="730" width="920" height="130" rx="8" style="stroke: var(--od-soft); stroke-width: 1.4"/>
+  <text class="te" x="60" y="750">AGENT</text>
+  <text class="ts" x="110" y="750">graph channel finder tools</text>
+  <text class="ta" x="60" y="776">OPERATOR</text>
+  <text class="tn" x="140" y="776">“show me the forward power on the cavities”</text>
+  <text class="ta" x="60" y="800">AGENT</text>
+  <text class="ts" x="140" y="800">alias “forward power” → role rf_forward_power_readback</text>
+  <text class="ts" x="140" y="818">graph query: channels that readsSignal that role, on RFCavity devices</text>
+  <text class="ts t-acc" x="140" y="840">→ SR:RF:CAV1:PFWD, SR:RF:CAV2:PFWD</text>
+</svg>
+</div>
