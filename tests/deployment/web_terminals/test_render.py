@@ -3728,6 +3728,7 @@ def test_auth_sidecar_service_image_defaults_to_the_local_build_tag() -> None:
     `facility.prefix`, the same tag provision builds."""
     # Act
     config = _auth_config()
+    config["modules"]["web_terminals"]["image_source"] = "local"
     auth = _compose(config)["services"]["auth"]
 
     # Assert
@@ -3764,6 +3765,7 @@ def test_containers_and_auth_image_are_named_by_the_project_not_the_facility() -
     from osprey.deployment.web_terminals.provision import auth_sidecar_local_tag
 
     config = _auth_config(["alice", "bob"])
+    config["modules"]["web_terminals"]["image_source"] = "local"
     config["project_name"] = "beamline-ops"
     config["facility"]["prefix"] = "dls"
 
@@ -3792,6 +3794,76 @@ def test_auth_sidecar_service_image_pins_a_configured_registry_image() -> None:
 
     # Assert
     assert auth["image"] == image
+
+
+def test_registry_mode_names_the_auth_sidecar_under_the_registry_and_image_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry mode with no `auth.image`: the sidecar is `<registry.url>/<project>-auth`
+    on the tag every persona image carries, `${VAR}` expanded at render, so one
+    `OSPREY_IMAGE_TAG` names every image the deployment pushes."""
+    # Arrange
+    monkeypatch.setenv("OSPREY_IMAGE_TAG", "3f9c2a1b0")
+    config = _auth_config(["alice"])
+    config["modules"]["web_terminals"]["image_tag"] = "${OSPREY_IMAGE_TAG}"
+
+    # Act
+    services = _compose(config)["services"]
+
+    # Assert
+    registry = "git.dls.example.org:5050/physics/production/dls-profiles"
+    assert services["auth"]["image"] == f"{registry}/dls_controls-auth:3f9c2a1b0"
+    assert services["web-alice"]["image"] == f"{registry}/web-terminal:3f9c2a1b0"
+
+
+def test_registry_mode_auth_sidecar_defaults_to_the_latest_tag() -> None:
+    """With no `image_tag` the sidecar follows the personas' `latest`."""
+    auth = _compose(_auth_config())["services"]["auth"]
+
+    assert auth["image"] == (
+        "git.dls.example.org:5050/physics/production/dls-profiles/dls_controls-auth:latest"
+    )
+
+
+def test_drift_reconcile_recreates_the_auth_sidecar_on_a_new_image_tag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The post-`up` reconcile reads image names back out of the rendered compose
+    file. The sidecar's tag is a literal there, so a pull under a new
+    `OSPREY_IMAGE_TAG` that leaves the running sidecar on the old image recreates it."""
+    # Arrange
+    from osprey.deployment.web_terminals import provision
+
+    monkeypatch.setenv("OSPREY_IMAGE_TAG", "3f9c2a1b0")
+    config = _auth_config(["alice"])
+    config["modules"]["web_terminals"]["image_tag"] = "${OSPREY_IMAGE_TAG}"
+    compose_text = render_web_terminals(config)["docker-compose.web.yml"]
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "docker-compose.web.yml").write_text(compose_text, encoding="utf-8")
+    services = yaml.safe_load(compose_text)["services"]
+    sidecar_image = services["auth"]["image"]
+    assert sidecar_image.endswith("/dls_controls-auth:3f9c2a1b0")
+
+    monkeypatch.setattr(provision, "get_runtime_command", lambda config=None: ["podman", "compose"])
+    monkeypatch.setattr(
+        provision,
+        "get_image_id",
+        lambda runtime, image, env=None: "idNEW" if image == sidecar_image else "same",
+    )
+    monkeypatch.setattr(
+        provision,
+        "get_container_image_id",
+        lambda runtime, container, env=None: "idOLD" if container.endswith("-auth") else "same",
+    )
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(provision, "run_captured", lambda cmd, **kwargs: recorded.append(list(cmd)))
+
+    # Act
+    provision._reconcile_web_stack_recreates({}, ["podman", "compose"], {}, repo_root=tmp_path)
+
+    # Assert
+    assert recorded == [["podman", "compose", "up", "-d", "--force-recreate", "auth"]]
 
 
 def test_auth_sidecar_service_carries_the_roster_in_declaration_order() -> None:

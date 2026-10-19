@@ -100,6 +100,7 @@ from osprey.deployment.web_terminals.readiness import (
 from osprey.deployment.web_terminals.render import (
     AUTH_SIDECAR_AUDIT_IDENTITY,
     _auth_tls_context,
+    resolve_auth_image,
 )
 from osprey.deployment.web_terminals.seeding import seed_user_containers
 from osprey.deployment.wheel_build import _staged_dev_artifact_paths
@@ -120,7 +121,7 @@ def preflight_web_terminals(config: dict, *, repo_root: Path | str | None = None
     (:func:`~osprey.deployment.web_terminals.artifacts.check_bash_launch_token_conflict`),
     a missing provider auth secret
     (:func:`ensure_env_production`'s fail-closed gate), a registry-mode
-    deployment with no ``auth.image`` (:func:`_require_auth_sidecar_image`) and
+    sidecar with no image name (:func:`_require_auth_sidecar_image`) and
     an auth credential that could not be established
     (:func:`_provision_auth_secrets`) — surface in seconds. Local mode first
     checks that every referenced persona has a rendered project (the credential
@@ -193,11 +194,11 @@ def preflight_web_terminals(config: dict, *, repo_root: Path | str | None = None
             ", ".join(sorted(waived)),
         )
     ensure_env_production(config, str(root))
-    # BEFORE the mint, deliberately: a registry-mode deploy that forgot
-    # auth.image is already doomed, and minting here first would write (and
+    # BEFORE the mint, deliberately: a registry-mode deploy whose sidecar has
+    # no image to pull is already doomed, and minting here first would write (and
     # print, once) a password for a stack that never comes up. Moving this call
     # below _provision_auth_secrets silently loses that property.
-    _require_auth_sidecar_image(web_terminals)
+    _require_auth_sidecar_image(config)
     _provision_auth_secrets(web_terminals, str(root))
     # OUTSIDE _provision_auth_secrets, which returns early on `auth.method:
     # none` — that early return governs who may log in, and a terminal secret is
@@ -819,33 +820,37 @@ def auth_sidecar_local_tag(config: dict) -> str:
     return f"{resolve_project_name(config)}-auth:local"
 
 
-def _require_auth_sidecar_image(web_terminals: dict) -> None:
-    """Registry-mode gate: ``auth.image`` must name a published sidecar image.
+def _require_auth_sidecar_image(config: dict) -> None:
+    """Registry-mode gate: the sidecar's image must have a registry name.
 
     Registry mode builds nothing locally, and the compose overlay falls back to
-    the ``:local`` tag when ``auth.image`` is unset — a tag that mode never
-    produces. Without this the deploy would reach ``compose pull``/``up`` and
-    die on a tag no registry has, with nothing to say which key was missing.
-    Publishing the image is the facility CI's contract, exactly like
-    ``.env.users``; OSPREY only checks that the deployment names one.
+    the ``:local`` tag when :func:`resolve_auth_image` names no image — a tag
+    that mode never produces. Without this the deploy would reach ``compose
+    pull``/``up`` and die on a tag no registry has, with nothing to say which
+    key was missing. The sidecar is named under ``registry.url`` like the
+    persona images, so this fires only when neither ``auth.image`` nor
+    ``registry.url`` is set. Pushing the image is the facility CI's job, as
+    for the persona images.
 
     A no-op when no sidecar is rendered at all and in local mode
     (:func:`build_auth_sidecar_image` produces the tag there).
 
-    :raises RuntimeError: Registry mode, sidecar active, ``auth.image`` unset.
+    :raises RuntimeError: Registry mode, sidecar active, and neither
+        ``auth.image`` nor ``registry.url`` set.
     """
+    web_terminals = (config.get("modules") or {}).get("web_terminals") or {}
     if not _auth_tls_context(web_terminals)["sidecar_active"]:
         return
     if effective_image_source(web_terminals) == "local":
         return
-    if _auth_tls_context(web_terminals)["auth_image"]:
+    if resolve_auth_image(web_terminals, config.get("registry"), resolve_project_name(config)):
         return
     raise RuntimeError(
-        "modules.web_terminals.auth.image is not set. A registry-mode deploy "
+        "The auth sidecar has no image to pull. A registry-mode deploy "
         "(modules.web_terminals.image_source: registry, the default) never builds "
-        "the auth sidecar's image locally, so it must name a published one — "
-        "building it and pushing it is the facility CI's job, like .env.users. "
-        "Either set modules.web_terminals.auth.image, or set "
+        "it locally and names it <registry.url>/<project>-auth:<image_tag>, but "
+        "registry.url is not set. Set registry.url (or pin "
+        "modules.web_terminals.auth.image), or set "
         "modules.web_terminals.image_source: local to have `osprey up` build "
         "the sidecar image on this host."
     )
@@ -910,8 +915,8 @@ def build_auth_sidecar_image(
     Three no-op cases, each deliberate:
 
     * no sidecar method — no sidecar service is rendered, so nothing to build;
-    * registry mode — the image comes from ``auth.image`` (preflight already
-      required it);
+    * registry mode — the image is pulled under :func:`resolve_auth_image`'s
+      name (preflight already required one);
     * ``auth.image`` set in local mode — the deployment pinned an external
       image, and building over that pin would produce a tag nothing references.
 

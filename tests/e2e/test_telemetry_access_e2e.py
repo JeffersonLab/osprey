@@ -363,6 +363,11 @@ def _wait_ready(stack: Stack, timeout: float = 180.0) -> None:
                 httpx.get(
                     f"http://127.0.0.1:{tc.metrics_port(stack.config)}/metrics", timeout=3
                 ).raise_for_status()
+                # The tests post to the OTLP receiver, which opens after
+                # /metrics does. A published port with nothing listening behind
+                # it accepts and then resets, so any answer here, whatever its
+                # status, is the receiver being up.
+                httpx.get(f"{stack.gateway_url}/v1/logs", timeout=3)
                 return
         except (AssertionError, httpx.HTTPError) as exc:
             last = str(exc)
