@@ -2625,7 +2625,7 @@ def resolve_auth_image(
     """
     pinned = as_dict(web_terminals.get("auth")).get("image")
     if pinned:
-        return pinned
+        return str(pinned)
     if effective_image_source(web_terminals) == "local":
         return None
     registry_url = configured_registry_url(registry_cfg)
