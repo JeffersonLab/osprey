@@ -2947,12 +2947,11 @@ jobs:
       timeout-minutes: 70
       env:
         ALS_APG_API_KEY: ${{ secrets.ALS_APG_API_KEY }}
-        # Arms the agent-transcript dump (tests/e2e/sdk_helpers.py). This lane
-        # is judged by an LLM on numbers the judge is never shown — tool
-        # results reach it previewed at 300 characters — so a verdict of
-        # "cannot be verified from the execution trace" is unadjudicable
-        # without the untruncated response and traces. The capture step below
-        # uploads this directory on failure.
+        # Arms the agent-transcript dump (tests/e2e/sdk_helpers.py). The LLM
+        # judge reads tool results cut at JUDGE_RESULT_CHARS and only the head
+        # and tail of a long trace, so a verdict it cannot fully see is settled
+        # from the untruncated response and traces in this directory, which
+        # the capture step below uploads on failure.
         OSPREY_CI_DIAG_DIR: ci-diag
       run: |
         uv run pytest tests/e2e/test_plan_stack_agentic.py -v --tb=short \
