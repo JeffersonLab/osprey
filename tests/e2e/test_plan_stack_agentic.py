@@ -1834,6 +1834,14 @@ def test_floor_takes_the_plan_figure_as_reading_the_run_back() -> None:
     ]
     assert not _floor_passes(figure_of_an_older_run)
 
+    figure_before_the_launch = [
+        _draft(patch=_ORM_ARGS),
+        _add(run_id="run-7"),
+        _figure(run_id="run-7"),
+        _start(),
+    ]
+    assert not _floor_passes(figure_before_the_launch)
+
     refused_figure = [
         _draft(patch=_ORM_ARGS),
         _add(run_id="run-7"),
