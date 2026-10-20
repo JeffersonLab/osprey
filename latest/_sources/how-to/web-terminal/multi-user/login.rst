@@ -33,6 +33,12 @@ Two things to read off the drawing. The front door is nginx, and
 ask the authentication service. The terminal behind it always checks a
 credential of its own; the postures differ only in who supplies it.
 
+The snippets on this page show only the keys their section is about; the
+deployment also carries the ``personas`` catalog and ``default_persona`` from
+the multi-user page (see the worked example in
+:ref:`multi-user-registry-images`), and ``persona: readwrite`` / ``readonly``
+name entries of that catalog.
+
 Choose a method
 ===============
 
@@ -167,9 +173,9 @@ anything. Optional keys: ``auth.port`` (the port layout's ``10001`` unless you
 set it — see :ref:`reference-ports`),
 ``auth.session_lifetime`` in whole seconds (default ``43200``),
 ``auth.throttle`` (see :ref:`multi-user-login-throttle`), and
-``auth.image``, required with ``image_source: registry`` — a published build of
-OSPREY's login service; :ref:`multi-user-login-service-contract` says what it
-answers.
+``auth.image``, a published build of OSPREY's login service that replaces the
+default image (``<registry.url>/<project_name>-auth:<tag>`` in registry mode);
+:ref:`multi-user-login-service-contract` says what it answers.
 
 .. dropdown:: Where ``auth.session_lifetime`` applies
    :icon: gear
@@ -286,9 +292,9 @@ The site-CA block in ``.env.shared`` does not do this — a CA path in the chain
 names a file that image does not carry. See :ref:`deployment-env-chain` for
 what the chain delivers to which container.
 
-This applies to the image OSPREY builds. In registry mode
-(``modules.web_terminals.auth.image``) the login service runs a published image
-the facility built itself, so its trust store is that build's business.
+This applies to the image OSPREY builds. In registry mode the login service
+runs a published image the facility built itself, so its trust store is that
+build's business.
 
 .. _multi-user-login-service-contract:
 
@@ -298,7 +304,7 @@ What the login service answers
 In both image modes the stack starts the login service with a fixed command,
 ``uvicorn osprey.services.auth_sidecar.app:create_app --factory``, bound to the
 loopback address on ``auth.port``, and probes it with the image's own
-``python``. An ``auth.image`` is therefore a build of OSPREY's login service
+``python``. A registry-mode login image is therefore a build of OSPREY's login service
 from the same release as the terminals, published by the facility's CI. It is
 not a place for a login service of the site's own. What follows is what nginx
 and the terminals rely on, and what a build has to keep answering across an
@@ -716,8 +722,9 @@ Lint also warns, without refusing the build:
   (``web_terminals.live_writer_without_control_identity``): an owner-only card
   behind a login wall with no ``control_identity``, whose persona arms writes
   on a live control-system target. Its writes would arrive as ``osprey``.
-  Cards writing only to a mock or simulated target never trigger it, and
-  neither do cards without a login wall.
+  Cards writing only to a target other than ``live`` --- the simulator
+  (``va``, served from its container or in process) or the stand-in --- never
+  trigger it, and neither do cards without a login wall.
 
 
 .. _multi-user-https:
